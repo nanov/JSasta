@@ -1,0 +1,11 @@
+# build files
+# objects
+*.o
+*.dylib
+*.ll
+*.dSYM/
+build/
+compiled/
+
+# Mac shit
+.DS_Store
