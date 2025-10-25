@@ -9,6 +9,6 @@ output_ll=${filename%.*}.ll
 make -B
 mkdir -p compiled
 cd compiled
-../build/jscompiler $script $output_ll -a
-clang -o ${output} ${output_ll}
+../build/jsastac $script $output_ll
+clang -O3 -o ${output} ${output_ll}
 ./$output

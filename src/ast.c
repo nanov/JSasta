@@ -1,12 +1,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "js_compiler.h"
+#include "jsasta_compiler.h"
 
 ASTNode* ast_create(ASTNodeType type) {
     ASTNode* node = (ASTNode*)calloc(1, sizeof(ASTNode));
     node->type = type;
     node->value_type = TYPE_UNKNOWN;
+    node->loc.filename = NULL;
+    node->loc.line = 0;
+    node->loc.column = 0;
+    return node;
+}
+
+ASTNode* ast_create_with_loc(ASTNodeType type, SourceLocation loc) {
+    ASTNode* node = (ASTNode*)calloc(1, sizeof(ASTNode));
+    node->type = type;
+    node->value_type = TYPE_UNKNOWN;
+    node->loc = loc;
     return node;
 }
 
@@ -74,6 +85,16 @@ void ast_free(ASTNode* node) {
             ast_free(node->unary_op.operand);
             break;
 
+        case AST_PREFIX_OP:
+            free(node->prefix_op.op);
+            free(node->prefix_op.name);
+            break;
+
+        case AST_POSTFIX_OP:
+            free(node->postfix_op.op);
+            free(node->postfix_op.name);
+            break;
+
         case AST_CALL:
             ast_free(node->call.callee);
             for (int i = 0; i < node->call.arg_count; i++) {
@@ -95,9 +116,54 @@ void ast_free(ASTNode* node) {
             ast_free(node->assignment.value);
             break;
 
+        case AST_COMPOUND_ASSIGNMENT:
+            free(node->compound_assignment.name);
+            free(node->compound_assignment.op);
+            ast_free(node->compound_assignment.value);
+            break;
+
         case AST_MEMBER_ACCESS:
             ast_free(node->member_access.object);
             free(node->member_access.property);
+            break;
+
+        case AST_MEMBER_ASSIGNMENT:
+            ast_free(node->member_assignment.object);
+            free(node->member_assignment.property);
+            ast_free(node->member_assignment.value);
+            break;
+
+        case AST_TERNARY:
+            ast_free(node->ternary.condition);
+            ast_free(node->ternary.true_expr);
+            ast_free(node->ternary.false_expr);
+            break;
+
+        case AST_INDEX_ACCESS:
+            ast_free(node->index_access.object);
+            ast_free(node->index_access.index);
+            break;
+
+        case AST_ARRAY_LITERAL:
+            for (int i = 0; i < node->array_literal.count; i++) {
+                ast_free(node->array_literal.elements[i]);
+            }
+            free(node->array_literal.elements);
+            break;
+
+        case AST_OBJECT_LITERAL:
+            for (int i = 0; i < node->object_literal.count; i++) {
+                free(node->object_literal.keys[i]);
+                ast_free(node->object_literal.values[i]);
+            }
+            free(node->object_literal.keys);
+            free(node->object_literal.values);
+            break;
+
+        case AST_INDEX_ASSIGNMENT:
+            ast_free(node->index_assignment.object);
+            ast_free(node->index_assignment.index);
+            ast_free(node->index_assignment.value);
             break;
 
         default:
@@ -187,6 +253,16 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->unary_op.operand = ast_clone(node->unary_op.operand);
             break;
 
+        case AST_PREFIX_OP:
+            clone->prefix_op.op = strdup(node->prefix_op.op);
+            clone->prefix_op.name = strdup(node->prefix_op.name);
+            break;
+
+        case AST_POSTFIX_OP:
+            clone->postfix_op.op = strdup(node->postfix_op.op);
+            clone->postfix_op.name = strdup(node->postfix_op.name);
+            break;
+
         case AST_CALL:
             clone->call.callee = ast_clone(node->call.callee);
             clone->call.arg_count = node->call.arg_count;
@@ -217,9 +293,56 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->assignment.value = ast_clone(node->assignment.value);
             break;
 
+        case AST_COMPOUND_ASSIGNMENT:
+            clone->compound_assignment.name = strdup(node->compound_assignment.name);
+            clone->compound_assignment.op = strdup(node->compound_assignment.op);
+            clone->compound_assignment.value = ast_clone(node->compound_assignment.value);
+            break;
+
         case AST_MEMBER_ACCESS:
             clone->member_access.object = ast_clone(node->member_access.object);
             clone->member_access.property = strdup(node->member_access.property);
+            break;
+
+        case AST_MEMBER_ASSIGNMENT:
+            clone->member_assignment.object = ast_clone(node->member_assignment.object);
+            clone->member_assignment.property = strdup(node->member_assignment.property);
+            clone->member_assignment.value = ast_clone(node->member_assignment.value);
+            break;
+
+        case AST_TERNARY:
+            clone->ternary.condition = ast_clone(node->ternary.condition);
+            clone->ternary.true_expr = ast_clone(node->ternary.true_expr);
+            clone->ternary.false_expr = ast_clone(node->ternary.false_expr);
+            break;
+
+        case AST_INDEX_ACCESS:
+            clone->index_access.object = ast_clone(node->index_access.object);
+            clone->index_access.index = ast_clone(node->index_access.index);
+            break;
+
+        case AST_ARRAY_LITERAL:
+            clone->array_literal.count = node->array_literal.count;
+            clone->array_literal.elements = (ASTNode**)malloc(sizeof(ASTNode*) * node->array_literal.count);
+            for (int i = 0; i < node->array_literal.count; i++) {
+                clone->array_literal.elements[i] = ast_clone(node->array_literal.elements[i]);
+            }
+            break;
+
+        case AST_OBJECT_LITERAL:
+            clone->object_literal.count = node->object_literal.count;
+            clone->object_literal.keys = (char**)malloc(sizeof(char*) * node->object_literal.count);
+            clone->object_literal.values = (ASTNode**)malloc(sizeof(ASTNode*) * node->object_literal.count);
+            for (int i = 0; i < node->object_literal.count; i++) {
+                clone->object_literal.keys[i] = strdup(node->object_literal.keys[i]);
+                clone->object_literal.values[i] = ast_clone(node->object_literal.values[i]);
+            }
+            break;
+
+        case AST_INDEX_ASSIGNMENT:
+            clone->index_assignment.object = ast_clone(node->index_assignment.object);
+            clone->index_assignment.index = ast_clone(node->index_assignment.index);
+            clone->index_assignment.value = ast_clone(node->index_assignment.value);
             break;
     }
 

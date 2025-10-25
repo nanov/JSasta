@@ -1,12 +1,14 @@
-#include "js_compiler.h"
+#include "jsasta_compiler.h"
+#include "logger.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
 
 char* read_file(const char* filename) {
     FILE* file = fopen(filename, "r");
     if (!file) {
-        fprintf(stderr, "Error: Could not open file %s\n", filename);
+        log_error("Could not open file %s", filename);
         return NULL;
     }
 
@@ -29,26 +31,26 @@ void compile_file(const char* input_file, const char* output_file) {
         return;
     }
 
-    printf("Compiling %s...\n", input_file);
+    log_info("Compiling %s...", input_file);
 
     // Parse
-    Parser* parser = parser_create(source);
+    log_section("Parsing");
+    Parser* parser = parser_create(source, input_file);
     ASTNode* ast = parser_parse(parser);
     parser_free(parser);
 
     if (!ast) {
-        fprintf(stderr, "Parse error\n");
+        log_error("Parse error");
         free(source);
         return;
     }
 
-    printf("Parsing complete.\n");
+    log_verbose("Parsing complete");
 
     // Type inference (infer types from usage)
+    log_section("Type Inference");
     SymbolTable* symbols = symbol_table_create(NULL);
     type_inference(ast, symbols);
-
-    printf("Type inference complete.\n");
 
     // Print specializations if any
     if (ast->specialization_ctx) {
@@ -60,18 +62,19 @@ void compile_file(const char* input_file, const char* output_file) {
     // type_analyze(ast, symbols);
     symbol_table_free(symbols);
 
-    printf("Type checking complete.\n");
+    log_verbose("Type checking complete");
 
     // Code generation
+    log_section("Code Generation");
     CodeGen* gen = codegen_create("js_module");
     codegen_generate(gen, ast);
 
-    printf("Code generation complete.\n");
+    log_info("Code generation complete");
 
     // Emit LLVM IR
     codegen_emit_llvm_ir(gen, output_file);
 
-    printf("LLVM IR written to %s\n", output_file);
+    log_info("LLVM IR written to %s", output_file);
 
     // Cleanup
     ast_free(ast);
@@ -79,14 +82,55 @@ void compile_file(const char* input_file, const char* output_file) {
     free(source);
 }
 
+void print_usage(const char* program_name) {
+    fprintf(stderr, "Usage: %s [options] <input.js> [output.ll]\n", program_name);
+    fprintf(stderr, "\nOptions:\n");
+    fprintf(stderr, "  -v, --verbose      Enable verbose output\n");
+    fprintf(stderr, "  -q, --quiet        Suppress info messages (warnings and errors only)\n");
+    fprintf(stderr, "  -h, --help         Show this help message\n");
+}
+
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <input.js> [output.ll]\n", argv[0]);
+    LogLevel log_level = LOG_INFO;
+
+    // Parse command-line options
+    static struct option long_options[] = {
+        {"verbose", no_argument, 0, 'v'},
+        {"quiet",   no_argument, 0, 'q'},
+        {"help",    no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "vqh", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'v':
+                log_level = LOG_VERBOSE;
+                break;
+            case 'q':
+                log_level = LOG_WARNING;
+                break;
+            case 'h':
+                print_usage(argv[0]);
+                return 0;
+            default:
+                print_usage(argv[0]);
+                return 1;
+        }
+    }
+
+    // Initialize logger
+    logger_init(log_level);
+
+    // Check for input file
+    if (optind >= argc) {
+        log_error("No input file specified");
+        print_usage(argv[0]);
         return 1;
     }
 
-    const char* input_file = argv[1];
-    const char* output_file = argc >= 3 ? argv[2] : "output.ll";
+    const char* input_file = argv[optind];
+    const char* output_file = (optind + 1 < argc) ? argv[optind + 1] : "output.ll";
 
     compile_file(input_file, output_file);
 

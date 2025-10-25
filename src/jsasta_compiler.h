@@ -1,5 +1,5 @@
-#ifndef JS_COMPILER_H
-#define JS_COMPILER_H
+#ifndef JASTA_COMPILER_H
+#define JASTA_COMPILER_H
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
@@ -7,12 +7,14 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <stdbool.h>
+#include "logger.h"
 
 // Token types for lexer
 typedef enum {
     TOKEN_EOF,
     TOKEN_VAR,
     TOKEN_LET,
+    TOKEN_CONST,
     TOKEN_FUNCTION,
     TOKEN_RETURN,
     TOKEN_IF,
@@ -26,9 +28,18 @@ typedef enum {
     TOKEN_STRING,
     TOKEN_PLUS,
     TOKEN_MINUS,
+    TOKEN_PLUSPLUS,
+    TOKEN_MINUSMINUS,
+    TOKEN_RIGHT_SHIFT,
+    TOKEN_LEFT_SHIFT,
+    TOKEN_BIT_AND,
     TOKEN_STAR,
     TOKEN_SLASH,
     TOKEN_ASSIGN,
+    TOKEN_PLUS_ASSIGN,   // +=
+    TOKEN_MINUS_ASSIGN,  // -=
+    TOKEN_STAR_ASSIGN,   // *=
+    TOKEN_SLASH_ASSIGN,  // /=
     TOKEN_EQ,
     TOKEN_NE,
     TOKEN_LT,
@@ -39,19 +50,23 @@ typedef enum {
     TOKEN_RPAREN,
     TOKEN_LBRACE,
     TOKEN_RBRACE,
+    TOKEN_LBRACKET,
+    TOKEN_RBRACKET,
     TOKEN_SEMICOLON,
     TOKEN_COMMA,
     TOKEN_DOT,
     TOKEN_AND,
     TOKEN_OR,
     TOKEN_NOT,
+    TOKEN_QUESTION,
+    TOKEN_COLON,
 } TokenType;
 
 typedef struct {
     TokenType type;
     char* value;
-    int line;
-    int column;
+    size_t line;
+    size_t column;
 } Token;
 
 // AST Node types
@@ -73,7 +88,16 @@ typedef enum {
     AST_STRING,
     AST_BOOLEAN,
     AST_ASSIGNMENT,
+    AST_COMPOUND_ASSIGNMENT,
     AST_MEMBER_ACCESS,
+    AST_MEMBER_ASSIGNMENT,  // obj.prop = value
+    AST_TERNARY,
+    AST_INDEX_ACCESS,
+    AST_ARRAY_LITERAL,
+    AST_INDEX_ASSIGNMENT,
+    AST_PREFIX_OP,      // ++i, --i
+    AST_POSTFIX_OP,     // i++, i--
+    AST_OBJECT_LITERAL, // Object literal { key: value, ... }
 } ASTNodeType;
 
 // Type system for specialization
@@ -84,6 +108,11 @@ typedef enum {
     TYPE_STRING,
     TYPE_BOOL,
     TYPE_VOID,
+    TYPE_FUNCTION,  // Function pointer/reference
+    TYPE_ARRAY_INT,
+    TYPE_ARRAY_DOUBLE,
+    TYPE_ARRAY_STRING,
+    TYPE_OBJECT,    // Object with properties
 } ValueType;
 
 // Forward declarations for specialization
@@ -105,6 +134,7 @@ struct FunctionSpecialization {
 // Specialization context - tracks all function specializations
 struct SpecializationContext {
     FunctionSpecialization* specializations;
+    size_t functions_processed;
 };
 
 
@@ -112,6 +142,10 @@ struct ASTNode {
     ASTNodeType type;
     ValueType value_type;
     SpecializationContext* specialization_ctx;  // For AST_PROGRAM, stores specializations
+
+    // Source location information
+    SourceLocation loc;
+
     union {
         struct {
             ASTNode** statements;
@@ -203,18 +237,68 @@ struct ASTNode {
         } assignment;
 
         struct {
+            char* name;
+            char* op;      // "+=", "-=", "*=", "/="
+            ASTNode* value;
+        } compound_assignment;
+
+        struct {
             ASTNode* object;
             char* property;
         } member_access;
+
+        struct {
+            ASTNode* object;
+            char* property;
+            ASTNode* value;
+        } member_assignment;
+
+        struct {
+            ASTNode* condition;
+            ASTNode* true_expr;
+            ASTNode* false_expr;
+        } ternary;
+
+        struct {
+            ASTNode* object;
+            ASTNode* index;
+        } index_access;
+
+        struct {
+            ASTNode** elements;
+            int count;
+        } array_literal;
+
+        struct {
+            ASTNode* object;
+            ASTNode* index;
+            ASTNode* value;
+        } index_assignment;
+
+        struct {
+            char* op;      // "++" or "--"
+            char* name;    // variable name
+        } prefix_op;
+
+        struct {
+            char* op;      // "++" or "--"
+            char* name;    // variable name
+        } postfix_op;
+
+        struct {
+            char** keys;      // Property names
+            ASTNode** values; // Property values
+            int count;        // Number of properties
+        } object_literal;
     };
 };
 
 // Lexer
 typedef struct {
     const char* source;
-    int position;
-    int line;
-    int column;
+    size_t position;
+    size_t line;
+    size_t column;
     char current;
 } Lexer;
 
@@ -227,14 +311,16 @@ void token_free(Token* token);
 typedef struct {
     Lexer* lexer;
     Token* current_token;
+    const char* filename;
 } Parser;
 
-Parser* parser_create(const char* source);
+Parser* parser_create(const char* source, const char* filename);
 void parser_free(Parser* parser);
 ASTNode* parser_parse(Parser* parser);
 
 
 ASTNode* ast_create(ASTNodeType type);
+ASTNode* ast_create_with_loc(ASTNodeType type, SourceLocation loc);
 void ast_free(ASTNode* node);
 ASTNode* ast_clone(ASTNode* node);
 
@@ -242,7 +328,10 @@ ASTNode* ast_clone(ASTNode* node);
 typedef struct SymbolEntry {
     char* name;
     ValueType type;
+    bool is_const;
     LLVMValueRef value;
+    ASTNode* node;
+    LLVMTypeRef llvm_type;  // For objects, stores the struct type
     struct SymbolEntry* next;
 } SymbolEntry;
 
@@ -253,7 +342,9 @@ typedef struct SymbolTable {
 
 SymbolTable* symbol_table_create(SymbolTable* parent);
 void symbol_table_free(SymbolTable* table);
-void symbol_table_insert(SymbolTable* table, const char* name, ValueType type, LLVMValueRef value);
+void symbol_table_insert(SymbolTable* table, const char* name, ValueType type, LLVMValueRef value, bool is_const);
+void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, ValueType type, bool is_const, ASTNode* var_decl_node);
+void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node);
 SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name);
 
 // Type analysis
@@ -265,7 +356,7 @@ void type_inference(ASTNode* ast, SymbolTable* symbols);
 // Specialization context API
 SpecializationContext* specialization_context_create();
 void specialization_context_free(SpecializationContext* ctx);
-void specialization_context_add(SpecializationContext* ctx, const char* func_name,
+FunctionSpecialization* specialization_context_add(SpecializationContext* ctx, const char* func_name,
                                 ValueType* param_types, int param_count);
 FunctionSpecialization* specialization_context_find(SpecializationContext* ctx,
                                                     const char* func_name,
@@ -275,7 +366,7 @@ FunctionSpecialization* specialization_context_get_all(SpecializationContext* ct
                                                        const char* func_name);
 void specialization_context_print(SpecializationContext* ctx);
 
-void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node);
+// void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node);
 
 // Forward declaration
 typedef struct CodeGen CodeGen;
@@ -283,6 +374,7 @@ typedef struct CodeGen CodeGen;
 // Code generator
 typedef struct RuntimeFunction {
     char* name;
+    ValueType return_type;  // Return type of the function
     LLVMValueRef (*handler)(CodeGen*, ASTNode*);
     struct RuntimeFunction* next;
 } RuntimeFunction;
@@ -304,12 +396,16 @@ void codegen_emit_llvm_ir(CodeGen* gen, const char* filename);
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node);
 
 // Runtime function registration
-void codegen_register_runtime_function(CodeGen* gen, const char* name,
+void codegen_register_runtime_function(CodeGen* gen, const char* name, ValueType return_type,
                                        LLVMValueRef (*handler)(CodeGen*, ASTNode*));
+ValueType codegen_get_runtime_function_type(CodeGen* gen, const char* name);
 LLVMValueRef codegen_call_runtime_function(CodeGen* gen, const char* name, ASTNode* call_node);
 
 // Runtime library
 void runtime_init(CodeGen* gen);
+
+// Runtime function type lookup (for type inference)
+ValueType runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);
@@ -317,6 +413,7 @@ void compile_file(const char* input_file, const char* output_file);
 
 
 FunctionSpecialization* s;
+ASTNode* c_n;
 
 
 #endif // JS_COMPILER_H

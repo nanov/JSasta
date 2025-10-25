@@ -1,3 +1,5 @@
+COMPILER_NAME = jsastac
+
 CC = cc
 CFLAGS = -Wall -Wextra -g -Isrc $(shell llvm-config --cflags)
 LDFLAGS = $(shell llvm-config --ldflags --libs core)
@@ -7,9 +9,8 @@ LDLIBS = $(shell llvm-config --system-libs)
 SRC_DIR = src
 BUILD_DIR = build
 
-TARGET = $(BUILD_DIR)/jscompiler
+TARGET = $(BUILD_DIR)/$(COMPILER_NAME)
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
-# main.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/symbol_table.c $(SRC_DIR)/type_analysis.c $(SRC_DIR)/runtime.c $(SRC_DIR)/codegen.c
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
 all: $(BUILD_DIR) $(TARGET)
@@ -20,7 +21,7 @@ $(BUILD_DIR):
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(TARGET)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/js_compiler.h | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

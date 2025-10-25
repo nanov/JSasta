@@ -1,11 +1,12 @@
+function na(name) {
+	return "A" + name;
+}
 function meet(name) {
-  var greeting = "Meet," + name;
-  return greeting;
+	var greeting = "Meet," + na(name);
+	return greeting;
 }
 
-function greet(name) {
-  var greeting = "Hello, " + name + " and " + meet(name);
-  return greeting;
-}
+var a = "nitko";
+var b = meet(a);
 
-console.log(greet("mitko"));
+console.log(b);

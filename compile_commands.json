@@ -1,117 +1,33 @@
 [
   {
     "arguments": [
-      "/usr/bin/gcc",
+      "/opt/homebrew/opt/llvm/bin/clang",
       "-Wall",
       "-Wextra",
       "-g",
       "-Isrc",
-      "-I/opt/homebrew/Cellar/llvm/21.1.2/include",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
       "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
       "-D__STDC_CONSTANT_MACROS",
       "-D__STDC_FORMAT_MACROS",
       "-D__STDC_LIMIT_MACROS",
       "-c",
       "-o",
-      "build/main.o",
-      "src/main.c"
+      "build/ast.o",
+      "src/ast.c"
     ],
-    "directory": "/Users/nanov/private/github/nanov/JSasta",
-    "file": "/Users/nanov/private/github/nanov/JSasta/src/main.c",
-    "output": "/Users/nanov/private/github/nanov/JSasta/build/main.o"
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/ast.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/ast.o"
   },
   {
     "arguments": [
-      "/usr/bin/gcc",
+      "/opt/homebrew/opt/llvm/bin/clang",
       "-Wall",
       "-Wextra",
       "-g",
       "-Isrc",
-      "-I/opt/homebrew/Cellar/llvm/21.1.2/include",
-      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
-      "-D__STDC_CONSTANT_MACROS",
-      "-D__STDC_FORMAT_MACROS",
-      "-D__STDC_LIMIT_MACROS",
-      "-c",
-      "-o",
-      "build/lexer.o",
-      "src/lexer.c"
-    ],
-    "directory": "/Users/nanov/private/github/nanov/JSasta",
-    "file": "/Users/nanov/private/github/nanov/JSasta/src/lexer.c",
-    "output": "/Users/nanov/private/github/nanov/JSasta/build/lexer.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-Isrc",
-      "-I/opt/homebrew/Cellar/llvm/21.1.2/include",
-      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
-      "-D__STDC_CONSTANT_MACROS",
-      "-D__STDC_FORMAT_MACROS",
-      "-D__STDC_LIMIT_MACROS",
-      "-c",
-      "-o",
-      "build/parser.o",
-      "src/parser.c"
-    ],
-    "directory": "/Users/nanov/private/github/nanov/JSasta",
-    "file": "/Users/nanov/private/github/nanov/JSasta/src/parser.c",
-    "output": "/Users/nanov/private/github/nanov/JSasta/build/parser.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-Isrc",
-      "-I/opt/homebrew/Cellar/llvm/21.1.2/include",
-      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
-      "-D__STDC_CONSTANT_MACROS",
-      "-D__STDC_FORMAT_MACROS",
-      "-D__STDC_LIMIT_MACROS",
-      "-c",
-      "-o",
-      "build/symbol_table.o",
-      "src/symbol_table.c"
-    ],
-    "directory": "/Users/nanov/private/github/nanov/JSasta",
-    "file": "/Users/nanov/private/github/nanov/JSasta/src/symbol_table.c",
-    "output": "/Users/nanov/private/github/nanov/JSasta/build/symbol_table.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-Isrc",
-      "-I/opt/homebrew/Cellar/llvm/21.1.2/include",
-      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
-      "-D__STDC_CONSTANT_MACROS",
-      "-D__STDC_FORMAT_MACROS",
-      "-D__STDC_LIMIT_MACROS",
-      "-c",
-      "-o",
-      "build/runtime.o",
-      "src/runtime.c"
-    ],
-    "directory": "/Users/nanov/private/github/nanov/JSasta",
-    "file": "/Users/nanov/private/github/nanov/JSasta/src/runtime.c",
-    "output": "/Users/nanov/private/github/nanov/JSasta/build/runtime.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-Isrc",
-      "-I/opt/homebrew/Cellar/llvm/21.1.2/include",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
       "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
       "-D__STDC_CONSTANT_MACROS",
       "-D__STDC_FORMAT_MACROS",
@@ -121,8 +37,176 @@
       "build/codegen.o",
       "src/codegen.c"
     ],
-    "directory": "/Users/nanov/private/github/nanov/JSasta",
-    "file": "/Users/nanov/private/github/nanov/JSasta/src/codegen.c",
-    "output": "/Users/nanov/private/github/nanov/JSasta/build/codegen.o"
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/codegen.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/codegen.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/lexer.o",
+      "src/lexer.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/lexer.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/lexer.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/main.o",
+      "src/main.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/main.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/main.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/parser.o",
+      "src/parser.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/parser.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/parser.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/runtime.o",
+      "src/runtime.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/runtime.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/runtime.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/specialization.o",
+      "src/specialization.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/specialization.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/specialization.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/symbol_table.o",
+      "src/symbol_table.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/symbol_table.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/symbol_table.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/type_analysis.o",
+      "src/type_analysis.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/type_analysis.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/type_analysis.o"
+  },
+  {
+    "arguments": [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-Isrc",
+      "-I/opt/homebrew/Cellar/llvm/21.1.3_1/include",
+      "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
+      "-D__STDC_CONSTANT_MACROS",
+      "-D__STDC_FORMAT_MACROS",
+      "-D__STDC_LIMIT_MACROS",
+      "-c",
+      "-o",
+      "build/type_inference.o",
+      "src/type_inference.c"
+    ],
+    "directory": "/Users/dimitarnanov/work/private/github/JSasta",
+    "file": "/Users/dimitarnanov/work/private/github/JSasta/src/type_inference.c",
+    "output": "/Users/dimitarnanov/work/private/github/JSasta/build/type_inference.o"
   }
 ]

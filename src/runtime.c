@@ -1,9 +1,23 @@
-#include "js_compiler.h"
+#include "jsasta_compiler.h"
 #include "llvm-c/Types.h"
 #include <llvm-c/Core.h>
+#include <string.h>
+#include <stdio.h>
 
-// Forward declare handler
+// Forward declare handlers
 static LLVMValueRef runtime_console_log(CodeGen* gen, ASTNode* call_node);
+static LLVMValueRef runtime_array(CodeGen* gen, ASTNode* call_node);
+
+// Runtime function type lookup table (for type inference before codegen)
+ValueType runtime_get_function_type(const char* name) {
+    if (strcmp(name, "Array") == 0) {
+        return TYPE_ARRAY_INT;
+    }
+    if (strcmp(name, "console.log") == 0) {
+        return TYPE_VOID;
+    }
+    return TYPE_UNKNOWN;
+}
 
 void runtime_init(CodeGen* gen) {
     // Declare printf for console.log implementation
@@ -87,8 +101,22 @@ void runtime_init(CodeGen* gen) {
     );
     LLVMAddFunction(gen->module, "strlen", strlen_type);
 
+    // Declare calloc for zeroed array allocation
+    LLVMTypeRef calloc_args[] = {
+        LLVMInt64TypeInContext(gen->context),
+        LLVMInt64TypeInContext(gen->context)
+    };
+    LLVMTypeRef calloc_type = LLVMFunctionType(
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+        calloc_args,
+        2,
+        0
+    );
+    LLVMAddFunction(gen->module, "calloc", calloc_type);
+
     // Register runtime functions
-    codegen_register_runtime_function(gen, "console.log", runtime_console_log);
+    codegen_register_runtime_function(gen, "console.log", TYPE_VOID, runtime_console_log);
+    codegen_register_runtime_function(gen, "Array", TYPE_ARRAY_INT, runtime_array);
 
     // Add more runtime functions here as needed:
     // codegen_register_runtime_function(gen, "console.error", runtime_console_error);
@@ -150,4 +178,45 @@ static LLVMValueRef runtime_console_log(CodeGen* gen, ASTNode* call_node) {
                   printf_func, newline_args, 1, "");
 
     return LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+}
+
+// Implementation of Array(size) - creates a zeroed integer array
+static LLVMValueRef runtime_array(CodeGen* gen, ASTNode* call_node) {
+    if (call_node->call.arg_count != 1) {
+        fprintf(stderr, "Error: Array() requires exactly 1 argument (size)\n");
+        return NULL;
+    }
+
+    // Get the size argument
+    LLVMValueRef size_arg = codegen_node(gen, call_node->call.args[0]);
+
+    // Always create integer arrays (i32*)
+    LLVMTypeRef elem_type = LLVMInt32TypeInContext(gen->context);
+    int elem_size = 4;
+
+    // Get calloc function
+    LLVMValueRef calloc_func = LLVMGetNamedFunction(gen->module, "calloc");
+
+    // Convert size to i64 if needed
+    LLVMValueRef size_i64 = size_arg;
+    if (LLVMTypeOf(size_arg) != LLVMInt64TypeInContext(gen->context)) {
+        size_i64 = LLVMBuildZExt(gen->builder, size_arg,
+                                 LLVMInt64TypeInContext(gen->context), "size_i64");
+    }
+
+    // Call calloc(count, elem_size) - allocates and zeros memory
+    LLVMValueRef calloc_args[] = {
+        size_i64,
+        LLVMConstInt(LLVMInt64TypeInContext(gen->context), elem_size, 0)
+    };
+    LLVMValueRef array_ptr = LLVMBuildCall2(gen->builder,
+                                             LLVMGlobalGetValueType(calloc_func),
+                                             calloc_func, calloc_args, 2, "array_calloc");
+
+    // Cast to i32* pointer type
+    LLVMValueRef typed_array = LLVMBuildBitCast(gen->builder, array_ptr,
+                                                 LLVMPointerType(elem_type, 0),
+                                                 "array_ptr");
+
+    return typed_array;
 }

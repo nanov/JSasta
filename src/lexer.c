@@ -1,4 +1,4 @@
-#include "js_compiler.h"
+#include "jsasta_compiler.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +55,7 @@ static void lexer_skip_comment(Lexer* lexer) {
     }
 }
 
-static Token* token_create(TokenType type, const char* value, int line, int column) {
+static Token* token_create(TokenType type, const char* value, size_t line, size_t column) {
     Token* token = (Token*)malloc(sizeof(Token));
     token->type = type;
     token->value = value ? strdup(value) : NULL;
@@ -70,8 +70,8 @@ void token_free(Token* token) {
 }
 
 static Token* lexer_read_number(Lexer* lexer) {
-    int start_line = lexer->line;
-    int start_col = lexer->column;
+    size_t start_line = lexer->line;
+    size_t start_col = lexer->column;
     char buffer[256];
     int i = 0;
 
@@ -85,8 +85,8 @@ static Token* lexer_read_number(Lexer* lexer) {
 }
 
 static Token* lexer_read_string(Lexer* lexer) {
-    int start_line = lexer->line;
-    int start_col = lexer->column;
+    size_t start_line = lexer->line;
+    size_t start_col = lexer->column;
     char quote = lexer->current;
     char buffer[1024];
     int i = 0;
@@ -100,6 +100,7 @@ static Token* lexer_read_string(Lexer* lexer) {
                 case 'n': buffer[i++] = '\n'; break;
                 case 't': buffer[i++] = '\t'; break;
                 case 'r': buffer[i++] = '\r'; break;
+                case 'e': buffer[i++] = '\033'; break;  // ESC character for ANSI codes
                 case '\\': buffer[i++] = '\\'; break;
                 case '"': buffer[i++] = '"'; break;
                 case '\'': buffer[i++] = '\''; break;
@@ -120,8 +121,8 @@ static Token* lexer_read_string(Lexer* lexer) {
 }
 
 static Token* lexer_read_identifier(Lexer* lexer) {
-    int start_line = lexer->line;
-    int start_col = lexer->column;
+    size_t start_line = lexer->line;
+    size_t start_col = lexer->column;
     char buffer[256];
     int i = 0;
 
@@ -135,6 +136,7 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     TokenType type = TOKEN_IDENTIFIER;
     if (strcmp(buffer, "var") == 0) type = TOKEN_VAR;
     else if (strcmp(buffer, "let") == 0) type = TOKEN_LET;
+    else if (strcmp(buffer, "const") == 0) type = TOKEN_CONST;
     else if (strcmp(buffer, "function") == 0) type = TOKEN_FUNCTION;
     else if (strcmp(buffer, "return") == 0) type = TOKEN_RETURN;
     else if (strcmp(buffer, "if") == 0) type = TOKEN_IF;
@@ -160,8 +162,8 @@ Token* lexer_next_token(Lexer* lexer) {
             continue;
         }
 
-        int line = lexer->line;
-        int col = lexer->column;
+        size_t line = lexer->line;
+        size_t col = lexer->column;
 
         if (isdigit(lexer->current)) {
             return lexer_read_number(lexer);
@@ -179,17 +181,47 @@ Token* lexer_next_token(Lexer* lexer) {
         lexer_advance(lexer);
 
         switch (ch) {
-            case '+': return token_create(TOKEN_PLUS, "+", line, col);
-            case '-': return token_create(TOKEN_MINUS, "-", line, col);
-            case '*': return token_create(TOKEN_STAR, "*", line, col);
-            case '/': return token_create(TOKEN_SLASH, "/", line, col);
+            case '+':
+                if (lexer->current == '+') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_PLUSPLUS, "++", line, col);
+                } else if (lexer->current == '=') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_PLUS_ASSIGN, "+=", line, col);
+                }
+                return token_create(TOKEN_PLUS, "+", line, col);
+            case '-':
+                if (lexer->current == '-') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_MINUSMINUS, "--", line, col);
+                } else if (lexer->current == '=') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_MINUS_ASSIGN, "-=", line, col);
+                }
+                return token_create(TOKEN_MINUS, "-", line, col);
+            case '*':
+                if (lexer->current == '=') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_STAR_ASSIGN, "*=", line, col);
+                }
+                return token_create(TOKEN_STAR, "*", line, col);
+            case '/':
+                if (lexer->current == '=') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_SLASH_ASSIGN, "/=", line, col);
+                }
+                return token_create(TOKEN_SLASH, "/", line, col);
             case '(': return token_create(TOKEN_LPAREN, "(", line, col);
             case ')': return token_create(TOKEN_RPAREN, ")", line, col);
             case '{': return token_create(TOKEN_LBRACE, "{", line, col);
             case '}': return token_create(TOKEN_RBRACE, "}", line, col);
+            case '[': return token_create(TOKEN_LBRACKET, "[", line, col);
+            case ']': return token_create(TOKEN_RBRACKET, "]", line, col);
             case ';': return token_create(TOKEN_SEMICOLON, ";", line, col);
             case ',': return token_create(TOKEN_COMMA, ",", line, col);
             case '.': return token_create(TOKEN_DOT, ".", line, col);
+            case '?': return token_create(TOKEN_QUESTION, "?", line, col);
+            case ':': return token_create(TOKEN_COLON, ":", line, col);
             case '=':
                 if (lexer->current == '=') {
                     lexer_advance(lexer);
@@ -209,13 +241,19 @@ Token* lexer_next_token(Lexer* lexer) {
                 }
                 return token_create(TOKEN_NOT, "!", line, col);
             case '<':
-                if (lexer->current == '=') {
+		            if (lexer->current == '>') {
+									lexer_advance(lexer);
+                  return token_create(TOKEN_LEFT_SHIFT, "<<", line, col);
+								} else if (lexer->current == '=') {
                     lexer_advance(lexer);
                     return token_create(TOKEN_LE, "<=", line, col);
                 }
                 return token_create(TOKEN_LT, "<", line, col);
             case '>':
-                if (lexer->current == '=') {
+		            if (lexer->current == '>') {
+										lexer_advance(lexer);
+                    return token_create(TOKEN_RIGHT_SHIFT, ">>", line, col);
+								} else if (lexer->current == '=') {
                     lexer_advance(lexer);
                     return token_create(TOKEN_GE, ">=", line, col);
                 }
@@ -225,7 +263,7 @@ Token* lexer_next_token(Lexer* lexer) {
                     lexer_advance(lexer);
                     return token_create(TOKEN_AND, "&&", line, col);
                 }
-                break;
+                return token_create(TOKEN_BIT_AND, "&", line, col);
             case '|':
                 if (lexer->current == '|') {
                     lexer_advance(lexer);

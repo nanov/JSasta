@@ -1,4 +1,5 @@
-#include "js_compiler.h"
+#include "jsasta_compiler.h"
+#include "logger.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 SpecializationContext* specialization_context_create() {
     SpecializationContext* ctx = (SpecializationContext*)calloc(1, sizeof(SpecializationContext));
     ctx->specializations = NULL;
+    ctx->functions_processed = 0;
     return ctx;
 }
 
@@ -65,9 +67,9 @@ static char* create_specialized_name(const char* func_name, ValueType* param_typ
 }
 
 // Add or find a specialization - NOW WITH AST CLONING
-void specialization_context_add(SpecializationContext* ctx, const char* func_name,
+FunctionSpecialization* specialization_context_add(SpecializationContext* ctx, const char* func_name,
                                 ValueType* param_types, int param_count) {
-    if (!ctx) return;
+    if (!ctx) return NULL;
 
     // Check if this specialization already exists
     FunctionSpecialization* existing = ctx->specializations;
@@ -76,7 +78,7 @@ void specialization_context_add(SpecializationContext* ctx, const char* func_nam
             existing->param_count == param_count &&
             types_match(existing->param_types, param_types, param_count)) {
             // Already exists
-            return;
+            return NULL;
         }
         existing = existing->next;
     }
@@ -95,61 +97,13 @@ void specialization_context_add(SpecializationContext* ctx, const char* func_nam
     // Add to linked list
     spec->next = ctx->specializations;
     ctx->specializations = spec;
+    ctx->functions_processed++;
 
-    printf("  Specialization: %s -> %s\n", func_name, spec->specialized_name);
+    log_verbose_indent(2, "Specialization: %s -> %s", func_name, spec->specialized_name);
+    return spec;
 }
 
 // NEW: Create specialized AST for a function with specific parameter types
-void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node) {
-    if (!spec || !original_func_node || original_func_node->type != AST_FUNCTION_DECL) {
-        return;
-    }
-
-    // Clone the entire function node
-    ASTNode* cloned_func = ast_clone(original_func_node);
-
-    // Update function name to specialized name
-    free(cloned_func->func_decl.name);
-    cloned_func->func_decl.name = strdup(spec->specialized_name);
-
-    // Set parameter types in the cloned function
-    if (!cloned_func->func_decl.param_types) {
-        cloned_func->func_decl.param_types = (ValueType*)malloc(sizeof(ValueType) * spec->param_count);
-    }
-    memcpy(cloned_func->func_decl.param_types, spec->param_types,
-           sizeof(ValueType) * spec->param_count);
-
-    // Store the specialized body (just the function node, not the body specifically)
-    spec->specialized_body = cloned_func;
-
-    // Now perform type analysis on the cloned body with known parameter types
-    SymbolTable* temp_symbols = symbol_table_create(NULL);
-
-    // Insert parameters with their concrete types
-    for (int i = 0; i < spec->param_count; i++) {
-        symbol_table_insert(temp_symbols, cloned_func->func_decl.params[i],
-                          spec->param_types[i], NULL);
-    }
-
-    // Analyze the function body with concrete parameter types
-    // type_inference(cloned_func->func_decl.body, temp_symbols);
-
-    // Infer return type from the analyzed body
-    // spec->return_type = cloned_func->func_decl.return_type;
-
-    symbol_table_free(temp_symbols);
-
-    printf("  Specialized %s: analyzed with return type ", spec->specialized_name);
-    switch (spec->return_type) {
-        case TYPE_INT: printf("int\n"); break;
-        case TYPE_DOUBLE: printf("double\n"); break;
-        case TYPE_STRING: printf("string\n"); break;
-        case TYPE_BOOL: printf("bool\n"); break;
-        case TYPE_VOID: printf("void\n"); break;
-        default: printf("unknown\n"); break;
-    }
-}
-
 // Find a specific specialization
 FunctionSpecialization* specialization_context_find(SpecializationContext* ctx,
                                                     const char* func_name,
@@ -187,41 +141,43 @@ FunctionSpecialization* specialization_context_get_all(SpecializationContext* ct
     return NULL;
 }
 
+// Helper to get type name as string
+static const char* type_to_string(ValueType type) {
+    switch (type) {
+        case TYPE_INT: return "int";
+        case TYPE_DOUBLE: return "double";
+        case TYPE_STRING: return "string";
+        case TYPE_BOOL: return "bool";
+        case TYPE_VOID: return "void";
+        default: return "unknown";
+    }
+}
+
 // Print all specializations (for debugging)
 void specialization_context_print(SpecializationContext* ctx) {
     if (!ctx) return;
 
-    printf("\n=== Function Specializations ===\n");
+    log_verbose("Function Specializations:");
     FunctionSpecialization* current = ctx->specializations;
 
     while (current) {
-        printf("%s(", current->function_name);
+        // Build parameter type string
+        char param_str[256] = "";
+        int offset = 0;
         for (int i = 0; i < current->param_count; i++) {
-            if (i > 0) printf(", ");
-            switch (current->param_types[i]) {
-                case TYPE_INT: printf("int"); break;
-                case TYPE_DOUBLE: printf("double"); break;
-                case TYPE_STRING: printf("string"); break;
-                case TYPE_BOOL: printf("bool"); break;
-                default: printf("unknown"); break;
-            }
+            if (i > 0) offset += snprintf(param_str + offset, 256 - offset, ", ");
+            offset += snprintf(param_str + offset, 256 - offset, "%s",
+                             type_to_string(current->param_types[i]));
         }
-        printf(") -> ");
-        switch (current->return_type) {
-            case TYPE_INT: printf("int"); break;
-            case TYPE_DOUBLE: printf("double"); break;
-            case TYPE_STRING: printf("string"); break;
-            case TYPE_BOOL: printf("bool"); break;
-            case TYPE_VOID: printf("void"); break;
-            default: printf("unknown"); break;
-        }
-        printf(" [%s]", current->specialized_name);
-        if (current->specialized_body) {
-            printf(" ✓ body cloned");
-        }
-        printf("\n");
+
+        const char* body_status = current->specialized_body ? " ✓" : "";
+        log_verbose_indent(1, "%s(%s) -> %s [%s]%s",
+                          current->function_name,
+                          param_str,
+                          type_to_string(current->return_type),
+                          current->specialized_name,
+                          body_status);
 
         current = current->next;
     }
-    printf("================================\n\n");
 }
