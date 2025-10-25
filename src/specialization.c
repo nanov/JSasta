@@ -22,6 +22,17 @@ void specialization_context_free(SpecializationContext* ctx) {
         free(current->function_name);
         free(current->specialized_name);
         free(current->param_types);
+        
+        // Free TypeInfo for object parameters
+        if (current->param_type_info) {
+            for (int i = 0; i < current->param_count; i++) {
+                if (current->param_type_info[i]) {
+                    type_info_free(current->param_type_info[i]);
+                }
+            }
+            free(current->param_type_info);
+        }
+        
         if (current->specialized_body) {
             ast_free(current->specialized_body);  // Free cloned AST
         }
@@ -91,6 +102,10 @@ FunctionSpecialization* specialization_context_add(SpecializationContext* ctx, c
     spec->param_count = param_count;
     spec->param_types = (ValueType*)malloc(sizeof(ValueType) * param_count);
     memcpy(spec->param_types, param_types, sizeof(ValueType) * param_count);
+    
+    // Initialize TypeInfo array for object parameters (will be populated at call sites)
+    spec->param_type_info = (TypeInfo**)calloc(param_count, sizeof(TypeInfo*));
+    
     spec->return_type = TYPE_UNKNOWN; // Will be inferred later
     spec->specialized_body = NULL;    // Will be set during specialization pass
 

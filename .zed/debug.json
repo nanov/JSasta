@@ -10,8 +10,8 @@
 			"args": ["-j8"],
 			"cwd": "$ZED_WORKTREE_ROOT"
 		},
-		"program": "$ZED_WORKTREE_ROOT/build/jscompiler",
-		"args": ["./examples/full/rule110.js"],
+		"program": "$ZED_WORKTREE_ROOT/build/jsastac",
+		"args": ["./examples/math/test_add.js"],
 		"request": "launch",
 		"adapter": "CodeLLDB"
 	}

@@ -28,6 +28,7 @@ typedef enum {
     TOKEN_STRING,
     TOKEN_PLUS,
     TOKEN_MINUS,
+    TOKEN_PERCENT,
     TOKEN_PLUSPLUS,
     TOKEN_MINUSMINUS,
     TOKEN_RIGHT_SHIFT,
@@ -115,6 +116,22 @@ typedef enum {
     TYPE_OBJECT,    // Object with properties
 } ValueType;
 
+// Forward declare TypeInfo for recursive types
+typedef struct TypeInfo TypeInfo;
+
+// Type metadata for objects - stores structure information
+struct TypeInfo {
+    ValueType base_type;        // TYPE_OBJECT, TYPE_ARRAY_INT, etc.
+
+    // For objects: property metadata
+    char** property_names;      // Property names
+    TypeInfo** property_types;  // Property type info (allows nested objects)
+    int property_count;         // Number of properties
+
+    // For future: user-defined type name
+    char* type_name;            // e.g., "Person", "Rectangle", etc.
+};
+
 // Forward declarations for specialization
 typedef struct SpecializationContext SpecializationContext;
 typedef struct FunctionSpecialization FunctionSpecialization;
@@ -125,6 +142,7 @@ struct FunctionSpecialization {
     char* function_name;           // Original function name
     char* specialized_name;        // Specialized name (e.g., "add_int_int")
     ValueType* param_types;        // Parameter types for this specialization
+    TypeInfo** param_type_info;    // TypeInfo for object parameters (NULL for non-objects)
     int param_count;
     ValueType return_type;         // Return type for this specialization
     ASTNode* specialized_body;     // Cloned and type-analyzed AST for this specialization
@@ -156,6 +174,7 @@ struct ASTNode {
             char* name;
             ASTNode* init;
             bool is_const;
+            TypeInfo* type_hint;  // Optional type annotation (NULL if not specified, supports objects)
         } var_decl;
 
         struct {
@@ -165,6 +184,8 @@ struct ASTNode {
             ASTNode* body;
             ValueType* param_types;
             ValueType return_type;
+            TypeInfo** param_type_hints;  // Optional type annotations for params (NULL if not specified, supports objects)
+            TypeInfo* return_type_hint;   // Optional return type annotation (NULL if not specified, supports objects)
         } func_decl;
 
         struct {
@@ -289,6 +310,7 @@ struct ASTNode {
             char** keys;      // Property names
             ASTNode** values; // Property values
             int count;        // Number of properties
+            TypeInfo* type_info; // Type metadata (assigned during type inference)
         } object_literal;
     };
 };
@@ -332,6 +354,7 @@ typedef struct SymbolEntry {
     LLVMValueRef value;
     ASTNode* node;
     LLVMTypeRef llvm_type;  // For objects, stores the struct type
+    TypeInfo* type_info;     // For objects and complex types, stores metadata
     struct SymbolEntry* next;
 } SymbolEntry;
 
@@ -346,6 +369,13 @@ void symbol_table_insert(SymbolTable* table, const char* name, ValueType type, L
 void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, ValueType type, bool is_const, ASTNode* var_decl_node);
 void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node);
 SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name);
+
+// TypeInfo management
+TypeInfo* type_info_create(ValueType base_type);
+TypeInfo* type_info_create_from_object_literal(ASTNode* obj_literal);
+void type_info_free(TypeInfo* type_info);
+TypeInfo* type_info_clone(TypeInfo* type_info);
+int type_info_find_property(TypeInfo* type_info, const char* property_name);
 
 // Type analysis
 void type_analyze(ASTNode* node, SymbolTable* symbols);

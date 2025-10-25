@@ -205,6 +205,7 @@ Token* lexer_next_token(Lexer* lexer) {
                     return token_create(TOKEN_STAR_ASSIGN, "*=", line, col);
                 }
                 return token_create(TOKEN_STAR, "*", line, col);
+            case '%': return token_create(TOKEN_PERCENT, "%", line, col);
             case '/':
                 if (lexer->current == '=') {
                     lexer_advance(lexer);

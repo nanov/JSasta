@@ -5,6 +5,16 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+// Static counter for generating unique type names
+static int type_name_counter = 0;
+
+// Helper function to generate unique type name for objects
+static char* generate_type_name(void) {
+    char* name = (char*)malloc(32);
+    snprintf(name, 32, "Object_%d", type_name_counter++);
+    return name;
+}
+
 // Helper function to convert ValueType to string for error messages
 static const char* value_type_to_string(ValueType type) {
     switch (type) {
@@ -43,6 +53,10 @@ static ValueType infer_binary_result_type(const char* op, ValueType left, ValueT
 
     if (strcmp(op, "-") == 0 || strcmp(op, "*") == 0 || strcmp(op, "/") == 0) {
         if (left == TYPE_DOUBLE || right == TYPE_DOUBLE) return TYPE_DOUBLE;
+        if (left == TYPE_INT && right == TYPE_INT) return TYPE_INT;
+    }
+
+    if (strcmp(op, "%") == 0) {
         if (left == TYPE_INT && right == TYPE_INT) return TYPE_INT;
     }
 
@@ -133,10 +147,21 @@ static ValueType infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         }
         case AST_OBJECT_LITERAL:
             return TYPE_OBJECT;
-        case AST_MEMBER_ACCESS:
-            // For now, we can't infer the type of member access without more context
-            // This will be resolved during codegen based on the actual object structure
+        case AST_MEMBER_ACCESS: {
+            // Try to infer the property type using TypeInfo
+            ASTNode* obj = node->member_access.object;
+            if (obj->type == AST_IDENTIFIER) {
+                SymbolEntry* entry = symbol_table_lookup(scope, obj->identifier.name);
+                if (entry && entry->type_info) {
+                    // Use TypeInfo to find the property type
+                    int prop_index = type_info_find_property(entry->type_info, node->member_access.property);
+                    if (prop_index >= 0) {
+                        return entry->type_info->property_types[prop_index]->base_type;
+                    }
+                }
+            }
             return TYPE_UNKNOWN;
+        }
         case AST_CALL:
             // For now return unknown - will be resolved in later passes
             // Runtime functions will be checked if user function not found
@@ -251,9 +276,98 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols) {
         case AST_VAR_DECL:
             if (node->var_decl.init) {
                 infer_literal_types(node->var_decl.init, symbols);
-                node->value_type = node->var_decl.init->value_type;
+
+                // If type hint is provided, validate it matches the initialization value
+                if (node->var_decl.type_hint) {
+                    ValueType declared_type = node->var_decl.type_hint->base_type;
+                    ValueType inferred_type = node->var_decl.init->value_type;
+
+                    // Check for type mismatch
+                    if (inferred_type != TYPE_UNKNOWN && inferred_type != declared_type) {
+                        // Allow int -> double promotion
+                        if (!(declared_type == TYPE_DOUBLE && inferred_type == TYPE_INT)) {
+                            log_error_at(&node->loc,
+                                "Type mismatch: variable '%s' declared as %s but initialized with %s",
+                                node->var_decl.name,
+                                value_type_to_string(declared_type),
+                                value_type_to_string(inferred_type));
+                        }
+                    }
+
+                    // For objects, validate structure matches if both are objects
+                    if (declared_type == TYPE_OBJECT && inferred_type == TYPE_OBJECT &&
+                        node->var_decl.init->type == AST_OBJECT_LITERAL &&
+                        node->var_decl.init->object_literal.type_info) {
+
+                        TypeInfo* declared_info = node->var_decl.type_hint;
+                        TypeInfo* actual_info = node->var_decl.init->object_literal.type_info;
+
+                        // Validate property count matches
+                        if (declared_info->property_count != actual_info->property_count) {
+                            log_error_at(&node->loc,
+                                "Object property count mismatch: expected %d properties but got %d",
+                                declared_info->property_count, actual_info->property_count);
+                        }
+
+                        // Validate each property
+                        for (int i = 0; i < declared_info->property_count && i < actual_info->property_count; i++) {
+                            // Check property name
+                            if (strcmp(declared_info->property_names[i], actual_info->property_names[i]) != 0) {
+                                log_error_at(&node->loc,
+                                    "Property name mismatch: expected '%s' but got '%s'",
+                                    declared_info->property_names[i], actual_info->property_names[i]);
+                            }
+
+                            // Check property type
+                            ValueType declared_prop_type = declared_info->property_types[i]->base_type;
+                            ValueType actual_prop_type = actual_info->property_types[i]->base_type;
+                            if (declared_prop_type != actual_prop_type) {
+                                log_error_at(&node->loc,
+                                    "Property '%s' type mismatch: expected %s but got %s",
+                                    declared_info->property_names[i],
+                                    value_type_to_string(declared_prop_type),
+                                    value_type_to_string(actual_prop_type));
+                            }
+                        }
+                    }
+
+                    // Use the declared type
+                    node->value_type = declared_type;
+                } else {
+                    // No type hint - infer from initialization
+                    node->value_type = node->var_decl.init->value_type;
+                }
+
                 // Use the new function that stores the AST node (needed for object member access type inference)
                 symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->value_type, node->var_decl.is_const, node);
+
+                // Store TypeInfo in symbol table
+                SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
+                if (entry) {
+                    if (node->var_decl.type_hint && node->var_decl.type_hint->base_type == TYPE_OBJECT) {
+                        // Use the declared type info
+                        entry->type_info = type_info_clone(node->var_decl.type_hint);
+                        log_verbose("Variable '%s' assigned declared object type with %d properties",
+                                   node->var_decl.name, entry->type_info->property_count);
+                    } else if (node->var_decl.init->type == AST_OBJECT_LITERAL && node->var_decl.init->object_literal.type_info) {
+                        // Use inferred type info from literal
+                        entry->type_info = type_info_clone(node->var_decl.init->object_literal.type_info);
+                        log_verbose("Variable '%s' assigned inferred type '%s'",
+                                   node->var_decl.name, entry->type_info->type_name);
+                    }
+                }
+            } else if (node->var_decl.type_hint) {
+                // Variable declared with type but no initialization
+                node->value_type = node->var_decl.type_hint->base_type;
+                symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->value_type, node->var_decl.is_const, node);
+
+                // Store TypeInfo for objects
+                if (node->var_decl.type_hint->base_type == TYPE_OBJECT) {
+                    SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
+                    if (entry) {
+                        entry->type_info = type_info_clone(node->var_decl.type_hint);
+                    }
+                }
             }
             break;
 
@@ -297,23 +411,23 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols) {
             // Infer types for object and value
             infer_literal_types(node->member_assignment.object, symbols);
             infer_literal_types(node->member_assignment.value, symbols);
-            
+
             // Type check: verify the assigned value matches the property's original type
             ASTNode* obj = node->member_assignment.object;
             if (obj->type == AST_IDENTIFIER) {
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
                 if (entry && entry->node && entry->node->type == AST_VAR_DECL &&
                     entry->node->var_decl.init && entry->node->var_decl.init->type == AST_OBJECT_LITERAL) {
-                    
+
                     ASTNode* obj_lit = entry->node->var_decl.init;
                     // Find the property and check its type
                     for (int i = 0; i < obj_lit->object_literal.count; i++) {
                         if (strcmp(obj_lit->object_literal.keys[i], node->member_assignment.property) == 0) {
                             ValueType prop_type = obj_lit->object_literal.values[i]->value_type;
                             ValueType assigned_type = node->member_assignment.value->value_type;
-                            
+
                             if (prop_type != assigned_type) {
-                                log_error_at(&node->loc, 
+                                log_error_at(&node->loc,
                                     "Type mismatch: cannot assign %s to property '%s' of type %s",
                                     value_type_to_string(assigned_type),
                                     node->member_assignment.property,
@@ -324,7 +438,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols) {
                     }
                 }
             }
-            
+
             node->value_type = node->member_assignment.value->value_type;
             break;
         }
@@ -459,13 +573,24 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols) {
             node->value_type = node->index_assignment.value->value_type;
             break;
 
-        case AST_OBJECT_LITERAL:
+        case AST_OBJECT_LITERAL: {
             // Infer types of all property values
             for (int i = 0; i < node->object_literal.count; i++) {
                 infer_literal_types(node->object_literal.values[i], symbols);
             }
             node->value_type = TYPE_OBJECT;
+
+            // Create TypeInfo with unique type name
+            TypeInfo* type_info = type_info_create_from_object_literal(node);
+            type_info->type_name = generate_type_name();
+
+            // Store the TypeInfo in the AST node for later use
+            node->object_literal.type_info = type_info;
+
+            log_verbose("Created type '%s' for object literal with %d properties",
+                       type_info->type_name, type_info->property_count);
             break;
+        }
 
         case AST_MEMBER_ACCESS: {
             infer_literal_types(node->member_access.object, symbols);
@@ -518,14 +643,45 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
 
     SymbolTable* temp_symbols = symbol_table_create(symbols);
     ASTNode* ast = cloned_func->func_decl.body;
-    // Insert parameters with their concrete types
+    // Insert parameters with their concrete types AND TypeInfo for objects
     for (int i = 0; i < cloned_func->func_decl.param_count; i++) {
         symbol_table_insert(temp_symbols, cloned_func->func_decl.params[i], arg_types[i], NULL, false);
+
+        // If this is an object parameter with TypeInfo, add it to the symbol entry
+        if (arg_types[i] == TYPE_OBJECT && spec->param_type_info[i]) {
+            SymbolEntry* entry = symbol_table_lookup(temp_symbols, cloned_func->func_decl.params[i]);
+            if (entry) {
+                entry->type_info = type_info_clone(spec->param_type_info[i]);
+                log_verbose("  Parameter '%s' in temp_symbols assigned type '%s'",
+                           cloned_func->func_decl.params[i], entry->type_info->type_name);
+            }
+        }
     }
     infer_literal_types(ast, temp_symbols);
     iterative_specialization_discovery(ast, temp_symbols, ctx);
-    spec->return_type = infer_function_return_type_with_params(
-        ast, temp_symbols);
+
+    // Infer return type from function body
+    ValueType inferred_return = infer_function_return_type_with_params(ast, temp_symbols);
+
+    // If return type hint is provided, use it and validate
+    if (cloned_func->func_decl.return_type_hint) {
+        spec->return_type = cloned_func->func_decl.return_type_hint->base_type;
+
+        // Validate inferred return type matches the hint
+        if (inferred_return != TYPE_UNKNOWN && inferred_return != spec->return_type) {
+            // Allow int -> double promotion
+            if (!(spec->return_type == TYPE_DOUBLE && inferred_return == TYPE_INT)) {
+                log_error("Function '%s' declared to return %s but returns %s",
+                    spec->function_name,
+                    value_type_to_string(spec->return_type),
+                    value_type_to_string(inferred_return));
+            }
+        }
+    } else {
+        // No hint - use inferred type
+        spec->return_type = inferred_return;
+    }
+
     free(temp_symbols);
 
     spec->specialized_body = cloned_func;
@@ -582,7 +738,29 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, Specializati
                     bool all_known = true;
 
                     for (int i = 0; i < node->call.arg_count; i++) {
-                        arg_types[i] = node->call.args[i]->value_type;
+                        // Prefer function parameter type hints over inferred argument types
+                        if (func_decl->type == AST_FUNCTION_DECL &&
+                            i < func_decl->func_decl.param_count &&
+                            func_decl->func_decl.param_type_hints &&
+                            func_decl->func_decl.param_type_hints[i]) {
+                            arg_types[i] = func_decl->func_decl.param_type_hints[i]->base_type;
+
+                            // Validate argument matches declared type
+                            ValueType arg_value_type = node->call.args[i]->value_type;
+                            if (arg_value_type != TYPE_UNKNOWN && arg_value_type != arg_types[i]) {
+                                // Allow int -> double promotion
+                                if (!(arg_types[i] == TYPE_DOUBLE && arg_value_type == TYPE_INT)) {
+                                    log_error_at(&node->loc,
+                                        "Type mismatch in call to '%s': parameter %d expects %s but got %s",
+                                        actual_func_name, i + 1,
+                                        value_type_to_string(arg_types[i]),
+                                        value_type_to_string(arg_value_type));
+                                }
+                            }
+                        } else {
+                            arg_types[i] = node->call.args[i]->value_type;
+                        }
+
                         if (arg_types[i] == TYPE_UNKNOWN) {
                             all_known = false;
                         }
@@ -592,6 +770,27 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, Specializati
                     if (all_known && node->call.arg_count > 0) {
                         FunctionSpecialization* spec = specialization_context_add(ctx, actual_func_name, arg_types, node->call.arg_count);
                         if (spec) {
+                        	// Populate TypeInfo for object arguments BEFORE creating body
+                        	// (needed for return type inference)
+                        	for (int i = 0; i < node->call.arg_count; i++) {
+                        	    if (arg_types[i] == TYPE_OBJECT && !spec->param_type_info[i]) {
+                        	        ASTNode* arg_node = node->call.args[i];
+                        	        if (arg_node->type == AST_IDENTIFIER) {
+                        	            SymbolEntry* entry = symbol_table_lookup(symbols, arg_node->identifier.name);
+                        	            if (entry && entry->type_info) {
+                        	                spec->param_type_info[i] = type_info_clone(entry->type_info);
+                        	                log_verbose("Call site: Argument %d ('%s') assigned type '%s' for function '%s'",
+                        	                           i, arg_node->identifier.name, entry->type_info->type_name, actual_func_name);
+                        	            }
+                        	        } else if (arg_node->type == AST_OBJECT_LITERAL && arg_node->object_literal.type_info) {
+                        	            spec->param_type_info[i] = type_info_clone(arg_node->object_literal.type_info);
+                        	            log_verbose("Call site: Argument %d (object literal) assigned type '%s' for function '%s'",
+                        	                       i, arg_node->object_literal.type_info->type_name, actual_func_name);
+                        	        }
+                        	    }
+                        	}
+
+                        	// Now create the body with TypeInfo available
                         	specialization_create_body(spec, func_decl, arg_types, symbols, ctx);
                         }
                     }

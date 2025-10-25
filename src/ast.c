@@ -36,6 +36,9 @@ void ast_free(ASTNode* node) {
         case AST_VAR_DECL:
             free(node->var_decl.name);
             ast_free(node->var_decl.init);
+            if (node->var_decl.type_hint) {
+                type_info_free(node->var_decl.type_hint);
+            }
             break;
 
         case AST_FUNCTION_DECL:
@@ -45,6 +48,17 @@ void ast_free(ASTNode* node) {
             }
             free(node->func_decl.params);
             free(node->func_decl.param_types);
+            if (node->func_decl.param_type_hints) {
+                for (int i = 0; i < node->func_decl.param_count; i++) {
+                    if (node->func_decl.param_type_hints[i]) {
+                        type_info_free(node->func_decl.param_type_hints[i]);
+                    }
+                }
+                free(node->func_decl.param_type_hints);
+            }
+            if (node->func_decl.return_type_hint) {
+                type_info_free(node->func_decl.return_type_hint);
+            }
             ast_free(node->func_decl.body);
             break;
 
@@ -158,6 +172,9 @@ void ast_free(ASTNode* node) {
             }
             free(node->object_literal.keys);
             free(node->object_literal.values);
+            if (node->object_literal.type_info) {
+                type_info_free(node->object_literal.type_info);
+            }
             break;
 
         case AST_INDEX_ASSIGNMENT:
@@ -195,6 +212,7 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->var_decl.name = strdup(node->var_decl.name);
             clone->var_decl.init = ast_clone(node->var_decl.init);
             clone->var_decl.is_const = node->var_decl.is_const;
+            clone->var_decl.type_hint = node->var_decl.type_hint ? type_info_clone(node->var_decl.type_hint) : NULL;
             break;
 
         case AST_FUNCTION_DECL:
@@ -212,8 +230,21 @@ ASTNode* ast_clone(ASTNode* node) {
                        sizeof(ValueType) * node->func_decl.param_count);
             }
 
+            // Clone type hints
+            if (node->func_decl.param_type_hints) {
+                clone->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->func_decl.param_count);
+                for (int i = 0; i < node->func_decl.param_count; i++) {
+                    clone->func_decl.param_type_hints[i] = node->func_decl.param_type_hints[i] ? 
+                        type_info_clone(node->func_decl.param_type_hints[i]) : NULL;
+                }
+            } else {
+                clone->func_decl.param_type_hints = NULL;
+            }
+
             clone->func_decl.body = ast_clone(node->func_decl.body);
             clone->func_decl.return_type = node->func_decl.return_type;
+            clone->func_decl.return_type_hint = node->func_decl.return_type_hint ? 
+                type_info_clone(node->func_decl.return_type_hint) : NULL;
             break;
 
         case AST_RETURN:
@@ -337,6 +368,9 @@ ASTNode* ast_clone(ASTNode* node) {
                 clone->object_literal.keys[i] = strdup(node->object_literal.keys[i]);
                 clone->object_literal.values[i] = ast_clone(node->object_literal.values[i]);
             }
+            // Clone TypeInfo if it exists
+            clone->object_literal.type_info = node->object_literal.type_info ? 
+                type_info_clone(node->object_literal.type_info) : NULL;
             break;
 
         case AST_INDEX_ASSIGNMENT:

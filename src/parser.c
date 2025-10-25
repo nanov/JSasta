@@ -36,6 +36,106 @@ static bool parser_expect(Parser* parser, TokenType type) {
     return true;
 }
 
+// Helper to parse optional type annotation (: type or : { prop: type, ... })
+static TypeInfo* parse_type_annotation(Parser* parser) {
+    if (!parser_match(parser, TOKEN_COLON)) {
+        return NULL;  // No type annotation
+    }
+
+    parser_advance(parser);  // consume ':'
+
+    // Check if it's an object type (starts with '{')
+    if (parser_match(parser, TOKEN_LBRACE)) {
+        parser_advance(parser);  // consume '{'
+
+        TypeInfo* type_info = type_info_create(TYPE_OBJECT);
+
+        // Parse property types
+        int capacity = 4;
+        type_info->property_names = (char**)malloc(sizeof(char*) * capacity);
+        type_info->property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
+        type_info->property_count = 0;
+
+        if (!parser_match(parser, TOKEN_RBRACE)) {
+            do {
+                if (type_info->property_count >= capacity) {
+                    capacity *= 2;
+                    type_info->property_names = (char**)realloc(type_info->property_names, sizeof(char*) * capacity);
+                    type_info->property_types = (TypeInfo**)realloc(type_info->property_types, sizeof(TypeInfo*) * capacity);
+                }
+
+                // Parse property name
+                if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                    log_error("Expected property name in object type");
+                    type_info_free(type_info);
+                    return NULL;
+                }
+                type_info->property_names[type_info->property_count] = strdup(parser->current_token->value);
+                parser_advance(parser);
+
+                // Parse property type recursively
+                type_info->property_types[type_info->property_count] = parse_type_annotation(parser);
+                if (!type_info->property_types[type_info->property_count]) {
+                    log_error("Expected type annotation for property");
+                    type_info_free(type_info);
+                    return NULL;
+                }
+
+                type_info->property_count++;
+
+                // Check for comma
+                if (parser_match(parser, TOKEN_COMMA)) {
+                    parser_advance(parser);
+                    if (parser_match(parser, TOKEN_RBRACE)) {
+                        break;  // Trailing comma
+                    }
+                } else {
+                    break;
+                }
+            } while (true);
+        }
+
+        if (!parser_match(parser, TOKEN_RBRACE)) {
+            log_error("Expected '}' after object type");
+            type_info_free(type_info);
+            return NULL;
+        }
+        parser_advance(parser);  // consume '}'
+
+        return type_info;
+    }
+
+    // Parse primitive type
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        log_error("Expected type name after ':'");
+        return NULL;
+    }
+
+    const char* type_name = parser->current_token->value;
+    ValueType type = TYPE_UNKNOWN;
+
+    if (strcmp(type_name, "int") == 0) {
+        type = TYPE_INT;
+    } else if (strcmp(type_name, "double") == 0) {
+        type = TYPE_DOUBLE;
+    } else if (strcmp(type_name, "string") == 0) {
+        type = TYPE_STRING;
+    } else if (strcmp(type_name, "bool") == 0) {
+        type = TYPE_BOOL;
+    } else if (strcmp(type_name, "void") == 0) {
+        type = TYPE_VOID;
+    } else {
+        log_error("Unknown type '%s'", type_name);
+        return NULL;
+    }
+
+    parser_advance(parser);  // consume type name
+
+    // Create TypeInfo for primitive type
+    TypeInfo* type_info = type_info_create(type);
+    return type_info;
+}
+
 Parser* parser_create(const char* source, const char* filename) {
     Parser* parser = (Parser*)malloc(sizeof(Parser));
     parser->lexer = lexer_create(source);
@@ -113,6 +213,7 @@ static ASTNode* parse_primary(Parser* parser) {
         node->object_literal.keys = (char**)malloc(sizeof(char*) * capacity);
         node->object_literal.values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
         node->object_literal.count = 0;
+        node->object_literal.type_info = NULL; // Will be set during type inference
         node->value_type = TYPE_OBJECT;
 
         if (!parser_match(parser, TOKEN_RBRACE)) {
@@ -303,7 +404,7 @@ static ASTNode* parse_unary(Parser* parser) {
 static ASTNode* parse_multiplicative(Parser* parser) {
     ASTNode* node = parse_unary(parser);
 
-    while (parser_match(parser, TOKEN_STAR) || parser_match(parser, TOKEN_SLASH)) {
+    while (parser_match(parser, TOKEN_STAR) || parser_match(parser, TOKEN_SLASH) || parser_match(parser, TOKEN_PERCENT)) {
         ASTNode* op = AST_NODE(parser, AST_BINARY_OP);
         op->binary_op.op = strdup(parser->current_token->value);
         op->binary_op.left = node;
@@ -563,6 +664,9 @@ static ASTNode* parse_var_declaration(Parser* parser) {
     node->var_decl.name = strdup(parser->current_token->value);
     parser_advance(parser); // consume identifier
 
+    // Parse optional type annotation (e.g., var x: int = 5)
+    node->var_decl.type_hint = parse_type_annotation(parser);
+
     if (parser_match(parser, TOKEN_ASSIGN)) {
         parser_advance(parser);
         node->var_decl.init = parse_expression(parser);
@@ -599,6 +703,7 @@ static ASTNode* parse_function_declaration(Parser* parser) {
     int capacity = 4;
     node->func_decl.params = (char**)malloc(sizeof(char*) * capacity);
     node->func_decl.param_types = (ValueType*)malloc(sizeof(ValueType) * capacity);
+    node->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
     node->func_decl.param_count = 0;
 
     if (!parser_match(parser, TOKEN_RPAREN)) {
@@ -607,15 +712,23 @@ static ASTNode* parse_function_declaration(Parser* parser) {
                 capacity *= 2;
                 node->func_decl.params = (char**)realloc(node->func_decl.params, sizeof(char*) * capacity);
                 node->func_decl.param_types = (ValueType*)realloc(node->func_decl.param_types, sizeof(ValueType) * capacity);
+                node->func_decl.param_type_hints = (TypeInfo**)realloc(node->func_decl.param_type_hints, sizeof(TypeInfo*) * capacity);
             }
             node->func_decl.params[node->func_decl.param_count] = strdup(parser->current_token->value);
+            parser_expect(parser, TOKEN_IDENTIFIER);
+
+            // Parse optional type annotation for parameter (e.g., function add(a: int, b: int))
+            node->func_decl.param_type_hints[node->func_decl.param_count] = parse_type_annotation(parser);
             node->func_decl.param_types[node->func_decl.param_count] = TYPE_UNKNOWN;
             node->func_decl.param_count++;
-            parser_expect(parser, TOKEN_IDENTIFIER);
         } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
     }
 
     parser_expect(parser, TOKEN_RPAREN);
+
+    // Parse optional return type annotation (e.g., function add(...): int { })
+    node->func_decl.return_type_hint = parse_type_annotation(parser);
+
     node->func_decl.body = parse_block(parser);
     node->func_decl.return_type = TYPE_UNKNOWN;
 

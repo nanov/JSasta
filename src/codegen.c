@@ -204,6 +204,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_IDENTIFIER: {
             SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->identifier.name);
             if (entry && entry->value) {
+                // For objects, return the pointer directly (don't load)
+                // Objects are already stack-allocated structs, we pass by pointer
+                if (entry->type == TYPE_OBJECT) {
+                    return entry->value;
+                }
+                // For other types, load the value
                 return LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type),
                                      entry->value, node->identifier.name);
             }
@@ -215,6 +221,11 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef left = codegen_node(gen, node->binary_op.left);
             LLVMValueRef right = codegen_node(gen, node->binary_op.right);
 
+            if (strcmp(node->binary_op.op, "%") == 0 &&
+                (node->binary_op.left->value_type == TYPE_INT &&
+                 node->binary_op.right->value_type == TYPE_INT)) {
+                 return LLVMBuildSRem(gen->builder, left, right, "modtmp");
+            }
             if (strcmp(node->binary_op.op, ">>") == 0 &&
                 (node->binary_op.left->value_type == TYPE_INT ||
                  node->binary_op.right->value_type == TYPE_INT)) {
@@ -252,6 +263,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Arithmetic operations
             if (strcmp(node->binary_op.op, "+") == 0) {
+
                 if (node->value_type == TYPE_DOUBLE) {
                     // Convert int operands to double if needed
                     if (node->binary_op.left->value_type == TYPE_INT) {
@@ -538,7 +550,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 LLVMTypeRef struct_type = LLVMStructTypeInContext(gen->context, field_types, prop_count, 0);
                 free(field_types);
 
-                // Store in symbol table with both value and node
+                // TypeInfo should already exist from type inference - just clone it
+                TypeInfo* type_info = NULL;
+                if (obj_lit->object_literal.type_info) {
+                    type_info = type_info_clone(obj_lit->object_literal.type_info);
+                }
+
+                // Store in symbol table with both value and TypeInfo
                 SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
                 entry->name = strdup(node->var_decl.name);
                 entry->type = TYPE_OBJECT;
@@ -546,6 +564,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 entry->value = obj_ptr;          // LLVM pointer to the struct
                 entry->node = node;              // AST node for property lookup
                 entry->llvm_type = struct_type;  // Struct type for GEP
+                entry->type_info = type_info;    // Type metadata from type inference
                 entry->next = gen->symbols->head;
                 gen->symbols->head = entry;
 
@@ -786,6 +805,21 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     gen->specialization_ctx, func_name, arg_types, node->call.arg_count);
 
                 if (spec) {
+                    // Populate TypeInfo for object arguments
+                    for (int i = 0; i < node->call.arg_count; i++) {
+                        if (arg_types[i] == TYPE_OBJECT) {
+                            // Get TypeInfo from the argument
+                            ASTNode* arg_node = node->call.args[i];
+                            if (arg_node->type == AST_IDENTIFIER) {
+                                SymbolEntry* entry = symbol_table_lookup(gen->symbols, arg_node->identifier.name);
+                                if (entry && entry->type_info && !spec->param_type_info[i]) {
+                                    // Clone TypeInfo for the specialization
+                                    spec->param_type_info[i] = type_info_clone(entry->type_info);
+                                }
+                            }
+                        }
+                    }
+
                     // Use specialized version
                     func = LLVMGetNamedFunction(gen->module, spec->specialized_name);
                 }
@@ -825,6 +859,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_MEMBER_ACCESS: {
             // Get the object (should be a pointer to struct)
             LLVMValueRef obj_ptr = NULL;
+            TypeInfo* obj_type_info = NULL;
+            LLVMTypeRef struct_type = NULL;
             ASTNode* obj_node = node->member_access.object;
 
             // Handle identifier case - load from symbol table
@@ -832,6 +868,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 SymbolEntry* entry = symbol_table_lookup(gen->symbols, obj_node->identifier.name);
                 if (entry && entry->value) {
                     obj_ptr = entry->value;
+                    obj_type_info = entry->type_info;
+                    struct_type = entry->llvm_type;
                 } else {
                     log_error_at(&node->loc, "Undefined variable: %s", obj_node->identifier.name);
                     return NULL;
@@ -843,46 +881,30 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     log_error_at(&node->loc, "Failed to generate code for object");
                     return NULL;
                 }
-            }
 
-            // Find the property index in the original object literal
-            ASTNode* obj_literal = NULL;
-            if (obj_node->type == AST_IDENTIFIER) {
-                // Look up the variable to find its initialization
-                SymbolEntry* entry = symbol_table_lookup(gen->symbols, obj_node->identifier.name);
-                if (entry && entry->node && entry->node->type == AST_VAR_DECL) {
-                    obj_literal = entry->node->var_decl.init;
+                // For direct literals, create TypeInfo on the fly
+                if (obj_node->type == AST_OBJECT_LITERAL) {
+                    obj_type_info = type_info_create_from_object_literal(obj_node);
                 }
-            } else if (obj_node->type == AST_OBJECT_LITERAL) {
-                obj_literal = obj_node;
             }
 
-            if (!obj_literal || obj_literal->type != AST_OBJECT_LITERAL) {
-                log_error_at(&node->loc, "Cannot access property of non-object");
+            // Check that we have type info for the object
+            if (!obj_type_info || obj_type_info->base_type != TYPE_OBJECT) {
+                if (obj_node->type == AST_IDENTIFIER) {
+                    log_error_at(&node->loc, "Cannot access property of non-object (variable '%s' has no TypeInfo)",
+                                obj_node->identifier.name);
+                } else {
+                    log_error_at(&node->loc, "Cannot access property of non-object");
+                }
                 return NULL;
             }
 
-            // Find the property index
-            int prop_index = -1;
-            for (int i = 0; i < obj_literal->object_literal.count; i++) {
-                if (strcmp(obj_literal->object_literal.keys[i], node->member_access.property) == 0) {
-                    prop_index = i;
-                    break;
-                }
-            }
+            // Find the property index using TypeInfo
+            int prop_index = type_info_find_property(obj_type_info, node->member_access.property);
 
             if (prop_index == -1) {
                 log_error_at(&node->loc, "Property '%s' not found in object", node->member_access.property);
                 return NULL;
-            }
-
-            // Get the struct type from the symbol table (stored when object was created)
-            LLVMTypeRef struct_type = NULL;
-            if (obj_node->type == AST_IDENTIFIER) {
-                SymbolEntry* entry = symbol_table_lookup(gen->symbols, obj_node->identifier.name);
-                if (entry && entry->llvm_type) {
-                    struct_type = entry->llvm_type;
-                }
             }
 
             if (!struct_type) {
@@ -890,8 +912,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return NULL;
             }
 
-            // Get the type of this property
-            ValueType prop_type = obj_literal->object_literal.values[prop_index]->value_type;
+            // Get the type of this property from TypeInfo
+            ValueType prop_type = obj_type_info->property_types[prop_index]->base_type;
             LLVMTypeRef prop_llvm_type = get_llvm_type(gen, prop_type);
 
             // Use GEP to get pointer to the field
@@ -905,6 +927,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_MEMBER_ASSIGNMENT: {
             // Get the object (should be a pointer to struct)
             LLVMValueRef obj_ptr = NULL;
+            TypeInfo* obj_type_info = NULL;
+            LLVMTypeRef struct_type = NULL;
             ASTNode* obj_node = node->member_assignment.object;
 
             // Handle identifier case - load from symbol table
@@ -912,6 +936,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 SymbolEntry* entry = symbol_table_lookup(gen->symbols, obj_node->identifier.name);
                 if (entry && entry->value) {
                     obj_ptr = entry->value;
+                    obj_type_info = entry->type_info;
+                    struct_type = entry->llvm_type;
                 } else {
                     log_error_at(&node->loc, "Undefined variable: %s", obj_node->identifier.name);
                     return NULL;
@@ -923,46 +949,25 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     log_error_at(&node->loc, "Failed to generate code for object");
                     return NULL;
                 }
-            }
 
-            // Find the property index in the original object literal
-            ASTNode* obj_literal = NULL;
-            if (obj_node->type == AST_IDENTIFIER) {
-                // Look up the variable to find its initialization
-                SymbolEntry* entry = symbol_table_lookup(gen->symbols, obj_node->identifier.name);
-                if (entry && entry->node && entry->node->type == AST_VAR_DECL) {
-                    obj_literal = entry->node->var_decl.init;
+                // For direct literals, create TypeInfo on the fly
+                if (obj_node->type == AST_OBJECT_LITERAL) {
+                    obj_type_info = type_info_create_from_object_literal(obj_node);
                 }
-            } else if (obj_node->type == AST_OBJECT_LITERAL) {
-                obj_literal = obj_node;
             }
 
-            if (!obj_literal || obj_literal->type != AST_OBJECT_LITERAL) {
+            // Check that we have type info for the object
+            if (!obj_type_info || obj_type_info->base_type != TYPE_OBJECT) {
                 log_error_at(&node->loc, "Cannot access property of non-object");
                 return NULL;
             }
 
-            // Find the property index
-            int prop_index = -1;
-            for (int i = 0; i < obj_literal->object_literal.count; i++) {
-                if (strcmp(obj_literal->object_literal.keys[i], node->member_assignment.property) == 0) {
-                    prop_index = i;
-                    break;
-                }
-            }
+            // Find the property index using TypeInfo
+            int prop_index = type_info_find_property(obj_type_info, node->member_assignment.property);
 
             if (prop_index == -1) {
                 log_error_at(&node->loc, "Property '%s' not found in object", node->member_assignment.property);
                 return NULL;
-            }
-
-            // Get the struct type from the symbol table (stored when object was created)
-            LLVMTypeRef struct_type = NULL;
-            if (obj_node->type == AST_IDENTIFIER) {
-                SymbolEntry* entry = symbol_table_lookup(gen->symbols, obj_node->identifier.name);
-                if (entry && entry->llvm_type) {
-                    struct_type = entry->llvm_type;
-                }
             }
 
             if (!struct_type) {
@@ -1408,12 +1413,53 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
         LLVMValueRef param = LLVMGetParam(func, i);
         LLVMSetValueName(param, specialized_node->func_decl.params[i]);
 
-        LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, param_types[i],
-                                              specialized_node->func_decl.params[i]);
-        LLVMBuildStore(gen->builder, param, alloca);
+        LLVMValueRef param_value;
 
-        symbol_table_insert(gen->symbols, specialized_node->func_decl.params[i],
-                          spec->param_types[i], alloca, false);
+        // For objects, use the parameter pointer directly (it's already a pointer to the struct)
+        // For other types, allocate and store as usual
+        if (spec->param_types[i] == TYPE_OBJECT) {
+            param_value = param;  // Use pointer directly
+        } else {
+            LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, param_types[i],
+                                                  specialized_node->func_decl.params[i]);
+            LLVMBuildStore(gen->builder, param, alloca);
+            param_value = alloca;
+        }
+
+        // Create symbol entry with TypeInfo for objects
+        SymbolEntry* param_entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
+        param_entry->name = strdup(specialized_node->func_decl.params[i]);
+        param_entry->type = spec->param_types[i];
+        param_entry->is_const = false;
+        param_entry->value = param_value;
+        param_entry->node = NULL;
+        param_entry->llvm_type = NULL;
+
+        // For object parameters, copy TypeInfo from specialization
+        if (spec->param_types[i] == TYPE_OBJECT && spec->param_type_info[i]) {
+            param_entry->type_info = type_info_clone(spec->param_type_info[i]);
+
+            // Also recreate the LLVM struct type for this object
+            TypeInfo* obj_info = param_entry->type_info;
+            LLVMTypeRef* field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * obj_info->property_count);
+            for (int j = 0; j < obj_info->property_count; j++) {
+                field_types[j] = get_llvm_type(gen, obj_info->property_types[j]->base_type);
+            }
+            param_entry->llvm_type = LLVMStructTypeInContext(gen->context, field_types, obj_info->property_count, 0);
+            free(field_types);
+
+            log_verbose_indent(2, "Parameter '%s' has TypeInfo with %d properties",
+                             param_entry->name, obj_info->property_count);
+        } else if (spec->param_types[i] == TYPE_OBJECT) {
+            log_warning("Parameter '%s' is TYPE_OBJECT but has no TypeInfo!",
+                       specialized_node->func_decl.params[i]);
+            param_entry->type_info = NULL;
+        } else {
+            param_entry->type_info = NULL;
+        }
+
+        param_entry->next = gen->symbols->head;
+        gen->symbols->head = param_entry;
     }
 
     // Generate body from CLONED AST (this is the key change!)
@@ -1455,6 +1501,8 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
                 entry->type = TYPE_FUNCTION;
                 entry->is_const = false;
                 entry->node = stmt;
+                entry->llvm_type = NULL;
+                entry->type_info = NULL;
                 entry->next = gen->symbols->head;
                 gen->symbols->head = entry;
             }

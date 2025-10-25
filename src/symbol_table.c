@@ -26,6 +26,9 @@ void symbol_table_insert(SymbolTable* table, const char* name, ValueType type, L
     entry->type = type;
     entry->is_const = is_const;
     entry->value = value;
+    entry->node = NULL;
+    entry->llvm_type = NULL;
+    entry->type_info = NULL;
     entry->next = table->head;
     table->head = entry;
 }
@@ -38,6 +41,7 @@ void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, V
     entry->value = NULL;  // Will be set during codegen
     entry->node = var_decl_node;  // Store the AST node for looking up object properties
     entry->llvm_type = NULL;  // Will be set during codegen for objects
+    entry->type_info = NULL;  // Will be set during codegen for objects
     entry->next = table->head;
     table->head = entry;
 }
@@ -50,6 +54,7 @@ void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, 
     entry->value = NULL;
     entry->node = node;
     entry->llvm_type = NULL;
+    entry->type_info = NULL;
     entry->next = table->head;
     table->head = entry;
 }
