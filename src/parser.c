@@ -741,6 +741,65 @@ static ASTNode* parse_function_declaration(Parser* parser) {
     return node;
 }
 
+static ASTNode* parse_external_function_declaration(Parser* parser) {
+    parser_advance(parser); // skip 'external'
+
+    ASTNode* node = AST_NODE(parser, AST_EXTERNAL_FUNCTION_DECL);
+    node->external_func_decl.name = strdup(parser->current_token->value);
+    parser_expect(parser, TOKEN_IDENTIFIER);
+
+    parser_expect(parser, TOKEN_LPAREN);
+
+    int capacity = 4;
+    node->external_func_decl.params = (char**)malloc(sizeof(char*) * capacity);
+    node->external_func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
+    node->external_func_decl.param_count = 0;
+
+    if (!parser_match(parser, TOKEN_RPAREN)) {
+        do {
+            if (node->external_func_decl.param_count >= capacity) {
+                capacity *= 2;
+                node->external_func_decl.params = (char**)realloc(node->external_func_decl.params, sizeof(char*) * capacity);
+                node->external_func_decl.param_type_hints = (TypeInfo**)realloc(node->external_func_decl.param_type_hints, sizeof(TypeInfo*) * capacity);
+            }
+            node->external_func_decl.params[node->external_func_decl.param_count] = strdup(parser->current_token->value);
+            parser_expect(parser, TOKEN_IDENTIFIER);
+
+            // Parse REQUIRED type annotation for parameter
+            TypeInfo* param_type = parse_type_annotation(parser);
+            if (!param_type) {
+                SourceLocation loc = {
+                    .filename = parser->filename,
+                    .line = parser->current_token->line,
+                    .column = parser->current_token->column
+                };
+                log_error_at(&loc, "External function parameters must have type annotations");
+                return node;
+            }
+            node->external_func_decl.param_type_hints[node->external_func_decl.param_count] = param_type;
+            node->external_func_decl.param_count++;
+        } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+    }
+
+    parser_expect(parser, TOKEN_RPAREN);
+
+    // Parse REQUIRED return type annotation
+    node->external_func_decl.return_type_hint = parse_type_annotation(parser);
+    if (!node->external_func_decl.return_type_hint) {
+        SourceLocation loc = {
+            .filename = parser->filename,
+            .line = parser->current_token->line,
+            .column = parser->current_token->column
+        };
+        log_error_at(&loc, "External function must have return type annotation");
+        return node;
+    }
+
+    parser_expect(parser, TOKEN_SEMICOLON);
+
+    return node;
+}
+
 static ASTNode* parse_return_statement(Parser* parser) {
     parser_advance(parser); // skip 'return'
 
@@ -834,6 +893,8 @@ static ASTNode* parse_statement(Parser* parser) {
         return parse_var_declaration(parser);
     } else if (parser_match(parser, TOKEN_FUNCTION)) {
         return parse_function_declaration(parser);
+    } else if (parser_match(parser, TOKEN_EXTERNAL)) {
+        return parse_external_function_declaration(parser);
     } else if (parser_match(parser, TOKEN_RETURN)) {
         return parse_return_statement(parser);
     } else if (parser_match(parser, TOKEN_IF)) {

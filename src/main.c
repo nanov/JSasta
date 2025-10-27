@@ -57,8 +57,8 @@ void compile_file(const char* input_file, const char* output_file) {
     type_inference_with_context(ast, symbols, type_ctx);
 
     // Print specializations if any
-    if (ast->specialization_ctx) {
-        specialization_context_print(ast->specialization_ctx);
+    if (ast->type_ctx) {
+        specialization_context_print(ast->type_ctx);
     }
 
     // Disabled - rework to actually check types

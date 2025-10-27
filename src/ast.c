@@ -36,9 +36,7 @@ void ast_free(ASTNode* node) {
         case AST_VAR_DECL:
             free(node->var_decl.name);
             ast_free(node->var_decl.init);
-            if (node->var_decl.type_hint) {
-                type_info_free(node->var_decl.type_hint);
-            }
+            // Note: type_hint is a reference to TypeContext, don't free it
             break;
 
         case AST_FUNCTION_DECL:
@@ -47,18 +45,23 @@ void ast_free(ASTNode* node) {
                 free(node->func_decl.params[i]);
             }
             free(node->func_decl.params);
+            // Note: param_type_hints are references to TypeContext, don't free the TypeInfo objects
             if (node->func_decl.param_type_hints) {
-                for (int i = 0; i < node->func_decl.param_count; i++) {
-                    if (node->func_decl.param_type_hints[i]) {
-                        type_info_free(node->func_decl.param_type_hints[i]);
-                    }
-                }
                 free(node->func_decl.param_type_hints);
             }
-            if (node->func_decl.return_type_hint) {
-                type_info_free(node->func_decl.return_type_hint);
-            }
+            // Note: return_type_hint is a reference to TypeContext, don't free it
             ast_free(node->func_decl.body);
+            break;
+
+        case AST_EXTERNAL_FUNCTION_DECL:
+            free(node->external_func_decl.name);
+            for (int i = 0; i < node->external_func_decl.param_count; i++) {
+                free(node->external_func_decl.params[i]);
+            }
+            free(node->external_func_decl.params);
+            // Note: param_type_hints are references to TypeContext, don't free the TypeInfo objects
+            free(node->external_func_decl.param_type_hints);
+            // Note: return_type_hint is a reference to TypeContext, don't free it
             break;
 
         case AST_RETURN:
@@ -193,7 +196,7 @@ ASTNode* ast_clone(ASTNode* node) {
     ASTNode* clone = (ASTNode*)calloc(1, sizeof(ASTNode));
     clone->type = node->type;
     clone->type_info = node->type_info ? type_info_clone(node->type_info) : NULL;
-    clone->specialization_ctx = NULL; // Don't clone specialization context
+    clone->type_ctx = NULL; // Don't clone type context
 
     switch (node->type) {
         case AST_PROGRAM:
@@ -209,7 +212,8 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->var_decl.name = strdup(node->var_decl.name);
             clone->var_decl.init = ast_clone(node->var_decl.init);
             clone->var_decl.is_const = node->var_decl.is_const;
-            clone->var_decl.type_hint = node->var_decl.type_hint ? type_info_clone(node->var_decl.type_hint) : NULL;
+            // Copy type hint reference (don't clone - it's managed by TypeContext)
+            clone->var_decl.type_hint = node->var_decl.type_hint;
             break;
 
         case AST_FUNCTION_DECL:
@@ -221,20 +225,36 @@ ASTNode* ast_clone(ASTNode* node) {
                 clone->func_decl.params[i] = strdup(node->func_decl.params[i]);
             }
 
-            // Clone type hints
+            // Copy type hint references (don't clone - they're managed by TypeContext)
             if (node->func_decl.param_type_hints) {
                 clone->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->func_decl.param_count);
                 for (int i = 0; i < node->func_decl.param_count; i++) {
-                    clone->func_decl.param_type_hints[i] = node->func_decl.param_type_hints[i] ? 
-                        type_info_clone(node->func_decl.param_type_hints[i]) : NULL;
+                    clone->func_decl.param_type_hints[i] = node->func_decl.param_type_hints[i];
                 }
             } else {
                 clone->func_decl.param_type_hints = NULL;
             }
 
             clone->func_decl.body = ast_clone(node->func_decl.body);
-            clone->func_decl.return_type_hint = node->func_decl.return_type_hint ? 
-                type_info_clone(node->func_decl.return_type_hint) : NULL;
+            clone->func_decl.return_type_hint = node->func_decl.return_type_hint;
+            break;
+
+        case AST_EXTERNAL_FUNCTION_DECL:
+            clone->external_func_decl.name = strdup(node->external_func_decl.name);
+            clone->external_func_decl.param_count = node->external_func_decl.param_count;
+
+            clone->external_func_decl.params = (char**)malloc(sizeof(char*) * node->external_func_decl.param_count);
+            for (int i = 0; i < node->external_func_decl.param_count; i++) {
+                clone->external_func_decl.params[i] = strdup(node->external_func_decl.params[i]);
+            }
+
+            // Copy type hint references (don't clone - they're managed by TypeContext)
+            clone->external_func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->external_func_decl.param_count);
+            for (int i = 0; i < node->external_func_decl.param_count; i++) {
+                clone->external_func_decl.param_type_hints[i] = node->external_func_decl.param_type_hints[i];
+            }
+
+            clone->external_func_decl.return_type_hint = node->external_func_decl.return_type_hint;
             break;
 
         case AST_RETURN:

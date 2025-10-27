@@ -48,8 +48,7 @@ CodeGen* codegen_create(const char* module_name) {
     gen->symbols = symbol_table_create(NULL);
     gen->current_function = NULL;
     gen->runtime_functions = NULL;
-    gen->specialization_ctx = NULL;  // Will be set during generation
-    gen->type_ctx = NULL;             // Will be set during generation
+    gen->type_ctx = NULL;             // Will be set during generation (contains types and specializations)
 
     // Initialize runtime library
     runtime_init(gen);
@@ -311,12 +310,26 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildSub(gen->builder, left, right, "subtmp");
             } else if (strcmp(node->binary_op.op, "*") == 0) {
-                if (type_info_is_double(node->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
+                // Check if result should be double (from type_info or from LLVM operand types)
+                bool is_double_op = type_info_is_double(node->type_info) ||
+                                    type_info_is_double(node->binary_op.left->type_info) ||
+                                    type_info_is_double(node->binary_op.right->type_info);
+                
+                // If type_info not set, check LLVM types
+                if (!is_double_op && (!node->type_info || type_info_is_unknown(node->type_info))) {
+                    LLVMTypeKind left_kind = LLVMGetTypeKind(LLVMTypeOf(left));
+                    LLVMTypeKind right_kind = LLVMGetTypeKind(LLVMTypeOf(right));
+                    is_double_op = (left_kind == LLVMDoubleTypeKind || right_kind == LLVMDoubleTypeKind);
+                }
+                
+                if (is_double_op) {
+                    if (type_info_is_int(node->binary_op.left->type_info) ||
+                        LLVMGetTypeKind(LLVMTypeOf(left)) == LLVMIntegerTypeKind) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.right->type_info) ||
+                        LLVMGetTypeKind(LLVMTypeOf(right)) == LLVMIntegerTypeKind) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -324,12 +337,26 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildMul(gen->builder, left, right, "multmp");
             } else if (strcmp(node->binary_op.op, "/") == 0) {
-                if (type_info_is_double(node->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
+                // Check if result should be double (from type_info or from LLVM operand types)
+                bool is_double_op = type_info_is_double(node->type_info) ||
+                                    type_info_is_double(node->binary_op.left->type_info) ||
+                                    type_info_is_double(node->binary_op.right->type_info);
+                
+                // If type_info not set, check LLVM types
+                if (!is_double_op && (!node->type_info || type_info_is_unknown(node->type_info))) {
+                    LLVMTypeKind left_kind = LLVMGetTypeKind(LLVMTypeOf(left));
+                    LLVMTypeKind right_kind = LLVMGetTypeKind(LLVMTypeOf(right));
+                    is_double_op = (left_kind == LLVMDoubleTypeKind || right_kind == LLVMDoubleTypeKind);
+                }
+                
+                if (is_double_op) {
+                    if (type_info_is_int(node->binary_op.left->type_info) ||
+                        LLVMGetTypeKind(LLVMTypeOf(left)) == LLVMIntegerTypeKind) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.right->type_info) ||
+                        LLVMGetTypeKind(LLVMTypeOf(right)) == LLVMIntegerTypeKind) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -537,19 +564,27 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 const char* func_name = node->var_decl.init->identifier.name;
                 SymbolEntry* func_entry = symbol_table_lookup(gen->symbols, func_name);
 
-                if (!func_entry || !func_entry->node || func_entry->node->type != AST_FUNCTION_DECL) {
-                    log_error_at(&node->loc, "Cannot assign non-function to function variable: %s", func_name);
+                if (!func_entry) {
+                    log_error_at(&node->loc, "Function not found: %s", func_name);
+                    return NULL;
+                }
+                if (!type_info_is_function_ctx(func_entry->type_info)) {
+                    log_error_at(&node->loc, "Not a function type: %s", func_name);
+                    return NULL;
+                }
+                if (!func_entry->value) {
+                    log_error_at(&node->loc, "Function has no value reference: %s", func_name);
                     return NULL;
                 }
 
-                // Store the function declaration node in the variable's symbol entry
+                // Store the function reference in the variable's symbol entry
                 SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
                 entry->name = strdup(node->var_decl.name);
-                entry->type_info = NULL;  // Functions don't have type_info yet
+                entry->type_info = func_entry->type_info;  // Copy function type
                 entry->is_const = node->var_decl.is_const;
-                entry->node = func_entry->node;  // Store the func_decl node
+                entry->node = func_entry->node;  // May be NULL
                 entry->llvm_type = NULL;
-                entry->value = NULL;
+                entry->value = func_entry->value;  // Copy LLVM function reference
                 entry->next = gen->symbols->head;
                 gen->symbols->head = entry;
                 return NULL;
@@ -834,10 +869,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Check if this is a function variable (e.g., var a = print; a("text");)
             SymbolEntry* callee_entry = symbol_table_lookup(gen->symbols, func_name);
-            if (callee_entry && type_info_is_function_ctx(callee_entry->type_info) && callee_entry->node &&
-                callee_entry->node->type == AST_FUNCTION_DECL) {
-                // It's a function variable - use the actual function name from the func_decl
-                func_name = callee_entry->node->func_decl.name;
+            if (callee_entry && type_info_is_function_ctx(callee_entry->type_info)) {
+                // Get function declaration node from TypeInfo
+                ASTNode* func_decl_node = callee_entry->type_info->data.function.func_decl_node;
+                if (func_decl_node && func_decl_node->type == AST_FUNCTION_DECL) {
+                    // It's a function variable - use the actual function name from the func_decl
+                    func_name = func_decl_node->func_decl.name;
+                    log_verbose("Function variable '%s' resolves to '%s'", 
+                               node->call.callee->identifier.name, func_name);
+                } else if (func_decl_node && func_decl_node->type == AST_EXTERNAL_FUNCTION_DECL) {
+                    // External function variable - use the actual function name
+                    func_name = func_decl_node->external_func_decl.name;
+                    log_verbose("External function variable '%s' resolves to '%s'", 
+                               node->call.callee->identifier.name, func_name);
+                } else {
+                    log_verbose("Function variable '%s' has no func_decl_node in TypeInfo", 
+                               node->call.callee->identifier.name);
+                }
             }
 
             // Generate arguments first to get their types
@@ -851,9 +899,9 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Try to find specialized version
             LLVMValueRef func = NULL;
-            if (gen->specialization_ctx && node->call.arg_count > 0) {
+            if (gen->type_ctx && node->call.arg_count > 0) {
                 FunctionSpecialization* spec = specialization_context_find_by_type_info(
-                    gen->specialization_ctx, func_name, arg_type_infos, node->call.arg_count);
+                    gen->type_ctx, func_name, arg_type_infos, node->call.arg_count);
 
                 if (spec) {
                     // Populate TypeInfo for object arguments if not already set
@@ -1419,15 +1467,25 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
     }
 }
 
-// Helper: Generate a specialstatic
-LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* spec) {
-    // CRITICAL: Use the cloned AST from spec->specialized_body, not the original!
+// Helper: Generate a specialized function
+static LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* spec, TypeInfo* func_type) {
+    // CRITICAL: Use the cloned body from spec->specialized_body, not the original!
     if (!spec->specialized_body) {
         log_error("No specialized body for %s", spec->specialized_name);
         return NULL;
     }
 
-    ASTNode* specialized_node = spec->specialized_body;
+    ASTNode* body = spec->specialized_body;
+    
+    // Get parameter names from the original function declaration
+    ASTNode* func_decl = func_type->data.function.func_decl_node;
+    if (!func_decl) {
+        log_error("No function declaration node for %s", spec->specialized_name);
+        return NULL;
+    }
+    char** param_names = (func_decl->type == AST_EXTERNAL_FUNCTION_DECL) ? 
+                         func_decl->external_func_decl.params : 
+                         func_decl->func_decl.params;
 
     // Get the already-declared function
     LLVMValueRef func = LLVMGetNamedFunction(gen->module, spec->specialized_name);
@@ -1454,10 +1512,10 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
     SymbolTable* prev_scope = gen->symbols;
     gen->symbols = func_scope;
 
-    // Store parameters with specialized types from the CLONED AST
+    // Store parameters with specialized types
     for (int i = 0; i < spec->param_count; i++) {
         LLVMValueRef param = LLVMGetParam(func, i);
-        LLVMSetValueName(param, specialized_node->func_decl.params[i]);
+        LLVMSetValueName(param, param_names[i]);
 
         LLVMValueRef param_value;
 
@@ -1467,14 +1525,14 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
             param_value = param;  // Use pointer directly
         } else {
             LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, param_types[i],
-                                                  specialized_node->func_decl.params[i]);
+                                                  param_names[i]);
             LLVMBuildStore(gen->builder, param, alloca);
             param_value = alloca;
         }
 
         // Create symbol entry with TypeInfo for objects
         SymbolEntry* param_entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-        param_entry->name = strdup(specialized_node->func_decl.params[i]);
+        param_entry->name = strdup(param_names[i]);
         param_entry->type_info = spec->param_type_info[i];
         param_entry->is_const = false;
         param_entry->value = param_value;
@@ -1490,14 +1548,14 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
             
             if (!param_entry->llvm_type) {
                 log_warning("Could not find pre-generated struct type for parameter '%s'",
-                           specialized_node->func_decl.params[i]);
+                           param_names[i]);
             } else {
                 log_verbose_indent(2, "Parameter '%s' has TypeInfo with %d properties",
                                  param_entry->name, param_entry->type_info->data.object.property_count);
             }
         } else if (type_info_is_object(spec->param_type_info[i])) {
             log_warning("Parameter '%s' is TYPE_OBJECT but has no TypeInfo!",
-                       specialized_node->func_decl.params[i]);
+                       param_names[i]);
             param_entry->type_info = NULL;
         } else {
             param_entry->type_info = NULL;
@@ -1507,10 +1565,9 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
         gen->symbols->head = param_entry;
     }
 
-    // Generate body from CLONED AST (this is the key change!)
-    // The cloned body has correct type annotations from type analysis
+    // Generate body from cloned and type-analyzed AST
     log_verbose_indent(2, "Generating function body for %s", spec->specialized_name);
-    codegen_node(gen, specialized_node->func_decl.body);
+    codegen_node(gen, body);
     log_verbose_indent(2, "Completed function body for %s", spec->specialized_name);
 
     // Add return if missing
@@ -1558,8 +1615,8 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
     return NULL;
 }
 
-// Pre-generate LLVM struct types for all object types in the type table
-static void codegen_pregenerate_object_types(CodeGen* gen) {
+// Initialize all types from TypeContext: pre-generate object structs and declare function prototypes
+static void codegen_initialize_types(CodeGen* gen) {
     if (!gen->type_ctx) {
         return;
     }
@@ -1568,8 +1625,7 @@ static void codegen_pregenerate_object_types(CodeGen* gen) {
     while (entry) {
         TypeInfo* type = entry->type;
         
-        // Only process object types
-        if (type && type->kind == TYPE_KIND_OBJECT && type->data.object.property_count > 0) {
+        if (type->kind == TYPE_KIND_OBJECT && type->data.object.property_count > 0) {
             // Skip if already generated
             if (entry->llvm_type) {
                 entry = entry->next;
@@ -1593,6 +1649,42 @@ static void codegen_pregenerate_object_types(CodeGen* gen) {
                        type->type_name, type->data.object.property_count);
             
             free(field_types);
+        } else if (type->kind == TYPE_KIND_FUNCTION) {
+            // Register function in codegen symbol table
+            SymbolEntry* sym_entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
+            sym_entry->name = strdup(type->type_name);
+            sym_entry->type_info = type;
+            sym_entry->is_const = false;
+            sym_entry->value = NULL;
+            sym_entry->node = NULL;  // Not needed for function references
+            sym_entry->llvm_type = NULL;
+            sym_entry->next = gen->symbols->head;
+            gen->symbols->head = sym_entry;
+            
+            // Declare all function specializations (includes fully typed and external)
+            FunctionSpecialization* spec = type->data.function.specializations;
+            
+            while (spec) {
+                // Create parameter types
+                LLVMTypeRef* param_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * spec->param_count);
+                for (int j = 0; j < spec->param_count; j++) {
+                    param_types[j] = get_llvm_type(gen, spec->param_type_info[j]);
+                }
+
+                // Create return type
+                LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type_info);
+
+                // Create function type
+                LLVMTypeRef llvm_func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, 0);
+
+                // Declare function (just add to module, don't generate body yet)
+                LLVMAddFunction(gen->module, spec->specialized_name, llvm_func_type);
+
+                log_verbose_indent(1, "Declared: %s with %d params", spec->specialized_name, spec->param_count);
+
+                free(param_types);
+                spec = spec->next;
+            }
         }
         
         entry = entry->next;
@@ -1600,76 +1692,12 @@ static void codegen_pregenerate_object_types(CodeGen* gen) {
 }
 
 void codegen_generate(CodeGen* gen, ASTNode* ast) {
-    // Store specialization context from type inference
-    gen->specialization_ctx = ast->specialization_ctx;
+    // Store type context from type inference (contains types and specializations)
+    gen->type_ctx = ast->type_ctx;
 
-    // PASS 0: Pre-generate LLVM struct types for all object types
-    codegen_pregenerate_object_types(gen);
-
-    // PASS 1: Register all functions in symbol table for function references
-    if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
-        for (int i = 0; i < ast->program.count; i++) {
-            ASTNode* stmt = ast->program.statements[i];
-            if (stmt->type == AST_FUNCTION_DECL) {
-                // Register function in codegen symbol table
-                SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-                entry->name = strdup(stmt->func_decl.name);
-                entry->type_info = NULL;  // Functions don't have type_info yet
-                entry->is_const = false;
-                entry->value = NULL;
-                entry->node = stmt;
-                entry->llvm_type = NULL;
-                entry->next = gen->symbols->head;
-                gen->symbols->head = entry;
-            }
-        }
-    }
-
-    // PASS 2: Declare all function prototypes first
+    // PASS 0: Initialize all types - objects and function prototypes
     // This allows forward references and recursive calls
-    if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
-        for (int i = 0; i < ast->program.count; i++) {
-            ASTNode* stmt = ast->program.statements[i];
-
-            if (stmt->type == AST_FUNCTION_DECL && gen->specialization_ctx) {
-                // Iterate through ALL specializations and declare matching ones
-                FunctionSpecialization* spec = gen->specialization_ctx->specializations;
-
-                while (spec) {
-                    // Check if this specialization is for our function
-                    if (strcmp(spec->function_name, stmt->func_decl.name) == 0) {
-                        // Verify we have a specialized body
-                        if (!spec->specialized_body) {
-                            log_warning("Specialization %s has no body", spec->specialized_name);
-                            spec = spec->next;
-                            continue;
-                        }
-
-                        // Create parameter types
-                        LLVMTypeRef* param_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * spec->param_count);
-                        for (int j = 0; j < spec->param_count; j++) {
-                            param_types[j] = get_llvm_type(gen, spec->param_type_info[j]);
-                        }
-
-                        // Create return type
-                        LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type_info);
-
-                        // Create function type
-                        LLVMTypeRef func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, 0);
-
-                        // Declare function (just add to module, don't generate body yet)
-                        LLVMAddFunction(gen->module, spec->specialized_name, func_type);
-
-                        log_verbose_indent(1, "Declared: %s with %d params", spec->specialized_name, spec->param_count);
-
-                        free(param_types);
-                    }
-
-                    spec = spec->next;
-                }
-            }
-        }
-    }
+    codegen_initialize_types(gen);
 
     // Create main function
     LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), NULL, 0, 0);
@@ -1679,50 +1707,63 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
 
     gen->current_function = main_func;
 
-    // PASS 3: Generate function bodies
+    // PASS 1: Generate function bodies
+    if (gen->type_ctx) {
+        TypeEntry* entry_iter = gen->type_ctx->type_table;
+        while (entry_iter) {
+            if (entry_iter->type->kind == TYPE_KIND_FUNCTION) {
+                TypeInfo* func_type = entry_iter->type;
+                FunctionSpecialization* spec = func_type->data.function.specializations;
+                LLVMValueRef first_func_ref = NULL;
+
+                while (spec) {
+                    // Skip external functions (no body)
+                    if (!spec->specialized_body) {
+                        log_verbose_indent(1, "Skipping external: %s", spec->specialized_name);
+                        spec = spec->next;
+                        continue;
+                    }
+
+                    log_verbose_indent(1, "Generating: %s", spec->specialized_name);
+
+                    // Generate the specialized function body
+                    codegen_specialized_function(gen, spec, func_type);
+
+                    // Store the first specialization reference
+                    if (!first_func_ref) {
+                        first_func_ref = LLVMGetNamedFunction(gen->module, spec->specialized_name);
+                    }
+
+                    // Restore builder to main
+                    LLVMPositionBuilderAtEnd(gen->builder, entry);
+
+                    spec = spec->next;
+                }
+                
+                // Update the symbol table entry with the function reference
+                if (first_func_ref) {
+                    SymbolEntry* sym_entry = symbol_table_lookup(gen->symbols, func_type->type_name);
+                    if (sym_entry) {
+                        sym_entry->value = first_func_ref;
+                    }
+                }
+            }
+            entry_iter = entry_iter->next;
+        }
+    }
+    
+    // Generate non-function statements in main
     if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
         for (int i = 0; i < ast->program.count; i++) {
             ASTNode* stmt = ast->program.statements[i];
 
-            // For function declarations, generate specialized versions
-            if (stmt->type == AST_FUNCTION_DECL && gen->specialization_ctx) {
-                // Iterate through ALL specializations and generate matching ones
-                FunctionSpecialization* spec = gen->specialization_ctx->specializations;
-                bool found_any = false;
-
-                while (spec) {
-                    // Check if this specialization is for our function
-                    if (strcmp(spec->function_name, stmt->func_decl.name) == 0) {
-                        found_any = true;
-                        log_verbose_indent(1, "Generating: %s (using cloned AST)", spec->specialized_name);
-
-                        // CRITICAL CHANGE: Pass only spec, not the original node
-                        // The function will use spec->specialized_body instead
-                        codegen_specialized_function(gen, spec);
-
-                        // Restore builder to main
-                        LLVMPositionBuilderAtEnd(gen->builder, entry);
-                    }
-
-                    spec = spec->next;
-                }
-
-                if (!found_any) {
-                    // No specializations, generate default version
-                    codegen_node(gen, stmt);
-                    if (stmt->type == AST_FUNCTION_DECL) {
-                        LLVMPositionBuilderAtEnd(gen->builder, entry);
-                    }
-                }
-            } else {
-                // Generate the statement normally
-                codegen_node(gen, stmt);
-
-                // After function declarations, ensure we're back in main
-                if (stmt->type == AST_FUNCTION_DECL) {
-                    LLVMPositionBuilderAtEnd(gen->builder, entry);
-                }
+            // Skip function declarations (already handled)
+            if (stmt->type == AST_FUNCTION_DECL) {
+                continue;
             }
+
+            // Generate the statement normally
+            codegen_node(gen, stmt);
 
             // Stop if current block is already terminated with a return
             LLVMBasicBlockRef current = LLVMGetInsertBlock(gen->builder);

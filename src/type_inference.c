@@ -15,13 +15,13 @@ static char* generate_type_name(void) {
     return name;
 }
 // Forward declarations
-static void collect_function_signatures(ASTNode* node, SymbolTable* symbols);
+static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx);
 static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx);
-static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, SpecializationContext* ctx);
-static void create_specializations(ASTNode* node, SymbolTable* symbols, SpecializationContext* ctx);
-static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, SpecializationContext* ctx);
+static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext* ctx);
+static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx);
+static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx);
 static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTable* scope);
-static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, SpecializationContext* ctx);
+static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
 
 // Helper: Infer type from binary operation
@@ -222,21 +222,111 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
 }
 
 // Pass 1: Collect function signatures
-static void collect_function_signatures(ASTNode* node, SymbolTable* symbols) {
+static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx) {
     if (!node) return;
 
     switch (node->type) {
         case AST_PROGRAM:
         case AST_BLOCK:
             for (int i = 0; i < node->program.count; i++) {
-                collect_function_signatures(node->program.statements[i], symbols);
+                collect_function_signatures(node->program.statements[i], symbols, type_ctx);
             }
             break;
 
         case AST_FUNCTION_DECL:
-            // Register function (type will be determined by specializations)
-            symbol_table_insert_func_declaration(symbols, node->func_decl.name, node);
+        case AST_EXTERNAL_FUNCTION_DECL: {
+            // Extract common fields based on node type
+            const char* func_name;
+            TypeInfo** param_type_hints;
+            int param_count;
+            TypeInfo* return_type_hint;
+            ASTNode* body;
+            bool is_external = (node->type == AST_EXTERNAL_FUNCTION_DECL);
+
+            if (is_external) {
+                func_name = node->external_func_decl.name;
+                param_type_hints = node->external_func_decl.param_type_hints;
+                param_count = node->external_func_decl.param_count;
+                return_type_hint = node->external_func_decl.return_type_hint;
+                body = NULL;  // External functions have no body
+            } else {
+                func_name = node->func_decl.name;
+                param_type_hints = node->func_decl.param_type_hints;
+                param_count = node->func_decl.param_count;
+                return_type_hint = node->func_decl.return_type_hint;
+                body = node->func_decl.body;
+            }
+
+            // Register function in symbol table
+            symbol_table_insert_func_declaration(symbols, func_name, node);
+
+            // Create function type in TypeContext
+            if (type_ctx) {
+                TypeInfo* func_type = type_context_create_function_type(
+                    type_ctx,
+                    func_name,
+                    param_type_hints,
+                    param_count,
+                    return_type_hint,
+                    body
+                );
+
+                // Store the function declaration node in the TypeInfo
+                func_type->data.function.func_decl_node = node;
+
+                log_verbose("Created %sfunction type: %s", is_external ? "external " : "", func_type->type_name);
+
+                // If fully typed (or external, which is always fully typed), create a single specialization
+                if (is_external || type_info_is_function_fully_typed(func_type)) {
+                    FunctionSpecialization* spec = type_context_add_specialization(
+                        type_ctx, func_type,
+                        param_type_hints,
+                        param_count
+                    );
+
+                    if (spec) {
+                        // Use original name instead of specialized name
+                        free(spec->specialized_name);
+                        spec->specialized_name = strdup(func_name);
+
+                        // Set return type
+                        spec->return_type_info = return_type_hint;
+
+                        // For user functions with bodies, clone only the body and run type inference
+                        if (body) {
+                            // Clone only the body (not the entire function)
+                            ASTNode* cloned_body = ast_clone(body);
+
+                            // Run type inference on the body with known parameter types
+                            SymbolTable* temp_symbols = symbol_table_create(symbols);
+                            char** param_names_arr = is_external ? node->external_func_decl.params : node->func_decl.params;
+                            for (int i = 0; i < param_count; i++) {
+                                symbol_table_insert(temp_symbols,
+                                                  param_names_arr[i],
+                                                  param_type_hints[i], NULL, false);
+                            }
+                            infer_literal_types(cloned_body, temp_symbols, NULL);
+                            symbol_table_free(temp_symbols);
+
+                            spec->specialized_body = cloned_body;
+                        } else {
+                            // External functions have no body
+                            spec->specialized_body = NULL;
+                        }
+
+                        log_verbose("Created single specialization for %sfunction: %s",
+                                  is_external ? "external " : "fully typed ", func_name);
+                    }
+                }
+
+                // Update the symbol entry to include the TypeInfo
+                SymbolEntry* entry = symbol_table_lookup(symbols, func_name);
+                if (entry) {
+                    entry->type_info = func_type;
+                }
+            }
             break;
+        }
 
         default:
             break;
@@ -333,8 +423,19 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->type_info = node->var_decl.init->type_info;
                 }
 
-                // Use the new function that stores the AST node (needed for object member access type inference)
-                symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->type_info, node->var_decl.is_const, node);
+                // Special case: if assigning a function identifier, copy the function's node reference
+                if (node->var_decl.init->type == AST_IDENTIFIER && type_info_is_function_ctx(node->type_info)) {
+                    SymbolEntry* func_entry = symbol_table_lookup(symbols, node->var_decl.init->identifier.name);
+                    if (func_entry && func_entry->node) {
+                        // Insert with function's node so analyze_call_sites can trace back to function decl
+                        symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->type_info, node->var_decl.is_const, func_entry->node);
+                    } else {
+                        symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->type_info, node->var_decl.is_const, node);
+                    }
+                } else {
+                    // Use the new function that stores the AST node (needed for object member access type inference)
+                    symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->type_info, node->var_decl.is_const, node);
+                }
 
                 // Store TypeInfo in symbol table
                 SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
@@ -617,59 +718,48 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
     }
 }
 
-static void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node, TypeInfo** arg_types, SymbolTable* symbols, SpecializationContext* ctx) {
+static void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node, TypeInfo** arg_types, SymbolTable* symbols, TypeContext* ctx) {
     if (!spec || !original_func_node || original_func_node->type != AST_FUNCTION_DECL) {
         return;
     }
 
-    // Clone the entire function node
-    ASTNode* cloned_func = ast_clone(original_func_node);
-
-    // Update function name to specialized name
-    free(cloned_func->func_decl.name);
-    cloned_func->func_decl.name = strdup(spec->specialized_name);
-
-    // Set parameter types in the cloned function
-    if (!cloned_func->func_decl.param_type_hints) {
-        cloned_func->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * spec->param_count);
-    }
-    memcpy(cloned_func->func_decl.param_type_hints, spec->param_type_info, sizeof(TypeInfo*) * spec->param_count);
+    // Clone only the body (not the entire function)
+    ASTNode* cloned_body = ast_clone(original_func_node->func_decl.body);
 
     SymbolTable* temp_symbols = symbol_table_create(symbols);
-    ASTNode* ast = cloned_func->func_decl.body;
     // Insert parameters with their concrete types AND TypeInfo for objects
-    for (int i = 0; i < cloned_func->func_decl.param_count; i++) {
-        symbol_table_insert(temp_symbols, cloned_func->func_decl.params[i], spec->param_type_info[i], NULL, false);
+    for (int i = 0; i < spec->param_count; i++) {
+        symbol_table_insert(temp_symbols, original_func_node->func_decl.params[i], spec->param_type_info[i], NULL, false);
 
         // TypeInfo is already set by symbol_table_insert if param_type_info is available
         if (type_info_is_object(arg_types[i]) && spec->param_type_info[i]) {
-            SymbolEntry* entry = symbol_table_lookup(temp_symbols, cloned_func->func_decl.params[i]);
+            SymbolEntry* entry = symbol_table_lookup(temp_symbols, original_func_node->func_decl.params[i]);
             if (entry && !entry->type_info) {
                 entry->type_info = type_info_clone(spec->param_type_info[i]);
                 log_verbose("  Parameter '%s' in temp_symbols assigned type '%s'",
-                           cloned_func->func_decl.params[i], entry->type_info->type_name);
+                           original_func_node->func_decl.params[i], entry->type_info->type_name);
             }
         }
     }
-    infer_literal_types(ast, temp_symbols, NULL);  // NULL type_ctx - objects inside functions won't create new types
-    iterative_specialization_discovery(ast, temp_symbols, ctx);
+    infer_literal_types(cloned_body, temp_symbols, NULL);  // NULL type_ctx - objects inside functions won't create new types
+    iterative_specialization_discovery(cloned_body, temp_symbols, ctx);
 
     // Infer return type from function body
-    TypeInfo* inferred_return = infer_function_return_type_with_params(ast, temp_symbols);
+    TypeInfo* inferred_return = infer_function_return_type_with_params(cloned_body, temp_symbols);
     log_verbose("  Inferred return type for %s: %s", spec->specialized_name,
                 inferred_return ? inferred_return->type_name : "NULL");
 
     // If return type hint is provided, use it and validate
-    if (cloned_func->func_decl.return_type_hint &&
-        !type_info_is_unknown(cloned_func->func_decl.return_type_hint)) {
-        spec->return_type_info = cloned_func->func_decl.return_type_hint;
+    if (original_func_node->func_decl.return_type_hint &&
+        !type_info_is_unknown(original_func_node->func_decl.return_type_hint)) {
+        spec->return_type_info = original_func_node->func_decl.return_type_hint;
 
         // Validate inferred return type matches the hint
         if (!type_info_is_unknown(inferred_return) && inferred_return != spec->return_type_info) {
             // Allow int -> double promotion
             if (!(spec->return_type_info == Type_Double && inferred_return == Type_Int)) {
                 log_error("Function '%s' declared to return %s but returns %s",
-                    spec->function_name,
+                    original_func_node->func_decl.name,
                     spec->return_type_info ? spec->return_type_info->type_name : "unknown",
                     inferred_return ? inferred_return->type_name : "unknown");
             }
@@ -681,14 +771,14 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
 
     free(temp_symbols);
 
-    spec->specialized_body = cloned_func;
+    spec->specialized_body = cloned_body;
 
     const char* return_type_str = spec->return_type_info ? spec->return_type_info->type_name : "unknown";
     log_verbose_indent(2, "Analyzed %s with return type %s", spec->specialized_name, return_type_str);
 }
 
 // Pass 3: Analyze call sites to find needed specializations
-static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, SpecializationContext* ctx) {
+static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext* ctx) {
     if (!node) return;
 
     switch (node->type) {
@@ -716,6 +806,12 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, Specializati
                     // If it's a function variable, get the actual function name
                     const char* actual_func_name = func_name;
                     ASTNode* func_decl = entry->node;
+
+                    // Skip external and fully typed functions - they already have a specialization
+                    if (func_decl->type == AST_EXTERNAL_FUNCTION_DECL ||
+                        (entry->type_info && type_info_is_function_fully_typed(entry->type_info))) {
+                        break;
+                    }
 
                     if (func_decl->type == AST_FUNCTION_DECL) {
                         // Use the function's actual name for specialization
@@ -887,7 +983,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, Specializati
 }
 
 // Pass 4: Create specialized function versions
-static void create_specializations(ASTNode* node, SymbolTable* symbols, SpecializationContext* ctx) {
+static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx) {
     if (!node) return;
 
     switch (node->type) {
@@ -899,17 +995,12 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, Speciali
             break;
 
         case AST_FUNCTION_DECL: {
-            // Iterate through ALL specializations and process matching ones
-            FunctionSpecialization* spec = ctx->specializations;
+            // Check if this function has any specializations
+            TypeInfo* func_type = type_context_find_function_type(ctx, node->func_decl.name);
             bool found_any = false;
 
-            while (spec) {
-                // Check if this specialization is for our function
-                if (strcmp(spec->function_name, node->func_decl.name) == 0) {
-                    found_any = true;
-                    break;
-                }
-                spec = spec->next;
+            if (func_type && func_type->data.function.specializations) {
+                found_any = true;
             }
 
             if (!found_any) {
@@ -941,7 +1032,7 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, Speciali
 }
 
 // Pass 5: Final type inference with all specializations known
-static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, SpecializationContext* ctx) {
+static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx) {
     if (!node) return;
 
     switch (node->type) {
@@ -990,6 +1081,16 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Spec
                 infer_with_specializations(node->var_decl.init, symbols, ctx);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->var_decl.init);
                 node->type_info = node->var_decl.init->type_info;
+
+                // Special case: if assigning a function, copy the node reference
+                if (node->var_decl.init->type == AST_IDENTIFIER && type_info_is_function_ctx(node->type_info)) {
+                    SymbolEntry* func_entry = symbol_table_lookup(symbols, node->var_decl.init->identifier.name);
+                    if (func_entry && func_entry->node) {
+                        // Insert variable with function's node so analyze_call_sites can trace back
+                        symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->type_info, node->var_decl.is_const, func_entry->node);
+                        break;
+                    }
+                }
             }
             symbol_table_insert(symbols, node->var_decl.name, node->type_info, NULL, node->var_decl.is_const);
             break;
@@ -1086,12 +1187,12 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Spec
                     arg_types[i] = node->call.args[i]->type_info;
                 }
 
-                // First, try to find user-defined function specialization
+                // Try to find user-defined function specialization
                 FunctionSpecialization* spec = specialization_context_find_by_type_info(
                     ctx, func_name, arg_types, node->call.arg_count);
 
                 if (spec) {
-                    // Found user function
+                    // Found user function specialization (includes fully typed functions)
                     node->type_info = spec->return_type_info;
                 } else {
                     // Not a user function, check if it's a runtime builtin
@@ -1222,28 +1323,29 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Spec
     }
 }
 
-static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols, SpecializationContext* ctx) {
+// Helper: Count total number of specializations across all function types
+static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols, TypeContext* ctx) {
 	int iteration = 0;
   int max_iterations = 100; // Safety limit to prevent infinite loops
 
   while (iteration < max_iterations) {
-    size_t spec_count_before = ctx->functions_processed;
+    size_t spec_count_before = ctx->specialization_count;
 
     log_verbose_indent(2, "Iteration %d: %zu specializations before", iteration, spec_count_before);
 
     // Pass 3: Analyze call sites to find needed specializations
     analyze_call_sites(ast, symbols, ctx);
-    log_verbose_indent(2, "After analyze_call_sites: %zu specializations", ctx->functions_processed);
+    log_verbose_indent(2, "After analyze_call_sites: %zu specializations", ctx->specialization_count);
 
     // Pass 4: Create specialized function versions
     create_specializations(ast, symbols, ctx);
-    log_verbose_indent(2, "After create_specializations: %zu specializations", ctx->functions_processed);
+    log_verbose_indent(2, "After create_specializations: %zu specializations", ctx->specialization_count);
 
     // Pass 5: Propagate types with known specializations
     infer_with_specializations(ast, symbols, ctx);
-    log_verbose_indent(2, "After infer_with_specializations: %zu specializations", ctx->functions_processed);
+    log_verbose_indent(2, "After infer_with_specializations: %zu specializations", ctx->specialization_count);
 
-    size_t spec_count_after = ctx->functions_processed;
+    size_t spec_count_after = ctx->specialization_count;
 
     // If no new specializations were discovered, we're done
     if (spec_count_after == spec_count_before) {
@@ -1257,7 +1359,7 @@ static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols
   }
 
   log_warning("Maximum iterations reached (%d), some types may be unresolved. Total specializations: %zu",
-              max_iterations, ctx->functions_processed);
+              max_iterations, ctx->specialization_count);
 }
 
 // Main entry point: Multi-pass type inference with specialization
@@ -1266,12 +1368,9 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
 
     log_verbose("Starting multi-pass type inference");
 
-    // Create specialization context
-    SpecializationContext* ctx = specialization_context_create();
-
     // Pass 1: Collect function signatures
     log_verbose_indent(1, "Pass 1: Collecting function signatures");
-    collect_function_signatures(ast, symbols);
+    collect_function_signatures(ast, symbols, type_ctx);
 
     // Pass 2: Infer literal types
     log_verbose_indent(1, "Pass 2: Inferring literal types");
@@ -1281,10 +1380,10 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
     // This is needed because variable types depend on function return types,
     // which depend on specializations, which depend on call site argument types
     log_verbose_indent(1, "Pass 3-5: Iterative specialization discovery");
-    iterative_specialization_discovery(ast, symbols, ctx);
+    iterative_specialization_discovery(ast, symbols, type_ctx);
 
-    // Store specialization context for codegen
-    ast->specialization_ctx = ctx;
+    // Store type context for codegen (contains both types and specializations)
+    ast->type_ctx = type_ctx;
 
     log_verbose("Type inference complete");
 }

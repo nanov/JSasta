@@ -16,6 +16,7 @@ typedef enum {
     TOKEN_LET,
     TOKEN_CONST,
     TOKEN_FUNCTION,
+    TOKEN_EXTERNAL,
     TOKEN_RETURN,
     TOKEN_IF,
     TOKEN_ELSE,
@@ -75,6 +76,7 @@ typedef enum {
     AST_PROGRAM,
     AST_VAR_DECL,
     AST_FUNCTION_DECL,
+    AST_EXTERNAL_FUNCTION_DECL,
     AST_RETURN,
     AST_IF,
     AST_FOR,
@@ -103,6 +105,8 @@ typedef enum {
 
 // Forward declare TypeInfo for recursive types
 typedef struct TypeInfo TypeInfo;
+typedef struct FunctionSpecialization FunctionSpecialization;
+typedef struct ASTNode ASTNode;
 
 // Type kind for categorizing types
 typedef enum {
@@ -133,18 +137,17 @@ struct TypeInfo {
             TypeInfo* element_type;     // Type of array elements
         } array;
 
-        // For TYPE_KIND_FUNCTION: function signature (future)
+        // For TYPE_KIND_FUNCTION: function signature and specializations
         struct {
-            TypeInfo** param_types;     // Parameter types
-            TypeInfo* return_type;      // Return type
-            int param_count;            // Number of parameters
+            TypeInfo** param_types;              // Generic parameter types (may be NULL for untyped)
+            TypeInfo* return_type;               // Return type
+            int param_count;                     // Number of parameters
+            FunctionSpecialization* specializations;  // Linked list of specializations
+            ASTNode* original_body;              // Original AST body (for cloning during specialization)
+            ASTNode* func_decl_node;             // Function declaration node (for function variables)
         } function;
     } data;
 };
-
-// Forward declarations for specialization
-typedef struct SpecializationContext SpecializationContext;
-typedef struct FunctionSpecialization FunctionSpecialization;
 
 // TypeEntry for linked list of registered types
 typedef struct TypeEntry {
@@ -158,6 +161,7 @@ typedef struct TypeContext {
     TypeEntry* type_table;           // Linked list of all registered types
     int type_count;                  // Number of registered types
     int next_anonymous_id;           // For generating unique anonymous type names
+    int specialization_count;        // Total number of specializations across all functions
 
     // Cached primitive types
     TypeInfo* int_type;
@@ -166,35 +170,25 @@ typedef struct TypeContext {
     TypeInfo* bool_type;
     TypeInfo* void_type;
 
-    // Specialization tracking (moved from SpecializationContext)
-    FunctionSpecialization* specializations;
-    size_t functions_processed;
+    // Note: Function specializations are now stored in TypeInfo.data.function.specializations
 } TypeContext;
 
-typedef struct ASTNode ASTNode;
-
 // Function specialization for polymorphism
+// Note: Specializations are now stored in TypeInfo.data.function.specializations
+// Note: Parameter names are retrieved from the parent TypeInfo's func_decl_node during codegen
 struct FunctionSpecialization {
-    char* function_name;           // Original function name
     char* specialized_name;        // Specialized name (e.g., "add_int_int")
-    TypeInfo** param_type_info;    // TypeInfo for object parameters (NULL for non-objects)
+    TypeInfo** param_type_info;    // Concrete parameter types for this specialization
     int param_count;
     TypeInfo* return_type_info;    // Return type as TypeInfo
-    ASTNode* specialized_body;     // Cloned and type-analyzed AST for this specialization
+    ASTNode* specialized_body;     // Cloned and type-analyzed function body (just the body, not the whole function)
     struct FunctionSpecialization* next;  // Linked list
 };
-
-// Specialization context - tracks all function specializations
-struct SpecializationContext {
-    FunctionSpecialization* specializations;
-    size_t functions_processed;
-};
-
 
 struct ASTNode {
     ASTNodeType type;
     TypeInfo* type_info;           // Unified type representation
-    SpecializationContext* specialization_ctx;  // For AST_PROGRAM, stores specializations
+    TypeContext* type_ctx;         // For AST_PROGRAM, stores types and specializations
 
     // Source location information
     SourceLocation loc;
@@ -220,6 +214,14 @@ struct ASTNode {
             TypeInfo** param_type_hints;  // Optional type annotations for params (NULL if not specified, supports objects)
             TypeInfo* return_type_hint;   // Optional return type annotation (NULL if not specified, supports objects)
         } func_decl;
+
+        struct {
+            char* name;
+            char** params;
+            int param_count;
+            TypeInfo** param_type_hints;  // Required type annotations for params
+            TypeInfo* return_type_hint;   // Required return type annotation
+        } external_func_decl;
 
         struct {
             ASTNode* value;
@@ -481,6 +483,29 @@ static inline bool type_info_is_function_ctx(TypeInfo* type_info) {
     return type_info && type_info->kind == TYPE_KIND_FUNCTION;
 }
 
+// Check if a function is fully typed (all params and return type specified)
+static inline bool type_info_is_function_fully_typed(TypeInfo* func_type) {
+    if (!func_type || func_type->kind != TYPE_KIND_FUNCTION) {
+        return false;
+    }
+
+    // Check if return type is specified and not unknown
+    if (!func_type->data.function.return_type ||
+        type_info_is_unknown(func_type->data.function.return_type)) {
+        return false;
+    }
+
+    // Check if all parameters have types specified
+    for (int i = 0; i < func_type->data.function.param_count; i++) {
+        if (!func_type->data.function.param_types[i] ||
+            type_info_is_unknown(func_type->data.function.param_types[i])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // Helper to check if void with TypeContext (for compatibility)
 static inline bool type_info_is_void_ctx(TypeInfo* type_info, TypeContext* ctx) {
     (void)ctx;  // unused for now
@@ -508,6 +533,16 @@ TypeInfo* type_context_get_string(TypeContext* ctx);
 TypeInfo* type_context_get_bool(TypeContext* ctx);
 TypeInfo* type_context_get_void(TypeContext* ctx);
 
+// Function type management
+TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_name,
+                                            TypeInfo** param_types, int param_count,
+                                            TypeInfo* return_type, ASTNode* original_body);
+TypeInfo* type_context_find_function_type(TypeContext* ctx, const char* func_name);
+FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeInfo* func_type,
+                                                        TypeInfo** param_type_info, int param_count);
+FunctionSpecialization* type_context_find_specialization(TypeContext* ctx, TypeInfo* func_type,
+                                                         TypeInfo** param_type_info, int param_count);
+
 // Type analysis
 void type_analyze(ASTNode* node, SymbolTable* symbols);
 
@@ -515,24 +550,14 @@ void type_analyze(ASTNode* node, SymbolTable* symbols);
 void type_inference(ASTNode* ast, SymbolTable* symbols);
 void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
-// Specialization context API
-SpecializationContext* specialization_context_create();
-void specialization_context_free(SpecializationContext* ctx);
-// FunctionSpecialization* specialization_context_add(
-// 																SpecializationContext* ctx, const char* func_name,
-//                                 ValueType* param_types, int param_count);
-// FunctionSpecialization* specialization_context_find(SpecializationContext* ctx,
-//                                                     const char* func_name,
-//                                                     ValueType* param_types,
-//                                                     int param_count);
-FunctionSpecialization* specialization_context_get_all(SpecializationContext* ctx,
-                                                       const char* func_name);
-void specialization_context_print(SpecializationContext* ctx);
+// Specialization API (now part of TypeContext)
+// Note: specialization_context_create/free removed - use type_context_create/free
+void specialization_context_print(TypeContext* ctx);
 
 // TypeInfo-based specialization functions
-FunctionSpecialization* specialization_context_add_by_type_info(SpecializationContext* ctx, const char* func_name,
+FunctionSpecialization* specialization_context_add_by_type_info(TypeContext* ctx, const char* func_name,
                                 TypeInfo** param_type_info, int param_count);
-FunctionSpecialization* specialization_context_find_by_type_info(SpecializationContext* ctx,
+FunctionSpecialization* specialization_context_find_by_type_info(TypeContext* ctx,
                                                                   const char* func_name,
                                                                   TypeInfo** param_type_info,
                                                                   int param_count);
@@ -557,8 +582,7 @@ typedef struct CodeGen {
     SymbolTable* symbols;
     LLVMValueRef current_function;
     RuntimeFunction* runtime_functions;
-    SpecializationContext* specialization_ctx;  // For polymorphic functions
-    TypeContext* type_ctx;                      // Type context for TypeInfo management
+    TypeContext* type_ctx;                      // Type context for TypeInfo and specializations
 } CodeGen;
 
 CodeGen* codegen_create(const char* module_name);

@@ -9,8 +9,7 @@ TypeContext* type_context_create() {
     ctx->type_table = NULL;
     ctx->type_count = 0;
     ctx->next_anonymous_id = 0;
-    ctx->specializations = NULL;
-    ctx->functions_processed = 0;
+    ctx->specialization_count = 0;
 
     // Pre-register primitive types and cache them
     Type_Unknown = type_info_create(TYPE_KIND_UNKNOWN, strdup("unknown"));
@@ -60,33 +59,13 @@ void type_context_free(TypeContext* ctx) {
     if (!ctx) return;
 
     // Free all types in the type table (linked list)
+    // Note: type_info_free will handle freeing specializations for function types
     TypeEntry* entry = ctx->type_table;
     while (entry) {
         TypeEntry* next = entry->next;
         type_info_free(entry->type);
         free(entry);
         entry = next;
-    }
-
-    // Free specializations
-    FunctionSpecialization* spec = ctx->specializations;
-    while (spec) {
-        FunctionSpecialization* next = spec->next;
-        free(spec->function_name);
-        free(spec->specialized_name);
-        if (spec->param_type_info) {
-            for (int i = 0; i < spec->param_count; i++) {
-                if (spec->param_type_info[i]) {
-                    type_info_free(spec->param_type_info[i]);
-                }
-            }
-            free(spec->param_type_info);
-        }
-        if (spec->specialized_body) {
-            ast_free(spec->specialized_body);
-        }
-        free(spec);
-        spec = next;
     }
 
     free(ctx);
@@ -269,4 +248,121 @@ TypeInfo* type_context_get_bool(TypeContext* ctx) {
 
 TypeInfo* type_context_get_void(TypeContext* ctx) {
     return ctx ? ctx->void_type : NULL;
+}
+
+// Create or find a function type
+TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_name,
+                                            TypeInfo** param_types, int param_count,
+                                            TypeInfo* return_type, ASTNode* original_body) {
+    if (!ctx || !func_name) return NULL;
+
+    // Check if function type already exists
+    TypeInfo* existing = type_context_find_function_type(ctx, func_name);
+    if (existing) {
+        return existing;
+    }
+
+    // Create new function type
+    TypeInfo* func_type = type_info_create(TYPE_KIND_FUNCTION, strdup(func_name));
+    func_type->data.function.param_types = param_types;
+    func_type->data.function.param_count = param_count;
+    func_type->data.function.return_type = return_type;
+    func_type->data.function.specializations = NULL;
+    func_type->data.function.original_body = original_body;  // Store reference, don't own
+
+    return type_context_register_type(ctx, func_type);
+}
+
+// Find a function type by name
+TypeInfo* type_context_find_function_type(TypeContext* ctx, const char* func_name) {
+    if (!ctx || !func_name) return NULL;
+
+    TypeEntry* entry = ctx->type_table;
+    while (entry) {
+        if (entry->type->kind == TYPE_KIND_FUNCTION &&
+            entry->type->type_name &&
+            strcmp(entry->type->type_name, func_name) == 0) {
+            return entry->type;
+        }
+        entry = entry->next;
+    }
+
+    return NULL;
+}
+
+// Helper: Check if two TypeInfo arrays match
+static bool type_arrays_match(TypeInfo** types1, TypeInfo** types2, int count) {
+    for (int i = 0; i < count; i++) {
+        if (types1[i] != types2[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Add a specialization to a function type
+FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeInfo* func_type,
+                                                        TypeInfo** param_type_info, int param_count) {
+    if (!ctx || !func_type || func_type->kind != TYPE_KIND_FUNCTION) return NULL;
+
+    // Check if specialization already exists
+    FunctionSpecialization* existing = func_type->data.function.specializations;
+    while (existing) {
+        if (existing->param_count == param_count &&
+            type_arrays_match(existing->param_type_info, param_type_info, param_count)) {
+            return NULL;  // Already exists
+        }
+        existing = existing->next;
+    }
+
+    // Create new specialization
+    FunctionSpecialization* spec = (FunctionSpecialization*)calloc(1, sizeof(FunctionSpecialization));
+    
+    // Generate specialized name using type names
+    char name[256];
+    int offset = snprintf(name, 256, "%s", func_type->type_name);
+    for (int i = 0; i < param_count; i++) {
+        const char* type_name = param_type_info[i] && param_type_info[i]->type_name 
+            ? param_type_info[i]->type_name 
+            : "unknown";
+        offset += snprintf(name + offset, 256 - offset, "_%s", type_name);
+    }
+    spec->specialized_name = strdup(name);
+    
+    spec->param_count = param_count;
+    spec->param_type_info = (TypeInfo**)calloc(param_count, sizeof(TypeInfo*));
+    for (int i = 0; i < param_count; i++) {
+        spec->param_type_info[i] = param_type_info[i];  // Reference, not owned
+    }
+    
+    spec->return_type_info = NULL;  // Will be inferred
+    spec->specialized_body = NULL;  // Will be set during specialization pass
+    
+    // Add to head of list
+    spec->next = func_type->data.function.specializations;
+    func_type->data.function.specializations = spec;
+    
+    // Increment global specialization counter
+    ctx->specialization_count++;
+    
+    return spec;
+}
+
+// Find a specialization in a function type
+FunctionSpecialization* type_context_find_specialization(TypeContext* ctx, TypeInfo* func_type,
+                                                         TypeInfo** param_type_info, int param_count) {
+    (void)ctx;  // Unused
+    
+    if (!func_type || func_type->kind != TYPE_KIND_FUNCTION) return NULL;
+
+    FunctionSpecialization* spec = func_type->data.function.specializations;
+    while (spec) {
+        if (spec->param_count == param_count &&
+            type_arrays_match(spec->param_type_info, param_type_info, param_count)) {
+            return spec;
+        }
+        spec = spec->next;
+    }
+
+    return NULL;
 }

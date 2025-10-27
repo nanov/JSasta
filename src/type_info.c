@@ -104,14 +104,31 @@ void type_info_free(TypeInfo* type_info) {
             type_info_free(type_info->data.array.element_type);
         }
     } else if (type_info->kind == TYPE_KIND_FUNCTION) {
-        // Free function parameter types and return type
+        // Note: param_types and return_type are references to types in TypeContext, don't free them
+        // Just free the array itself
         if (type_info->data.function.param_types) {
-            for (int i = 0; i < type_info->data.function.param_count; i++) {
-                type_info_free(type_info->data.function.param_types[i]);
-            }
             free(type_info->data.function.param_types);
         }
-        type_info_free(type_info->data.function.return_type);
+        
+        // Free all specializations
+        FunctionSpecialization* spec = type_info->data.function.specializations;
+        while (spec) {
+            FunctionSpecialization* next = spec->next;
+            free(spec->specialized_name);
+            if (spec->param_type_info) {
+                // Note: param_type_info are references to types in TypeContext, don't free them
+                free(spec->param_type_info);
+            }
+            // Note: param_names is a reference to the original function's params, don't free it
+            if (spec->specialized_body) {
+                ast_free(spec->specialized_body);
+            }
+            free(spec);
+            spec = next;
+        }
+        
+        // Note: original_body is a reference to AST, not owned by TypeInfo
+        // Note: return_type is a reference to TypeContext, don't free it
     }
 
     free(type_info->type_name);
