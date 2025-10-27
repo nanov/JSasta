@@ -101,50 +101,85 @@ typedef enum {
     AST_OBJECT_LITERAL, // Object literal { key: value, ... }
 } ASTNodeType;
 
-// Type system for specialization
-typedef enum {
-    TYPE_UNKNOWN,
-    TYPE_INT,
-    TYPE_DOUBLE,
-    TYPE_STRING,
-    TYPE_BOOL,
-    TYPE_VOID,
-    TYPE_FUNCTION,  // Function pointer/reference
-    TYPE_ARRAY_INT,
-    TYPE_ARRAY_DOUBLE,
-    TYPE_ARRAY_STRING,
-    TYPE_OBJECT,    // Object with properties
-} ValueType;
-
 // Forward declare TypeInfo for recursive types
 typedef struct TypeInfo TypeInfo;
 
-// Type metadata for objects - stores structure information
+// Type kind for categorizing types
+typedef enum {
+    TYPE_KIND_PRIMITIVE,    // int, double, string, bool, void
+    TYPE_KIND_OBJECT,       // User-defined object types
+    TYPE_KIND_ARRAY,        // Array types
+    TYPE_KIND_FUNCTION,     // Function types
+    TYPE_KIND_UNKNOWN       // Unknown/unresolved types
+} TypeKind;
+
+// Type metadata - stores structure information
 struct TypeInfo {
-    ValueType base_type;        // TYPE_OBJECT, TYPE_ARRAY_INT, etc.
+    TypeKind kind;              // Type category
+    int type_id;                // Unique type ID within TypeContext
+    char* type_name;            // Type name (e.g., "Person", "Object_0", "int[]")
 
-    // For objects: property metadata
-    char** property_names;      // Property names
-    TypeInfo** property_types;  // Property type info (allows nested objects)
-    int property_count;         // Number of properties
+    // Type-specific data (use union to save memory and improve organization)
+    union {
+        // For TYPE_KIND_OBJECT: property metadata
+        struct {
+            char** property_names;      // Property names
+            TypeInfo** property_types;  // Property types (allows nested objects)
+            int property_count;         // Number of properties
+        } object;
 
-    // For future: user-defined type name
-    char* type_name;            // e.g., "Person", "Rectangle", etc.
+        // For TYPE_KIND_ARRAY: element type
+        struct {
+            TypeInfo* element_type;     // Type of array elements
+        } array;
+
+        // For TYPE_KIND_FUNCTION: function signature (future)
+        struct {
+            TypeInfo** param_types;     // Parameter types
+            TypeInfo* return_type;      // Return type
+            int param_count;            // Number of parameters
+        } function;
+    } data;
 };
 
 // Forward declarations for specialization
 typedef struct SpecializationContext SpecializationContext;
 typedef struct FunctionSpecialization FunctionSpecialization;
+
+// TypeEntry for linked list of registered types
+typedef struct TypeEntry {
+    TypeInfo* type;
+    LLVMTypeRef llvm_type;  // Pre-generated LLVM type (for objects)
+    struct TypeEntry* next;
+} TypeEntry;
+
+// TypeContext manages all type information
+typedef struct TypeContext {
+    TypeEntry* type_table;           // Linked list of all registered types
+    int type_count;                  // Number of registered types
+    int next_anonymous_id;           // For generating unique anonymous type names
+
+    // Cached primitive types
+    TypeInfo* int_type;
+    TypeInfo* double_type;
+    TypeInfo* string_type;
+    TypeInfo* bool_type;
+    TypeInfo* void_type;
+
+    // Specialization tracking (moved from SpecializationContext)
+    FunctionSpecialization* specializations;
+    size_t functions_processed;
+} TypeContext;
+
 typedef struct ASTNode ASTNode;
 
 // Function specialization for polymorphism
 struct FunctionSpecialization {
     char* function_name;           // Original function name
     char* specialized_name;        // Specialized name (e.g., "add_int_int")
-    ValueType* param_types;        // Parameter types for this specialization
     TypeInfo** param_type_info;    // TypeInfo for object parameters (NULL for non-objects)
     int param_count;
-    ValueType return_type;         // Return type for this specialization
+    TypeInfo* return_type_info;    // Return type as TypeInfo
     ASTNode* specialized_body;     // Cloned and type-analyzed AST for this specialization
     struct FunctionSpecialization* next;  // Linked list
 };
@@ -158,7 +193,7 @@ struct SpecializationContext {
 
 struct ASTNode {
     ASTNodeType type;
-    ValueType value_type;
+    TypeInfo* type_info;           // Unified type representation
     SpecializationContext* specialization_ctx;  // For AST_PROGRAM, stores specializations
 
     // Source location information
@@ -182,8 +217,6 @@ struct ASTNode {
             char** params;
             int param_count;
             ASTNode* body;
-            ValueType* param_types;
-            ValueType return_type;
             TypeInfo** param_type_hints;  // Optional type annotations for params (NULL if not specified, supports objects)
             TypeInfo* return_type_hint;   // Optional return type annotation (NULL if not specified, supports objects)
         } func_decl;
@@ -310,7 +343,6 @@ struct ASTNode {
             char** keys;      // Property names
             ASTNode** values; // Property values
             int count;        // Number of properties
-            TypeInfo* type_info; // Type metadata (assigned during type inference)
         } object_literal;
     };
 };
@@ -334,9 +366,10 @@ typedef struct {
     Lexer* lexer;
     Token* current_token;
     const char* filename;
+    TypeContext* type_ctx;  // For structural type sharing of objects
 } Parser;
 
-Parser* parser_create(const char* source, const char* filename);
+Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx);
 void parser_free(Parser* parser);
 ASTNode* parser_parse(Parser* parser);
 
@@ -349,7 +382,6 @@ ASTNode* ast_clone(ASTNode* node);
 // Symbol table for type inference
 typedef struct SymbolEntry {
     char* name;
-    ValueType type;
     bool is_const;
     LLVMValueRef value;
     ASTNode* node;
@@ -365,36 +397,145 @@ typedef struct SymbolTable {
 
 SymbolTable* symbol_table_create(SymbolTable* parent);
 void symbol_table_free(SymbolTable* table);
-void symbol_table_insert(SymbolTable* table, const char* name, ValueType type, LLVMValueRef value, bool is_const);
-void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, ValueType type, bool is_const, ASTNode* var_decl_node);
+void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_info, LLVMValueRef value, bool is_const);
+void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, TypeInfo* type_info, bool is_const, ASTNode* var_decl_node);
 void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node);
 SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name);
 
 // TypeInfo management
-TypeInfo* type_info_create(ValueType base_type);
+TypeInfo* type_info_create(TypeKind kind, char* name);
+TypeInfo* type_info_create_primitive(char* name);
+TypeInfo* type_info_create_unknown();
+TypeInfo* type_info_create_int();
+TypeInfo* type_info_create_double();
+TypeInfo* type_info_create_bool();
+TypeInfo* type_info_create_string();
+TypeInfo* type_info_create_void();
 TypeInfo* type_info_create_from_object_literal(ASTNode* obj_literal);
-void type_info_free(TypeInfo* type_info);
+void type_info_free_shallow(TypeInfo* type_info);  // Shallow free (doesn't free referenced types)
+void type_info_free(TypeInfo* type_info);           // Deep free (frees nested types)
 TypeInfo* type_info_clone(TypeInfo* type_info);
 int type_info_find_property(TypeInfo* type_info, const char* property_name);
+
+TypeInfo* Type_Unknown;
+TypeInfo* Type_Bool;
+TypeInfo* Type_Void;
+TypeInfo* Type_Int;
+TypeInfo* Type_Double;
+TypeInfo* Type_Object;
+TypeInfo* Type_String;
+TypeInfo* Type_Array_Int;
+TypeInfo* Type_Array_Bool;
+TypeInfo* Type_Array_Double;
+TypeInfo* Type_Array_String;
+
+static inline bool type_info_is_unknown(TypeInfo* type_info) {
+    return type_info && type_info->kind == TYPE_KIND_UNKNOWN;
+}
+
+static inline bool type_info_is_int(TypeInfo* type_info) {
+    return type_info == Type_Int;
+}
+
+static inline bool type_info_is_double_ctx(TypeInfo* type_info) {
+    return type_info == Type_Double;
+}
+
+static inline bool type_info_is_double(TypeInfo* type_info) {
+    return type_info == Type_Double;
+}
+
+static inline bool type_info_is_string_ctx(TypeInfo* type_info) {
+    return type_info == Type_String;
+}
+
+static inline bool type_info_is_string(TypeInfo* type_info) {
+    return type_info == Type_String;
+}
+
+static inline bool type_info_is_bool_ctx(TypeInfo* type_info) {
+    return type_info == Type_Bool;
+}
+
+static inline bool type_info_is_bool(TypeInfo* type_info) {
+    return type_info == Type_Bool;
+}
+
+static inline bool type_info_is_void(TypeInfo* type_info) {
+    return type_info == Type_Void;
+}
+
+static inline bool type_info_is_object(TypeInfo* type_info) {
+    return type_info && type_info->kind == TYPE_KIND_OBJECT;
+}
+
+static inline bool type_info_is_array(TypeInfo* type_info) {
+    return type_info && type_info->kind == TYPE_KIND_ARRAY;
+}
+
+static inline bool type_info_is_function(TypeInfo* type_info) {
+    return type_info && type_info->kind == TYPE_KIND_FUNCTION;
+}
+
+static inline bool type_info_is_function_ctx(TypeInfo* type_info) {
+    return type_info && type_info->kind == TYPE_KIND_FUNCTION;
+}
+
+// Helper to check if void with TypeContext (for compatibility)
+static inline bool type_info_is_void_ctx(TypeInfo* type_info, TypeContext* ctx) {
+    (void)ctx;  // unused for now
+    return type_info == Type_Void;
+}
+
+// Check if array has specific element type
+static inline bool type_info_is_array_of(TypeInfo* array_type, TypeInfo* element_type) {
+    return array_type && array_type->kind == TYPE_KIND_ARRAY &&
+           array_type->data.array.element_type == element_type;
+}
+
+// TypeContext API - Unified type management
+TypeContext* type_context_create();
+void type_context_free(TypeContext* ctx);
+TypeInfo* type_context_register_type(TypeContext* ctx, TypeInfo* type);
+TypeInfo* type_context_find_type(TypeContext* ctx, const char* type_name);
+TypeInfo* type_context_create_object_type_from_literal(TypeContext* ctx, ASTNode* obj_literal);
+TypeInfo* type_context_find_or_create_object_type(TypeContext* ctx, TypeInfo* obj_type);
+
+// Primitive type accessors (cached in type table)
+TypeInfo* type_context_get_int(TypeContext* ctx);
+TypeInfo* type_context_get_double(TypeContext* ctx);
+TypeInfo* type_context_get_string(TypeContext* ctx);
+TypeInfo* type_context_get_bool(TypeContext* ctx);
+TypeInfo* type_context_get_void(TypeContext* ctx);
 
 // Type analysis
 void type_analyze(ASTNode* node, SymbolTable* symbols);
 
 // Type inference (separate pass before type checking)
 void type_inference(ASTNode* ast, SymbolTable* symbols);
+void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
 // Specialization context API
 SpecializationContext* specialization_context_create();
 void specialization_context_free(SpecializationContext* ctx);
-FunctionSpecialization* specialization_context_add(SpecializationContext* ctx, const char* func_name,
-                                ValueType* param_types, int param_count);
-FunctionSpecialization* specialization_context_find(SpecializationContext* ctx,
-                                                    const char* func_name,
-                                                    ValueType* param_types,
-                                                    int param_count);
+// FunctionSpecialization* specialization_context_add(
+// 																SpecializationContext* ctx, const char* func_name,
+//                                 ValueType* param_types, int param_count);
+// FunctionSpecialization* specialization_context_find(SpecializationContext* ctx,
+//                                                     const char* func_name,
+//                                                     ValueType* param_types,
+//                                                     int param_count);
 FunctionSpecialization* specialization_context_get_all(SpecializationContext* ctx,
                                                        const char* func_name);
 void specialization_context_print(SpecializationContext* ctx);
+
+// TypeInfo-based specialization functions
+FunctionSpecialization* specialization_context_add_by_type_info(SpecializationContext* ctx, const char* func_name,
+                                TypeInfo** param_type_info, int param_count);
+FunctionSpecialization* specialization_context_find_by_type_info(SpecializationContext* ctx,
+                                                                  const char* func_name,
+                                                                  TypeInfo** param_type_info,
+                                                                  int param_count);
 
 // void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node);
 
@@ -404,7 +545,7 @@ typedef struct CodeGen CodeGen;
 // Code generator
 typedef struct RuntimeFunction {
     char* name;
-    ValueType return_type;  // Return type of the function
+    TypeInfo* return_type;  // Return type of the function
     LLVMValueRef (*handler)(CodeGen*, ASTNode*);
     struct RuntimeFunction* next;
 } RuntimeFunction;
@@ -417,6 +558,7 @@ typedef struct CodeGen {
     LLVMValueRef current_function;
     RuntimeFunction* runtime_functions;
     SpecializationContext* specialization_ctx;  // For polymorphic functions
+    TypeContext* type_ctx;                      // Type context for TypeInfo management
 } CodeGen;
 
 CodeGen* codegen_create(const char* module_name);
@@ -426,16 +568,16 @@ void codegen_emit_llvm_ir(CodeGen* gen, const char* filename);
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node);
 
 // Runtime function registration
-void codegen_register_runtime_function(CodeGen* gen, const char* name, ValueType return_type,
+void codegen_register_runtime_function(CodeGen* gen, const char* name, TypeInfo* return_type,
                                        LLVMValueRef (*handler)(CodeGen*, ASTNode*));
-ValueType codegen_get_runtime_function_type(CodeGen* gen, const char* name);
+TypeInfo* codegen_get_runtime_function_type(CodeGen* gen, const char* name);
 LLVMValueRef codegen_call_runtime_function(CodeGen* gen, const char* name, ASTNode* call_node);
 
 // Runtime library
 void runtime_init(CodeGen* gen);
 
 // Runtime function type lookup (for type inference)
-ValueType runtime_get_function_type(const char* name);
+TypeInfo* runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);

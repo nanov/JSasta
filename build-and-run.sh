@@ -10,5 +10,5 @@ make -B
 mkdir -p compiled
 cd compiled
 ../build/jsastac $script $output_ll
-clang -O3 -o ${output} ${output_ll}
+clang -Wno-override-module -O3 -o ${output} ${output_ll}
 ./$output

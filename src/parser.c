@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "jsasta_compiler.h"
+#include "logger.h"
 
 // Helper macro to create AST nodes with current token location
 #define AST_NODE(parser, type) ast_create_with_loc(type, (SourceLocation){ \
@@ -48,20 +49,20 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
     if (parser_match(parser, TOKEN_LBRACE)) {
         parser_advance(parser);  // consume '{'
 
-        TypeInfo* type_info = type_info_create(TYPE_OBJECT);
+        TypeInfo* type_info = type_info_create(TYPE_KIND_OBJECT, NULL);
 
         // Parse property types
         int capacity = 4;
-        type_info->property_names = (char**)malloc(sizeof(char*) * capacity);
-        type_info->property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
-        type_info->property_count = 0;
+        type_info->data.object.property_names = (char**)malloc(sizeof(char*) * capacity);
+        type_info->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
+        type_info->data.object.property_count = 0;
 
         if (!parser_match(parser, TOKEN_RBRACE)) {
             do {
-                if (type_info->property_count >= capacity) {
+                if (type_info->data.object.property_count >= capacity) {
                     capacity *= 2;
-                    type_info->property_names = (char**)realloc(type_info->property_names, sizeof(char*) * capacity);
-                    type_info->property_types = (TypeInfo**)realloc(type_info->property_types, sizeof(TypeInfo*) * capacity);
+                    type_info->data.object.property_names = (char**)realloc(type_info->data.object.property_names, sizeof(char*) * capacity);
+                    type_info->data.object.property_types = (TypeInfo**)realloc(type_info->data.object.property_types, sizeof(TypeInfo*) * capacity);
                 }
 
                 // Parse property name
@@ -70,18 +71,18 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
                     type_info_free(type_info);
                     return NULL;
                 }
-                type_info->property_names[type_info->property_count] = strdup(parser->current_token->value);
+                type_info->data.object.property_names[type_info->data.object.property_count] = strdup(parser->current_token->value);
                 parser_advance(parser);
 
                 // Parse property type recursively
-                type_info->property_types[type_info->property_count] = parse_type_annotation(parser);
-                if (!type_info->property_types[type_info->property_count]) {
+                type_info->data.object.property_types[type_info->data.object.property_count] = parse_type_annotation(parser);
+                if (!type_info->data.object.property_types[type_info->data.object.property_count]) {
                     log_error("Expected type annotation for property");
                     type_info_free(type_info);
                     return NULL;
                 }
 
-                type_info->property_count++;
+                type_info->data.object.property_count++;
 
                 // Check for comma
                 if (parser_match(parser, TOKEN_COMMA)) {
@@ -112,35 +113,35 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
     }
 
     const char* type_name = parser->current_token->value;
-    ValueType type = TYPE_UNKNOWN;
 
+    TypeInfo* type_info;
     if (strcmp(type_name, "int") == 0) {
-        type = TYPE_INT;
+      type_info = Type_Int;
     } else if (strcmp(type_name, "double") == 0) {
-        type = TYPE_DOUBLE;
+	    type_info = Type_Double;
     } else if (strcmp(type_name, "string") == 0) {
-        type = TYPE_STRING;
+	    type_info = Type_String;
     } else if (strcmp(type_name, "bool") == 0) {
-        type = TYPE_BOOL;
+	    type_info = Type_Bool;
     } else if (strcmp(type_name, "void") == 0) {
-        type = TYPE_VOID;
+	    type_info = Type_Void;
     } else {
-        log_error("Unknown type '%s'", type_name);
-        return NULL;
+        log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->line), "Unknown type '%s'", type_name);
+      type_info = Type_Unknown;
     }
 
     parser_advance(parser);  // consume type name
 
     // Create TypeInfo for primitive type
-    TypeInfo* type_info = type_info_create(type);
     return type_info;
 }
 
-Parser* parser_create(const char* source, const char* filename) {
+Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx) {
     Parser* parser = (Parser*)malloc(sizeof(Parser));
     parser->lexer = lexer_create(source);
     parser->current_token = NULL;
     parser->filename = filename;
+    parser->type_ctx = type_ctx;
     parser_advance(parser);
     return parser;
 }
@@ -163,17 +164,22 @@ static ASTNode* parse_primary(Parser* parser) {
     if (parser_match(parser, TOKEN_NUMBER)) {
         node = AST_NODE(parser, AST_NUMBER);
         node->number.value = atof(parser->current_token->value);
-        node->value_type = strchr(parser->current_token->value, '.') ? TYPE_DOUBLE : TYPE_INT;
+        // Determine if it's an int or double
+        if (strchr(parser->current_token->value, '.') || strchr(parser->current_token->value, 'e') || strchr(parser->current_token->value, 'E')) {
+            node->type_info = Type_Double;
+        } else {
+            node->type_info = Type_Int;
+        }
         parser_advance(parser);
     } else if (parser_match(parser, TOKEN_STRING)) {
         node = AST_NODE(parser, AST_STRING);
         node->string.value = strdup(parser->current_token->value);
-        node->value_type = TYPE_STRING;
+        node->type_info = Type_String;
         parser_advance(parser);
     } else if (parser_match(parser, TOKEN_TRUE) || parser_match(parser, TOKEN_FALSE)) {
         node = AST_NODE(parser, AST_BOOLEAN);
         node->boolean.value = parser_match(parser, TOKEN_TRUE);
-        node->value_type = TYPE_BOOL;
+        node->type_info = Type_Bool;
         parser_advance(parser);
     } else if (parser_match(parser, TOKEN_IDENTIFIER)) {
         node = AST_NODE(parser, AST_IDENTIFIER);
@@ -213,8 +219,7 @@ static ASTNode* parse_primary(Parser* parser) {
         node->object_literal.keys = (char**)malloc(sizeof(char*) * capacity);
         node->object_literal.values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
         node->object_literal.count = 0;
-        node->object_literal.type_info = NULL; // Will be set during type inference
-        node->value_type = TYPE_OBJECT;
+        // Type info will be set during type inference in node->type_info
 
         if (!parser_match(parser, TOKEN_RBRACE)) {
             do {
@@ -263,6 +268,8 @@ static ASTNode* parse_primary(Parser* parser) {
         }
 
         parser_expect(parser, TOKEN_RBRACE);
+
+        // NOTE: TypeInfo will be created during type inference with structural sharing
     } else {
         SourceLocation loc = {
             .filename = parser->filename,
@@ -702,7 +709,6 @@ static ASTNode* parse_function_declaration(Parser* parser) {
 
     int capacity = 4;
     node->func_decl.params = (char**)malloc(sizeof(char*) * capacity);
-    node->func_decl.param_types = (ValueType*)malloc(sizeof(ValueType) * capacity);
     node->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
     node->func_decl.param_count = 0;
 
@@ -711,7 +717,6 @@ static ASTNode* parse_function_declaration(Parser* parser) {
             if (node->func_decl.param_count >= capacity) {
                 capacity *= 2;
                 node->func_decl.params = (char**)realloc(node->func_decl.params, sizeof(char*) * capacity);
-                node->func_decl.param_types = (ValueType*)realloc(node->func_decl.param_types, sizeof(ValueType) * capacity);
                 node->func_decl.param_type_hints = (TypeInfo**)realloc(node->func_decl.param_type_hints, sizeof(TypeInfo*) * capacity);
             }
             node->func_decl.params[node->func_decl.param_count] = strdup(parser->current_token->value);
@@ -719,7 +724,6 @@ static ASTNode* parse_function_declaration(Parser* parser) {
 
             // Parse optional type annotation for parameter (e.g., function add(a: int, b: int))
             node->func_decl.param_type_hints[node->func_decl.param_count] = parse_type_annotation(parser);
-            node->func_decl.param_types[node->func_decl.param_count] = TYPE_UNKNOWN;
             node->func_decl.param_count++;
         } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
     }
@@ -728,9 +732,11 @@ static ASTNode* parse_function_declaration(Parser* parser) {
 
     // Parse optional return type annotation (e.g., function add(...): int { })
     node->func_decl.return_type_hint = parse_type_annotation(parser);
+    if (!node->func_decl.return_type_hint) {
+        node->func_decl.return_type_hint = Type_Unknown;
+    }
 
     node->func_decl.body = parse_block(parser);
-    node->func_decl.return_type = TYPE_UNKNOWN;
 
     return node;
 }

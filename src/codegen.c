@@ -4,8 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Forward declarations
+static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info);
+
 // Runtime function registry
-void codegen_register_runtime_function(CodeGen* gen, const char* name, ValueType return_type,
+void codegen_register_runtime_function(CodeGen* gen, const char* name, TypeInfo* return_type,
                                        LLVMValueRef (*handler)(CodeGen*, ASTNode*)) {
     RuntimeFunction* rf = (RuntimeFunction*)malloc(sizeof(RuntimeFunction));
     rf->name = strdup(name);
@@ -15,7 +18,7 @@ void codegen_register_runtime_function(CodeGen* gen, const char* name, ValueType
     gen->runtime_functions = rf;
 }
 
-ValueType codegen_get_runtime_function_type(CodeGen* gen, const char* name) {
+TypeInfo* codegen_get_runtime_function_type(CodeGen* gen, const char* name) {
     RuntimeFunction* rf = gen->runtime_functions;
     while (rf) {
         if (strcmp(rf->name, name) == 0) {
@@ -23,7 +26,7 @@ ValueType codegen_get_runtime_function_type(CodeGen* gen, const char* name) {
         }
         rf = rf->next;
     }
-    return TYPE_UNKNOWN;
+    return Type_Unknown;
 }
 
 LLVMValueRef codegen_call_runtime_function(CodeGen* gen, const char* name, ASTNode* call_node) {
@@ -46,6 +49,7 @@ CodeGen* codegen_create(const char* module_name) {
     gen->current_function = NULL;
     gen->runtime_functions = NULL;
     gen->specialization_ctx = NULL;  // Will be set during generation
+    gen->type_ctx = NULL;             // Will be set during generation
 
     // Initialize runtime library
     runtime_init(gen);
@@ -70,33 +74,41 @@ void codegen_free(CodeGen* gen) {
     free(gen);
 }
 
-static LLVMTypeRef get_llvm_type(CodeGen* gen, ValueType type) {
-    switch (type) {
-        case TYPE_INT:
-            return LLVMInt32TypeInContext(gen->context);
-        case TYPE_DOUBLE:
-            return LLVMDoubleTypeInContext(gen->context);
-        case TYPE_STRING:
-            return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-        case TYPE_BOOL:
-            return LLVMInt1TypeInContext(gen->context);
-        case TYPE_VOID:
-            return LLVMVoidTypeInContext(gen->context);
-        case TYPE_ARRAY_INT:
-            // Pointer to int32 (we'll use dynamic sizing)
-            return LLVMPointerType(LLVMInt32TypeInContext(gen->context), 0);
-        case TYPE_ARRAY_DOUBLE:
-            // Pointer to double
-            return LLVMPointerType(LLVMDoubleTypeInContext(gen->context), 0);
-        case TYPE_ARRAY_STRING:
-            // Pointer to pointer (array of strings)
-            return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 0);
-        case TYPE_OBJECT:
-            // For objects, we use opaque pointers (the actual struct type is determined per object)
-            return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-        default:
-            return LLVMInt32TypeInContext(gen->context);
+static LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
+    if (!type_info) return LLVMInt32TypeInContext(gen->context);
+    
+    TypeContext* ctx = gen->type_ctx;
+    
+    // Check primitive types by pointer comparison
+    if (type_info == ctx->int_type) {
+        return LLVMInt32TypeInContext(gen->context);
+    } else if (type_info == ctx->double_type) {
+        return LLVMDoubleTypeInContext(gen->context);
+    } else if (type_info == ctx->string_type) {
+        return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+    } else if (type_info == ctx->bool_type) {
+        return LLVMInt1TypeInContext(gen->context);
+    } else if (type_info == ctx->void_type) {
+        return LLVMVoidTypeInContext(gen->context);
     }
+    
+    // Check by kind
+    if (type_info->kind == TYPE_KIND_ARRAY && type_info->data.array.element_type) {
+        // Array type - determine element type
+        if (type_info->data.array.element_type == ctx->int_type) {
+            return LLVMPointerType(LLVMInt32TypeInContext(gen->context), 0);
+        } else if (type_info->data.array.element_type == ctx->double_type) {
+            return LLVMPointerType(LLVMDoubleTypeInContext(gen->context), 0);
+        } else if (type_info->data.array.element_type == ctx->string_type) {
+            return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 0);
+        }
+    } else if (type_info->kind == TYPE_KIND_OBJECT) {
+        // For objects, we use opaque pointers
+        return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+    }
+    
+    // Default fallback
+    return LLVMInt32TypeInContext(gen->context);
 }
 
 static LLVMValueRef codegen_string_concat(CodeGen* gen, LLVMValueRef left, LLVMValueRef right) {
@@ -189,7 +201,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
     switch (node->type) {
         case AST_NUMBER:
-            if (node->value_type == TYPE_DOUBLE) {
+            if (type_info_is_double(node->type_info)) {
                 return LLVMConstReal(LLVMDoubleTypeInContext(gen->context), node->number.value);
             } else {
                 return LLVMConstInt(LLVMInt32TypeInContext(gen->context), (int)node->number.value, 0);
@@ -204,13 +216,21 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_IDENTIFIER: {
             SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->identifier.name);
             if (entry && entry->value) {
-                // For objects, return the pointer directly (don't load)
+                // Use node->type_info if available, otherwise fall back to entry->type_info
+                TypeInfo* type_info = node->type_info ? node->type_info : entry->type_info;
+                
+                // For objects and arrays, return the pointer directly (don't load)
                 // Objects are already stack-allocated structs, we pass by pointer
-                if (entry->type == TYPE_OBJECT) {
+                // Arrays are heap-allocated, the alloca holds the pointer
+                if (type_info_is_object(type_info)) {
                     return entry->value;
                 }
+                if (type_info_is_array(type_info)) {
+                    return LLVMBuildLoad2(gen->builder, LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+                                         entry->value, node->identifier.name);
+                }
                 // For other types, load the value
-                return LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type),
+                return LLVMBuildLoad2(gen->builder, get_llvm_type(gen, type_info),
                                      entry->value, node->identifier.name);
             }
             log_error_at(&node->loc, "Undefined variable: %s", node->identifier.name);
@@ -222,39 +242,39 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef right = codegen_node(gen, node->binary_op.right);
 
             if (strcmp(node->binary_op.op, "%") == 0 &&
-                (node->binary_op.left->value_type == TYPE_INT &&
-                 node->binary_op.right->value_type == TYPE_INT)) {
+                (type_info_is_int(node->binary_op.left->type_info) &&
+                 type_info_is_int(node->binary_op.right->type_info))) {
                  return LLVMBuildSRem(gen->builder, left, right, "modtmp");
             }
             if (strcmp(node->binary_op.op, ">>") == 0 &&
-                (node->binary_op.left->value_type == TYPE_INT ||
-                 node->binary_op.right->value_type == TYPE_INT)) {
+                (type_info_is_int(node->binary_op.left->type_info) ||
+                 type_info_is_int(node->binary_op.right->type_info))) {
                  return LLVMBuildAShr(gen->builder, left, right, "ashrtmp");
             }
             if (strcmp(node->binary_op.op, "<<") == 0 &&
-                (node->binary_op.left->value_type == TYPE_INT ||
-                 node->binary_op.right->value_type == TYPE_INT)) {
+                (type_info_is_int(node->binary_op.left->type_info) ||
+                 type_info_is_int(node->binary_op.right->type_info))) {
                  return LLVMBuildShl(gen->builder, left, right, "shltmp");
             }
             // Handle string concatenation
             if (strcmp(node->binary_op.op, "+") == 0 &&
-                (node->binary_op.left->value_type == TYPE_STRING ||
-                 node->binary_op.right->value_type == TYPE_STRING)) {
+                (type_info_is_string(node->binary_op.left->type_info) ||
+                 type_info_is_string(node->binary_op.right->type_info))) {
 
                 // Convert non-strings to strings if needed
-                if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_int(node->binary_op.left->type_info)) {
                     left = codegen_int_to_string(gen, left);
-                } else if (node->binary_op.left->value_type == TYPE_DOUBLE) {
+                } else if (type_info_is_double(node->binary_op.left->type_info)) {
                     left = codegen_double_to_string(gen, left);
-                } else if (node->binary_op.left->value_type == TYPE_BOOL) {
+                } else if (type_info_is_bool(node->binary_op.left->type_info)) {
                     left = codegen_bool_to_string(gen, left);
                 }
 
-                if (node->binary_op.right->value_type == TYPE_INT) {
+                if (type_info_is_int(node->binary_op.right->type_info)) {
                     right = codegen_int_to_string(gen, right);
-                } else if (node->binary_op.right->value_type == TYPE_DOUBLE) {
+                } else if (type_info_is_double(node->binary_op.right->type_info)) {
                     right = codegen_double_to_string(gen, right);
-                } else if (node->binary_op.right->value_type == TYPE_BOOL) {
+                } else if (type_info_is_bool(node->binary_op.right->type_info)) {
                     right = codegen_bool_to_string(gen, right);
                 }
 
@@ -264,13 +284,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Arithmetic operations
             if (strcmp(node->binary_op.op, "+") == 0) {
 
-                if (node->value_type == TYPE_DOUBLE) {
+                if (type_info_is_double(node->type_info)) {
                     // Convert int operands to double if needed
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -278,12 +298,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildAdd(gen->builder, left, right, "addtmp");
             } else if (strcmp(node->binary_op.op, "-") == 0) {
-                if (node->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -291,12 +311,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildSub(gen->builder, left, right, "subtmp");
             } else if (strcmp(node->binary_op.op, "*") == 0) {
-                if (node->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -304,12 +324,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildMul(gen->builder, left, right, "multmp");
             } else if (strcmp(node->binary_op.op, "/") == 0) {
-                if (node->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -320,14 +340,14 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Comparison operations
             else if (strcmp(node->binary_op.op, "<") == 0) {
-                if (node->binary_op.left->value_type == TYPE_DOUBLE ||
-                    node->binary_op.right->value_type == TYPE_DOUBLE) {
+                if (type_info_is_double(node->binary_op.left->type_info) ||
+                    type_info_is_double(node->binary_op.right->type_info)) {
                     // Convert int to double if needed
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -335,13 +355,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildICmp(gen->builder, LLVMIntSLT, left, right, "cmptmp");
             } else if (strcmp(node->binary_op.op, ">") == 0) {
-                if (node->binary_op.left->value_type == TYPE_DOUBLE ||
-                    node->binary_op.right->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->binary_op.left->type_info) ||
+                    type_info_is_double(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -349,13 +369,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildICmp(gen->builder, LLVMIntSGT, left, right, "cmptmp");
             } else if (strcmp(node->binary_op.op, "<=") == 0) {
-                if (node->binary_op.left->value_type == TYPE_DOUBLE ||
-                    node->binary_op.right->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->binary_op.left->type_info) ||
+                    type_info_is_double(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -363,13 +383,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildICmp(gen->builder, LLVMIntSLE, left, right, "cmptmp");
             } else if (strcmp(node->binary_op.op, ">=") == 0) {
-                if (node->binary_op.left->value_type == TYPE_DOUBLE ||
-                    node->binary_op.right->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->binary_op.left->type_info) ||
+                    type_info_is_double(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -377,13 +397,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildICmp(gen->builder, LLVMIntSGE, left, right, "cmptmp");
             } else if (strcmp(node->binary_op.op, "==") == 0) {
-                if (node->binary_op.left->value_type == TYPE_DOUBLE ||
-                    node->binary_op.right->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->binary_op.left->type_info) ||
+                    type_info_is_double(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -391,13 +411,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMBuildICmp(gen->builder, LLVMIntEQ, left, right, "cmptmp");
             } else if (strcmp(node->binary_op.op, "!=") == 0) {
-                if (node->binary_op.left->value_type == TYPE_DOUBLE ||
-                    node->binary_op.right->value_type == TYPE_DOUBLE) {
-                    if (node->binary_op.left->value_type == TYPE_INT) {
+                if (type_info_is_double(node->binary_op.left->type_info) ||
+                    type_info_is_double(node->binary_op.right->type_info)) {
+                    if (type_info_is_int(node->binary_op.left->type_info)) {
                         left = LLVMBuildSIToFP(gen->builder, left,
                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->binary_op.right->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->binary_op.right->type_info)) {
                         right = LLVMBuildSIToFP(gen->builder, right,
                                                LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
@@ -422,7 +442,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef operand = codegen_node(gen, node->unary_op.operand);
 
             if (strcmp(node->unary_op.op, "-") == 0) {
-                if (node->unary_op.operand->value_type == TYPE_DOUBLE) {
+                if (type_info_is_double(node->unary_op.operand->type_info)) {
                     return LLVMBuildFNeg(gen->builder, operand, "negtmp");
                 }
                 return LLVMBuildNeg(gen->builder, operand, "negtmp");
@@ -446,12 +466,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return NULL;
             }
 
-            LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type),
+            LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type_info),
                                                   entry->value, node->prefix_op.name);
             LLVMValueRef one;
             LLVMValueRef new_value;
 
-            if (entry->type == TYPE_DOUBLE) {
+            if (type_info_is_double(entry->type_info)) {
                 one = LLVMConstReal(LLVMDoubleTypeInContext(gen->context), 1.0);
                 if (strcmp(node->prefix_op.op, "++") == 0) {
                     new_value = LLVMBuildFAdd(gen->builder, current, one, "preinc");
@@ -459,7 +479,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     new_value = LLVMBuildFSub(gen->builder, current, one, "predec");
                 }
             } else {
-                one = LLVMConstInt(get_llvm_type(gen, entry->type), 1, 0);
+                one = LLVMConstInt(get_llvm_type(gen, entry->type_info), 1, 0);
                 if (strcmp(node->prefix_op.op, "++") == 0) {
                     new_value = LLVMBuildAdd(gen->builder, current, one, "preinc");
                 } else {
@@ -484,12 +504,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return NULL;
             }
 
-            LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type),
+            LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type_info),
                                                   entry->value, node->postfix_op.name);
             LLVMValueRef one;
             LLVMValueRef new_value;
 
-            if (entry->type == TYPE_DOUBLE) {
+            if (type_info_is_double(entry->type_info)) {
                 one = LLVMConstReal(LLVMDoubleTypeInContext(gen->context), 1.0);
                 if (strcmp(node->postfix_op.op, "++") == 0) {
                     new_value = LLVMBuildFAdd(gen->builder, current, one, "postinc");
@@ -497,7 +517,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     new_value = LLVMBuildFSub(gen->builder, current, one, "postdec");
                 }
             } else {
-                one = LLVMConstInt(get_llvm_type(gen, entry->type), 1, 0);
+                one = LLVMConstInt(get_llvm_type(gen, entry->type_info), 1, 0);
                 if (strcmp(node->postfix_op.op, "++") == 0) {
                     new_value = LLVMBuildAdd(gen->builder, current, one, "postinc");
                 } else {
@@ -511,13 +531,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
         case AST_VAR_DECL: {
             // Special handling for function references
-            if (node->value_type == TYPE_FUNCTION && node->var_decl.init &&
+            if (type_info_is_function_ctx(node->type_info) && node->var_decl.init &&
                 node->var_decl.init->type == AST_IDENTIFIER) {
                 // Look up the function being referenced
                 const char* func_name = node->var_decl.init->identifier.name;
                 SymbolEntry* func_entry = symbol_table_lookup(gen->symbols, func_name);
 
-                if (!func_entry || func_entry->type != TYPE_FUNCTION) {
+                if (!func_entry || !func_entry->node || func_entry->node->type != AST_FUNCTION_DECL) {
                     log_error_at(&node->loc, "Cannot assign non-function to function variable: %s", func_name);
                     return NULL;
                 }
@@ -525,46 +545,46 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 // Store the function declaration node in the variable's symbol entry
                 SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
                 entry->name = strdup(node->var_decl.name);
-                entry->type = TYPE_FUNCTION;
+                entry->type_info = NULL;  // Functions don't have type_info yet
                 entry->is_const = node->var_decl.is_const;
                 entry->node = func_entry->node;  // Store the func_decl node
+                entry->llvm_type = NULL;
+                entry->value = NULL;
                 entry->next = gen->symbols->head;
                 gen->symbols->head = entry;
                 return NULL;
             }
 
             // Special handling for objects - they already return a pointer from AST_OBJECT_LITERAL
-            if (node->value_type == TYPE_OBJECT && node->var_decl.init &&
+            if (type_info_is_object(node->type_info) && node->var_decl.init &&
                 node->var_decl.init->type == AST_OBJECT_LITERAL) {
 
                 // Generate the object literal first
                 LLVMValueRef obj_ptr = codegen_node(gen, node->var_decl.init);
 
-                // Build the struct type to store with the symbol
+                // Lookup pre-generated struct type from type table
                 ASTNode* obj_lit = node->var_decl.init;
-                int prop_count = obj_lit->object_literal.count;
-                LLVMTypeRef* field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * prop_count);
-                for (int i = 0; i < prop_count; i++) {
-                    field_types[i] = get_llvm_type(gen, obj_lit->object_literal.values[i]->value_type);
+                LLVMTypeRef struct_type = codegen_lookup_object_type(gen, obj_lit->type_info);
+                
+                if (!struct_type) {
+                    log_error_at(&node->loc, "Could not find pre-generated struct type for object");
+                    return NULL;
                 }
-                LLVMTypeRef struct_type = LLVMStructTypeInContext(gen->context, field_types, prop_count, 0);
-                free(field_types);
 
                 // TypeInfo should already exist from type inference - just clone it
                 TypeInfo* type_info = NULL;
-                if (obj_lit->object_literal.type_info) {
-                    type_info = type_info_clone(obj_lit->object_literal.type_info);
+                if (obj_lit->type_info) {
+                    type_info = type_info_clone(obj_lit->type_info);
                 }
 
                 // Store in symbol table with both value and TypeInfo
                 SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
                 entry->name = strdup(node->var_decl.name);
-                entry->type = TYPE_OBJECT;
+                entry->type_info = type_info;    // Type metadata from type inference
                 entry->is_const = node->var_decl.is_const;
                 entry->value = obj_ptr;          // LLVM pointer to the struct
                 entry->node = node;              // AST node for property lookup
                 entry->llvm_type = struct_type;  // Struct type for GEP
-                entry->type_info = type_info;    // Type metadata from type inference
                 entry->next = gen->symbols->head;
                 gen->symbols->head = entry;
 
@@ -573,17 +593,32 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Regular variable handling
             LLVMValueRef init_value = NULL;
+            TypeInfo* var_type_info = node->type_info;
+            
             if (node->var_decl.init) {
                 init_value = codegen_node(gen, node->var_decl.init);
+                
+                // Use the initializer's type_info if the var_decl doesn't have one
+                // This handles cases where type_inference hasn't propagated types properly
+                if (!var_type_info && node->var_decl.init->type_info) {
+                    var_type_info = node->var_decl.init->type_info;
+                }
             } else {
                 init_value = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
             }
 
-            LLVMValueRef alloca = LLVMBuildAlloca(gen->builder,
-                                                  get_llvm_type(gen, node->value_type),
-                                                  node->var_decl.name);
+            // For arrays, use the actual type of the init_value (which is a pointer)
+            // instead of get_llvm_type which would give us the element type
+            LLVMTypeRef alloca_type;
+            if (var_type_info && type_info_is_array(var_type_info) && init_value) {
+                alloca_type = LLVMTypeOf(init_value);
+            } else {
+                alloca_type = get_llvm_type(gen, var_type_info);
+            }
+
+            LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, alloca_type, node->var_decl.name);
             LLVMBuildStore(gen->builder, init_value, alloca);
-            symbol_table_insert(gen->symbols, node->var_decl.name, node->value_type, alloca, node->var_decl.is_const);
+            symbol_table_insert(gen->symbols, node->var_decl.name, var_type_info, alloca, node->var_decl.is_const);
 
             return alloca;
         }
@@ -620,7 +655,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             }
 
             // Load current value
-            LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type),
+            LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type_info),
                                                   entry->value, node->compound_assignment.name);
 
             // Generate the right-hand side value
@@ -631,19 +666,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             const char* op = node->compound_assignment.op;
 
             if (strcmp(op, "+=") == 0) {
-                if (entry->type == TYPE_DOUBLE || node->compound_assignment.value->value_type == TYPE_DOUBLE) {
+                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
                     // Convert to double if needed
-                    if (entry->type == TYPE_INT) {
+                    if (type_info_is_int(entry->type_info)) {
                         current = LLVMBuildSIToFP(gen->builder, current,
                                                  LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->compound_assignment.value->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
                         rhs = LLVMBuildSIToFP(gen->builder, rhs,
                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
                     new_value = LLVMBuildFAdd(gen->builder, current, rhs, "addassign");
                     // Convert back to int if variable is int type
-                    if (entry->type == TYPE_INT) {
+                    if (type_info_is_int(entry->type_info)) {
                         new_value = LLVMBuildFPToSI(gen->builder, new_value,
                                                    LLVMInt32TypeInContext(gen->context), "doubletoint");
                     }
@@ -651,18 +686,18 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     new_value = LLVMBuildAdd(gen->builder, current, rhs, "addassign");
                 }
             } else if (strcmp(op, "-=") == 0) {
-                if (entry->type == TYPE_DOUBLE || node->compound_assignment.value->value_type == TYPE_DOUBLE) {
-                    if (entry->type == TYPE_INT) {
+                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
+                    if (type_info_is_int(entry->type_info)) {
                         current = LLVMBuildSIToFP(gen->builder, current,
                                                  LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->compound_assignment.value->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
                         rhs = LLVMBuildSIToFP(gen->builder, rhs,
                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
                     new_value = LLVMBuildFSub(gen->builder, current, rhs, "subassign");
                     // Convert back to int if variable is int type
-                    if (entry->type == TYPE_INT) {
+                    if (type_info_is_int(entry->type_info)) {
                         new_value = LLVMBuildFPToSI(gen->builder, new_value,
                                                    LLVMInt32TypeInContext(gen->context), "doubletoint");
                     }
@@ -670,18 +705,18 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     new_value = LLVMBuildSub(gen->builder, current, rhs, "subassign");
                 }
             } else if (strcmp(op, "*=") == 0) {
-                if (entry->type == TYPE_DOUBLE || node->compound_assignment.value->value_type == TYPE_DOUBLE) {
-                    if (entry->type == TYPE_INT) {
+                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
+                    if (type_info_is_int(entry->type_info)) {
                         current = LLVMBuildSIToFP(gen->builder, current,
                                                  LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->compound_assignment.value->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
                         rhs = LLVMBuildSIToFP(gen->builder, rhs,
                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
                     new_value = LLVMBuildFMul(gen->builder, current, rhs, "mulassign");
                     // Convert back to int if variable is int type
-                    if (entry->type == TYPE_INT) {
+                    if (type_info_is_int(entry->type_info)) {
                         new_value = LLVMBuildFPToSI(gen->builder, new_value,
                                                    LLVMInt32TypeInContext(gen->context), "doubletoint");
                     }
@@ -689,18 +724,18 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     new_value = LLVMBuildMul(gen->builder, current, rhs, "mulassign");
                 }
             } else if (strcmp(op, "/=") == 0) {
-                if (entry->type == TYPE_DOUBLE || node->compound_assignment.value->value_type == TYPE_DOUBLE) {
-                    if (entry->type == TYPE_INT) {
+                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
+                    if (type_info_is_int(entry->type_info)) {
                         current = LLVMBuildSIToFP(gen->builder, current,
                                                  LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
-                    if (node->compound_assignment.value->value_type == TYPE_INT) {
+                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
                         rhs = LLVMBuildSIToFP(gen->builder, rhs,
                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
                     }
                     new_value = LLVMBuildFDiv(gen->builder, current, rhs, "divassign");
                     // Convert back to int if variable is int type
-                    if (entry->type == TYPE_INT) {
+                    if (type_info_is_int(entry->type_info)) {
                         new_value = LLVMBuildFPToSI(gen->builder, new_value,
                                                    LLVMInt32TypeInContext(gen->context), "doubletoint");
                     }
@@ -723,7 +758,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef value = codegen_node(gen, node->index_assignment.value);
 
             // Only support array assignment, not string assignment
-            if (node->index_assignment.object->value_type == TYPE_STRING) {
+            if (type_info_is_string(node->index_assignment.object->type_info)) {
                 log_error("String index assignment is not supported. Strings are immutable");
                 return NULL;
             }
@@ -732,11 +767,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef object = codegen_node(gen, node->index_assignment.object);
 
             LLVMTypeRef elem_type;
-            if (node->index_assignment.object->value_type == TYPE_ARRAY_INT) {
+            TypeInfo* arr_type = node->index_assignment.object->type_info;
+            if (type_info_is_array_of(arr_type, gen->type_ctx->int_type)) {
                 elem_type = LLVMInt32TypeInContext(gen->context);
-            } else if (node->index_assignment.object->value_type == TYPE_ARRAY_DOUBLE) {
+            } else if (type_info_is_array_of(arr_type, gen->type_ctx->double_type)) {
                 elem_type = LLVMDoubleTypeInContext(gen->context);
-            } else if (node->index_assignment.object->value_type == TYPE_ARRAY_STRING) {
+            } else if (type_info_is_array_of(arr_type, gen->type_ctx->string_type)) {
                 elem_type = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
             } else {
                 elem_type = LLVMInt32TypeInContext(gen->context);
@@ -781,9 +817,24 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             const char* func_name = node->call.callee->identifier.name;
 
+            // Special handling for Array() constructor
+            if (strcmp(func_name, "Array") == 0 && node->call.arg_count == 1) {
+                LLVMValueRef size_arg = codegen_node(gen, node->call.args[0]);
+                LLVMValueRef calloc_func = LLVMGetNamedFunction(gen->module, "calloc");
+                
+                // Allocate array: calloc(size, element_size)
+                // Default to int array (4 bytes per element)
+                LLVMValueRef elem_size = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 4, 0);
+                LLVMValueRef calloc_args[] = { size_arg, elem_size };
+                LLVMValueRef array_ptr = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(calloc_func),
+                                                         calloc_func, calloc_args, 2, "array_calloc");
+                
+                return array_ptr;
+            }
+
             // Check if this is a function variable (e.g., var a = print; a("text");)
             SymbolEntry* callee_entry = symbol_table_lookup(gen->symbols, func_name);
-            if (callee_entry && callee_entry->type == TYPE_FUNCTION && callee_entry->node &&
+            if (callee_entry && type_info_is_function_ctx(callee_entry->type_info) && callee_entry->node &&
                 callee_entry->node->type == AST_FUNCTION_DECL) {
                 // It's a function variable - use the actual function name from the func_decl
                 func_name = callee_entry->node->func_decl.name;
@@ -791,23 +842,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Generate arguments first to get their types
             LLVMValueRef* args = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * node->call.arg_count);
-            ValueType* arg_types = (ValueType*)malloc(sizeof(ValueType) * node->call.arg_count);
+            TypeInfo** arg_type_infos = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->call.arg_count);
 
             for (int i = 0; i < node->call.arg_count; i++) {
                 args[i] = codegen_node(gen, node->call.args[i]);
-                arg_types[i] = node->call.args[i]->value_type;
+                arg_type_infos[i] = node->call.args[i]->type_info;
             }
 
             // Try to find specialized version
             LLVMValueRef func = NULL;
             if (gen->specialization_ctx && node->call.arg_count > 0) {
-                FunctionSpecialization* spec = specialization_context_find(
-                    gen->specialization_ctx, func_name, arg_types, node->call.arg_count);
+                FunctionSpecialization* spec = specialization_context_find_by_type_info(
+                    gen->specialization_ctx, func_name, arg_type_infos, node->call.arg_count);
 
                 if (spec) {
-                    // Populate TypeInfo for object arguments
+                    // Populate TypeInfo for object arguments if not already set
                     for (int i = 0; i < node->call.arg_count; i++) {
-                        if (arg_types[i] == TYPE_OBJECT) {
+                        if (type_info_is_object(arg_type_infos[i])) {
                             // Get TypeInfo from the argument
                             ASTNode* arg_node = node->call.args[i];
                             if (arg_node->type == AST_IDENTIFIER) {
@@ -835,23 +886,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 LLVMValueRef runtime_result = codegen_call_runtime_function(gen, func_name, node);
                 if (runtime_result) {
                     free(args);
-                    free(arg_types);
+                    free(arg_type_infos);
                     return runtime_result;
                 }
 
                 // Function not found anywhere
                 log_error_at(&node->loc, "Undefined function: %s", func_name);
                 free(args);
-                free(arg_types);
+                free(arg_type_infos);
                 return NULL;
             }
 
             // Don't name void function calls
-            const char* call_name = (node->value_type == TYPE_VOID) ? "" : "calltmp";
+            const char* call_name = (type_info_is_void_ctx(node->type_info, gen->type_ctx)) ? "" : "calltmp";
             LLVMValueRef result = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(func),
                                                 func, args, node->call.arg_count, call_name);
             free(args);
-            free(arg_types);
+            free(arg_type_infos);
 
             return result;
         }
@@ -889,7 +940,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             }
 
             // Check that we have type info for the object
-            if (!obj_type_info || obj_type_info->base_type != TYPE_OBJECT) {
+            if (!obj_type_info || !type_info_is_object(obj_type_info)) {
                 if (obj_node->type == AST_IDENTIFIER) {
                     log_error_at(&node->loc, "Cannot access property of non-object (variable '%s' has no TypeInfo)",
                                 obj_node->identifier.name);
@@ -913,8 +964,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             }
 
             // Get the type of this property from TypeInfo
-            ValueType prop_type = obj_type_info->property_types[prop_index]->base_type;
-            LLVMTypeRef prop_llvm_type = get_llvm_type(gen, prop_type);
+            TypeInfo* prop_type_info = obj_type_info->data.object.property_types[prop_index];
+            LLVMTypeRef prop_llvm_type = get_llvm_type(gen, prop_type_info);
 
             // Use GEP to get pointer to the field
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, obj_ptr,
@@ -957,7 +1008,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             }
 
             // Check that we have type info for the object
-            if (!obj_type_info || obj_type_info->base_type != TYPE_OBJECT) {
+            if (!obj_type_info || !type_info_is_object(obj_type_info)) {
                 log_error_at(&node->loc, "Cannot access property of non-object");
                 return NULL;
             }
@@ -1005,7 +1056,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef true_val = codegen_node(gen, node->ternary.true_expr);
 
             // Type conversion if needed
-            if (node->value_type == TYPE_DOUBLE && node->ternary.true_expr->value_type == TYPE_INT) {
+            if (type_info_is_double(node->type_info) && type_info_is_int(node->ternary.true_expr->type_info)) {
                 true_val = LLVMBuildSIToFP(gen->builder, true_val,
                                           LLVMDoubleTypeInContext(gen->context), "inttodouble");
             }
@@ -1018,7 +1069,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef false_val = codegen_node(gen, node->ternary.false_expr);
 
             // Type conversion if needed
-            if (node->value_type == TYPE_DOUBLE && node->ternary.false_expr->value_type == TYPE_INT) {
+            if (type_info_is_double(node->type_info) && type_info_is_int(node->ternary.false_expr->type_info)) {
                 false_val = LLVMBuildSIToFP(gen->builder, false_val,
                                            LLVMDoubleTypeInContext(gen->context), "inttodouble");
             }
@@ -1028,7 +1079,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Merge block with PHI node
             LLVMPositionBuilderAtEnd(gen->builder, merge_bb);
-            LLVMTypeRef result_type = get_llvm_type(gen, node->value_type);
+            LLVMTypeRef result_type = get_llvm_type(gen, node->type_info);
             LLVMValueRef phi = LLVMBuildPhi(gen->builder, result_type, "ternary_result");
 
             LLVMValueRef incoming_values[] = { true_val, false_val };
@@ -1046,13 +1097,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Determine element type and size
             LLVMTypeRef elem_type;
             int elem_size;
-            if (node->value_type == TYPE_ARRAY_INT) {
+            if (type_info_is_array_of(node->type_info, gen->type_ctx->int_type)) {
                 elem_type = LLVMInt32TypeInContext(gen->context);
                 elem_size = 4;
-            } else if (node->value_type == TYPE_ARRAY_DOUBLE) {
+            } else if (type_info_is_array_of(node->type_info, gen->type_ctx->double_type)) {
                 elem_type = LLVMDoubleTypeInContext(gen->context);
                 elem_size = 8;
-            } else if (node->value_type == TYPE_ARRAY_STRING) {
+            } else if (type_info_is_array_of(node->type_info, gen->type_ctx->string_type)) {
                 elem_type = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
                 elem_size = 8; // pointer size
             } else {
@@ -1084,32 +1135,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         }
 
         case AST_OBJECT_LITERAL: {
-            // Create a struct type for this object
-            // For now, we'll create an anonymous struct with fields matching the properties
-            int prop_count = node->object_literal.count;
-            LLVMTypeRef* field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * prop_count);
-
-            // Determine field types from property values
-            for (int i = 0; i < prop_count; i++) {
-                field_types[i] = get_llvm_type(gen, node->object_literal.values[i]->value_type);
+            // Lookup pre-generated struct type from type table
+            LLVMTypeRef struct_type = codegen_lookup_object_type(gen, node->type_info);
+            
+            if (!struct_type) {
+                log_error_at(&node->loc, "Could not find pre-generated struct type for object literal");
+                return NULL;
             }
-
-            // Create struct type
-            LLVMTypeRef struct_type = LLVMStructTypeInContext(gen->context, field_types, prop_count, 0);
-            free(field_types);
 
             // Allocate struct on the stack
             LLVMValueRef obj_ptr = LLVMBuildAlloca(gen->builder, struct_type, "obj");
 
             // Store each property value
+            int prop_count = node->object_literal.count;
             for (int i = 0; i < prop_count; i++) {
                 LLVMValueRef prop_value = codegen_node(gen, node->object_literal.values[i]);
-                LLVMValueRef indices[] = {
-                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),
-                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0)
-                };
-                LLVMValueRef field_ptr = LLVMBuildGEP2(gen->builder, struct_type, obj_ptr,
-                                                        indices, 2, "field_ptr");
+                LLVMValueRef field_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, obj_ptr,
+                                                              (unsigned)i, "field_ptr");
                 LLVMBuildStore(gen->builder, prop_value, field_ptr);
             }
 
@@ -1121,7 +1163,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef index = codegen_node(gen, node->index_access.index);
 
             // String indexing: return single character as string
-            if (node->index_access.object->value_type == TYPE_STRING) {
+            if (type_info_is_string(node->index_access.object->type_info)) {
                 // Get pointer to character at index
                 LLVMValueRef char_ptr = LLVMBuildGEP2(gen->builder,
                                                        LLVMInt8TypeInContext(gen->context),
@@ -1151,11 +1193,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Array indexing: return element
             else {
                 LLVMTypeRef elem_type;
-                if (node->index_access.object->value_type == TYPE_ARRAY_INT) {
+                TypeInfo* array_type = node->index_access.object->type_info;
+                if (type_info_is_array_of(array_type, gen->type_ctx->int_type)) {
                     elem_type = LLVMInt32TypeInContext(gen->context);
-                } else if (node->index_access.object->value_type == TYPE_ARRAY_DOUBLE) {
+                } else if (type_info_is_array_of(array_type, gen->type_ctx->double_type)) {
                     elem_type = LLVMDoubleTypeInContext(gen->context);
-                } else if (node->index_access.object->value_type == TYPE_ARRAY_STRING) {
+                } else if (type_info_is_array_of(array_type, gen->type_ctx->string_type)) {
                     elem_type = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
                 } else {
                     elem_type = LLVMInt32TypeInContext(gen->context);
@@ -1283,16 +1326,18 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Create parameter types array
             LLVMTypeRef* param_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * node->func_decl.param_count);
             for (int i = 0; i < node->func_decl.param_count; i++) {
-                // Default to int for unknown types
-                param_types[i] = get_llvm_type(gen,
-                    node->func_decl.param_types[i] != TYPE_UNKNOWN ?
-                    node->func_decl.param_types[i] : TYPE_INT);
+                // Use param_type_hints if available, otherwise default to int
+                TypeInfo* param_type_info = (node->func_decl.param_type_hints && node->func_decl.param_type_hints[i]) ?
+                    node->func_decl.param_type_hints[i] : 
+                    type_context_get_int(gen->type_ctx);
+                param_types[i] = get_llvm_type(gen, param_type_info);
             }
 
             // Create function type
-            LLVMTypeRef ret_type = get_llvm_type(gen,
-                node->func_decl.return_type != TYPE_UNKNOWN ?
-                node->func_decl.return_type : TYPE_INT);
+            TypeInfo* ret_type_info = node->func_decl.return_type_hint ? 
+                node->func_decl.return_type_hint : 
+                type_context_get_int(gen->type_ctx);
+            LLVMTypeRef ret_type = get_llvm_type(gen, ret_type_info);
 
             LLVMTypeRef func_type = LLVMFunctionType(ret_type, param_types,
                                                      node->func_decl.param_count, 0);
@@ -1319,9 +1364,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                                                       node->func_decl.params[i]);
                 LLVMBuildStore(gen->builder, param, alloca);
 
-                ValueType param_type = node->func_decl.param_types[i] != TYPE_UNKNOWN ?
-                                      node->func_decl.param_types[i] : TYPE_INT;
-                symbol_table_insert(gen->symbols, node->func_decl.params[i], param_type, alloca, false);
+                TypeInfo* param_type_info = (node->func_decl.param_type_hints && node->func_decl.param_type_hints[i]) ?
+                    node->func_decl.param_type_hints[i] : 
+                    type_context_get_int(gen->type_ctx);
+                symbol_table_insert(gen->symbols, node->func_decl.params[i], param_type_info, alloca, false);
             }
 
             // Generate body
@@ -1393,7 +1439,7 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
     // Create parameter types for symbol table (from specialized types)
     LLVMTypeRef* param_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * spec->param_count);
     for (int i = 0; i < spec->param_count; i++) {
-        param_types[i] = get_llvm_type(gen, spec->param_types[i]);
+        param_types[i] = get_llvm_type(gen, spec->param_type_info[i]);
     }
 
     // Create entry block
@@ -1417,7 +1463,7 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
 
         // For objects, use the parameter pointer directly (it's already a pointer to the struct)
         // For other types, allocate and store as usual
-        if (spec->param_types[i] == TYPE_OBJECT) {
+        if (type_info_is_object(spec->param_type_info[i])) {
             param_value = param;  // Use pointer directly
         } else {
             LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, param_types[i],
@@ -1429,28 +1475,27 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
         // Create symbol entry with TypeInfo for objects
         SymbolEntry* param_entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
         param_entry->name = strdup(specialized_node->func_decl.params[i]);
-        param_entry->type = spec->param_types[i];
+        param_entry->type_info = spec->param_type_info[i];
         param_entry->is_const = false;
         param_entry->value = param_value;
         param_entry->node = NULL;
         param_entry->llvm_type = NULL;
 
         // For object parameters, copy TypeInfo from specialization
-        if (spec->param_types[i] == TYPE_OBJECT && spec->param_type_info[i]) {
+        if (type_info_is_object(spec->param_type_info[i]) && spec->param_type_info[i]) {
             param_entry->type_info = type_info_clone(spec->param_type_info[i]);
 
-            // Also recreate the LLVM struct type for this object
-            TypeInfo* obj_info = param_entry->type_info;
-            LLVMTypeRef* field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * obj_info->property_count);
-            for (int j = 0; j < obj_info->property_count; j++) {
-                field_types[j] = get_llvm_type(gen, obj_info->property_types[j]->base_type);
+            // Lookup pre-generated LLVM struct type for this object
+            param_entry->llvm_type = codegen_lookup_object_type(gen, param_entry->type_info);
+            
+            if (!param_entry->llvm_type) {
+                log_warning("Could not find pre-generated struct type for parameter '%s'",
+                           specialized_node->func_decl.params[i]);
+            } else {
+                log_verbose_indent(2, "Parameter '%s' has TypeInfo with %d properties",
+                                 param_entry->name, param_entry->type_info->data.object.property_count);
             }
-            param_entry->llvm_type = LLVMStructTypeInContext(gen->context, field_types, obj_info->property_count, 0);
-            free(field_types);
-
-            log_verbose_indent(2, "Parameter '%s' has TypeInfo with %d properties",
-                             param_entry->name, obj_info->property_count);
-        } else if (spec->param_types[i] == TYPE_OBJECT) {
+        } else if (type_info_is_object(spec->param_type_info[i])) {
             log_warning("Parameter '%s' is TYPE_OBJECT but has no TypeInfo!",
                        specialized_node->func_decl.params[i]);
             param_entry->type_info = NULL;
@@ -1464,10 +1509,12 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
 
     // Generate body from CLONED AST (this is the key change!)
     // The cloned body has correct type annotations from type analysis
+    log_verbose_indent(2, "Generating function body for %s", spec->specialized_name);
     codegen_node(gen, specialized_node->func_decl.body);
+    log_verbose_indent(2, "Completed function body for %s", spec->specialized_name);
 
     // Add return if missing
-    LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type);
+    LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type_info);
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
         if (ret_type == LLVMVoidTypeInContext(gen->context)) {
             LLVMBuildRetVoid(gen->builder);
@@ -1486,11 +1533,80 @@ LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecialization* 
     return func;
 }
 
+// Lookup pre-generated LLVM struct type by TypeInfo
+static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info) {
+    if (!gen->type_ctx || !type_info || !type_info_is_object(type_info)) {
+        return NULL;
+    }
+
+    // If type_info doesn't have a type_name, we can't look it up
+    if (!type_info->type_name) {
+        return NULL;
+    }
+
+    // Search through type table by type_name (handles cloned TypeInfo)
+    TypeEntry* entry = gen->type_ctx->type_table;
+    while (entry) {
+        if (entry->type && entry->type->type_name && 
+            strcmp(entry->type->type_name, type_info->type_name) == 0 && 
+            entry->llvm_type) {
+            return entry->llvm_type;
+        }
+        entry = entry->next;
+    }
+
+    return NULL;
+}
+
+// Pre-generate LLVM struct types for all object types in the type table
+static void codegen_pregenerate_object_types(CodeGen* gen) {
+    if (!gen->type_ctx) {
+        return;
+    }
+
+    TypeEntry* entry = gen->type_ctx->type_table;
+    while (entry) {
+        TypeInfo* type = entry->type;
+        
+        // Only process object types
+        if (type && type->kind == TYPE_KIND_OBJECT && type->data.object.property_count > 0) {
+            // Skip if already generated
+            if (entry->llvm_type) {
+                entry = entry->next;
+                continue;
+            }
+
+            // Build array of field types
+            LLVMTypeRef* field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * type->data.object.property_count);
+            for (int i = 0; i < type->data.object.property_count; i++) {
+                field_types[i] = get_llvm_type(gen, type->data.object.property_types[i]);
+            }
+
+            // Create named struct
+            LLVMTypeRef struct_type = LLVMStructCreateNamed(gen->context, type->type_name);
+            LLVMStructSetBody(struct_type, field_types, type->data.object.property_count, 0);
+            
+            // Store in entry
+            entry->llvm_type = struct_type;
+            
+            log_verbose("Pre-generated LLVM struct type '%s' with %d fields", 
+                       type->type_name, type->data.object.property_count);
+            
+            free(field_types);
+        }
+        
+        entry = entry->next;
+    }
+}
+
 void codegen_generate(CodeGen* gen, ASTNode* ast) {
     // Store specialization context from type inference
     gen->specialization_ctx = ast->specialization_ctx;
 
-    // PASS 0: Register all functions in symbol table for function references
+    // PASS 0: Pre-generate LLVM struct types for all object types
+    codegen_pregenerate_object_types(gen);
+
+    // PASS 1: Register all functions in symbol table for function references
     if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
         for (int i = 0; i < ast->program.count; i++) {
             ASTNode* stmt = ast->program.statements[i];
@@ -1498,18 +1614,18 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
                 // Register function in codegen symbol table
                 SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
                 entry->name = strdup(stmt->func_decl.name);
-                entry->type = TYPE_FUNCTION;
+                entry->type_info = NULL;  // Functions don't have type_info yet
                 entry->is_const = false;
+                entry->value = NULL;
                 entry->node = stmt;
                 entry->llvm_type = NULL;
-                entry->type_info = NULL;
                 entry->next = gen->symbols->head;
                 gen->symbols->head = entry;
             }
         }
     }
 
-    // PASS 1: Declare all function prototypes first
+    // PASS 2: Declare all function prototypes first
     // This allows forward references and recursive calls
     if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
         for (int i = 0; i < ast->program.count; i++) {
@@ -1532,11 +1648,11 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
                         // Create parameter types
                         LLVMTypeRef* param_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * spec->param_count);
                         for (int j = 0; j < spec->param_count; j++) {
-                            param_types[j] = get_llvm_type(gen, spec->param_types[j]);
+                            param_types[j] = get_llvm_type(gen, spec->param_type_info[j]);
                         }
 
                         // Create return type
-                        LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type);
+                        LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type_info);
 
                         // Create function type
                         LLVMTypeRef func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, 0);
@@ -1563,7 +1679,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
 
     gen->current_function = main_func;
 
-    // PASS 2: Generate function bodies
+    // PASS 3: Generate function bodies
     if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
         for (int i = 0; i < ast->program.count; i++) {
             ASTNode* stmt = ast->program.statements[i];

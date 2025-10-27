@@ -33,15 +33,19 @@ void compile_file(const char* input_file, const char* output_file) {
 
     log_info("Compiling %s...", input_file);
 
+    // Create TypeContext (shared between parser and type inference)
+    TypeContext* type_ctx = type_context_create();
+
     // Parse
     log_section("Parsing");
-    Parser* parser = parser_create(source, input_file);
+    Parser* parser = parser_create(source, input_file, type_ctx);
     ASTNode* ast = parser_parse(parser);
     parser_free(parser);
 
     if (!ast) {
         log_error("Parse error");
         free(source);
+        type_context_free(type_ctx);
         return;
     }
 
@@ -50,7 +54,7 @@ void compile_file(const char* input_file, const char* output_file) {
     // Type inference (infer types from usage)
     log_section("Type Inference");
     SymbolTable* symbols = symbol_table_create(NULL);
-    type_inference(ast, symbols);
+    type_inference_with_context(ast, symbols, type_ctx);
 
     // Print specializations if any
     if (ast->specialization_ctx) {
@@ -67,6 +71,7 @@ void compile_file(const char* input_file, const char* output_file) {
     // Code generation
     log_section("Code Generation");
     CodeGen* gen = codegen_create("js_module");
+    gen->type_ctx = type_ctx;  // Set type context for codegen
     codegen_generate(gen, ast);
 
     log_info("Code generation complete");

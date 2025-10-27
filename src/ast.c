@@ -6,7 +6,7 @@
 ASTNode* ast_create(ASTNodeType type) {
     ASTNode* node = (ASTNode*)calloc(1, sizeof(ASTNode));
     node->type = type;
-    node->value_type = TYPE_UNKNOWN;
+    node->type_info = NULL;
     node->loc.filename = NULL;
     node->loc.line = 0;
     node->loc.column = 0;
@@ -16,7 +16,7 @@ ASTNode* ast_create(ASTNodeType type) {
 ASTNode* ast_create_with_loc(ASTNodeType type, SourceLocation loc) {
     ASTNode* node = (ASTNode*)calloc(1, sizeof(ASTNode));
     node->type = type;
-    node->value_type = TYPE_UNKNOWN;
+    node->type_info = NULL;
     node->loc = loc;
     return node;
 }
@@ -47,7 +47,6 @@ void ast_free(ASTNode* node) {
                 free(node->func_decl.params[i]);
             }
             free(node->func_decl.params);
-            free(node->func_decl.param_types);
             if (node->func_decl.param_type_hints) {
                 for (int i = 0; i < node->func_decl.param_count; i++) {
                     if (node->func_decl.param_type_hints[i]) {
@@ -172,9 +171,7 @@ void ast_free(ASTNode* node) {
             }
             free(node->object_literal.keys);
             free(node->object_literal.values);
-            if (node->object_literal.type_info) {
-                type_info_free(node->object_literal.type_info);
-            }
+            // Type info is stored in node->type_info (handled generically)
             break;
 
         case AST_INDEX_ASSIGNMENT:
@@ -195,7 +192,7 @@ ASTNode* ast_clone(ASTNode* node) {
 
     ASTNode* clone = (ASTNode*)calloc(1, sizeof(ASTNode));
     clone->type = node->type;
-    clone->value_type = node->value_type;
+    clone->type_info = node->type_info ? type_info_clone(node->type_info) : NULL;
     clone->specialization_ctx = NULL; // Don't clone specialization context
 
     switch (node->type) {
@@ -224,12 +221,6 @@ ASTNode* ast_clone(ASTNode* node) {
                 clone->func_decl.params[i] = strdup(node->func_decl.params[i]);
             }
 
-            if (node->func_decl.param_types) {
-                clone->func_decl.param_types = (ValueType*)malloc(sizeof(ValueType) * node->func_decl.param_count);
-                memcpy(clone->func_decl.param_types, node->func_decl.param_types,
-                       sizeof(ValueType) * node->func_decl.param_count);
-            }
-
             // Clone type hints
             if (node->func_decl.param_type_hints) {
                 clone->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->func_decl.param_count);
@@ -242,7 +233,6 @@ ASTNode* ast_clone(ASTNode* node) {
             }
 
             clone->func_decl.body = ast_clone(node->func_decl.body);
-            clone->func_decl.return_type = node->func_decl.return_type;
             clone->func_decl.return_type_hint = node->func_decl.return_type_hint ? 
                 type_info_clone(node->func_decl.return_type_hint) : NULL;
             break;
@@ -368,9 +358,7 @@ ASTNode* ast_clone(ASTNode* node) {
                 clone->object_literal.keys[i] = strdup(node->object_literal.keys[i]);
                 clone->object_literal.values[i] = ast_clone(node->object_literal.values[i]);
             }
-            // Clone TypeInfo if it exists
-            clone->object_literal.type_info = node->object_literal.type_info ? 
-                type_info_clone(node->object_literal.type_info) : NULL;
+            // TypeInfo is cloned in the generic clone->type_info at the top of ast_clone
             break;
 
         case AST_INDEX_ASSIGNMENT:

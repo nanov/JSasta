@@ -20,28 +20,26 @@ void symbol_table_free(SymbolTable* table) {
     free(table);
 }
 
-void symbol_table_insert(SymbolTable* table, const char* name, ValueType type, LLVMValueRef value, bool is_const) {
+void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_info, LLVMValueRef value, bool is_const) {
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
-    entry->type = type;
+    entry->type_info = type_info;
     entry->is_const = is_const;
     entry->value = value;
     entry->node = NULL;
     entry->llvm_type = NULL;
-    entry->type_info = NULL;
     entry->next = table->head;
     table->head = entry;
 }
 
-void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, ValueType type, bool is_const, ASTNode* var_decl_node) {
+void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, TypeInfo* type_info, bool is_const, ASTNode* var_decl_node) {
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
-    entry->type = type;
+    entry->type_info = type_info;
     entry->is_const = is_const;
     entry->value = NULL;  // Will be set during codegen
     entry->node = var_decl_node;  // Store the AST node for looking up object properties
     entry->llvm_type = NULL;  // Will be set during codegen for objects
-    entry->type_info = NULL;  // Will be set during codegen for objects
     entry->next = table->head;
     table->head = entry;
 }
@@ -49,12 +47,11 @@ void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, V
 void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node) {
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
-    entry->type = TYPE_FUNCTION;  // Mark this as a function
+    entry->type_info = NULL;  // Functions don't have type_info yet (could add in future)
     entry->is_const = false; // Functions are not const variables
     entry->value = NULL;
     entry->node = node;
     entry->llvm_type = NULL;
-    entry->type_info = NULL;
     entry->next = table->head;
     table->head = entry;
 }

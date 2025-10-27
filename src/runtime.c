@@ -9,14 +9,14 @@ static LLVMValueRef runtime_console_log(CodeGen* gen, ASTNode* call_node);
 static LLVMValueRef runtime_array(CodeGen* gen, ASTNode* call_node);
 
 // Runtime function type lookup table (for type inference before codegen)
-ValueType runtime_get_function_type(const char* name) {
+TypeInfo* runtime_get_function_type(const char* name) {
     if (strcmp(name, "Array") == 0) {
-        return TYPE_ARRAY_INT;
+        return Type_Array_Int;
     }
     if (strcmp(name, "console.log") == 0) {
-        return TYPE_VOID;
+        return Type_Void;
     }
-    return TYPE_UNKNOWN;
+    return Type_Unknown;
 }
 
 void runtime_init(CodeGen* gen) {
@@ -115,8 +115,8 @@ void runtime_init(CodeGen* gen) {
     LLVMAddFunction(gen->module, "calloc", calloc_type);
 
     // Register runtime functions
-    codegen_register_runtime_function(gen, "console.log", TYPE_VOID, runtime_console_log);
-    codegen_register_runtime_function(gen, "Array", TYPE_ARRAY_INT, runtime_array);
+    codegen_register_runtime_function(gen, "console.log", Type_Void, runtime_console_log);
+    codegen_register_runtime_function(gen, "Array", Type_Array_Int, runtime_array);
 
     // Add more runtime functions here as needed:
     // codegen_register_runtime_function(gen, "console.error", runtime_console_error);
@@ -133,25 +133,26 @@ static LLVMValueRef runtime_console_log(CodeGen* gen, ASTNode* call_node) {
         LLVMValueRef format_str;
         LLVMValueRef args[2];
 
-        if (call_node->call.args[i]->value_type == TYPE_STRING) {
+        TypeInfo* arg_type = call_node->call.args[i]->type_info;
+        if (type_info_is_string(arg_type)) {
             format_str = LLVMBuildGlobalStringPtr(gen->builder, "%s", "fmt");
             args[0] = format_str;
             args[1] = arg;
             LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(printf_func),
                           printf_func, args, 2, "");
-        } else if (call_node->call.args[i]->value_type == TYPE_INT) {
+        } else if (type_info_is_int(arg_type)) {
             format_str = LLVMBuildGlobalStringPtr(gen->builder, "%d", "fmt");
             args[0] = format_str;
             args[1] = arg;
             LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(printf_func),
                           printf_func, args, 2, "");
-        } else if (call_node->call.args[i]->value_type == TYPE_DOUBLE) {
+        } else if (type_info_is_double(arg_type)) {
             format_str = LLVMBuildGlobalStringPtr(gen->builder, "%f", "fmt");
             args[0] = format_str;
             args[1] = arg;
             LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(printf_func),
                           printf_func, args, 2, "");
-        } else if (call_node->call.args[i]->value_type == TYPE_BOOL) {
+        } else if (type_info_is_bool(arg_type)) {
             LLVMValueRef true_str = LLVMBuildGlobalStringPtr(gen->builder, "true", "true_str");
             LLVMValueRef false_str = LLVMBuildGlobalStringPtr(gen->builder, "false", "false_str");
             LLVMValueRef result = LLVMBuildSelect(gen->builder, arg, true_str, false_str, "bool_str");
