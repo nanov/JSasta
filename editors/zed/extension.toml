@@ -1,7 +1,0 @@
-id = "jsasta"
-name = "JSasta"
-version = "0.1.0"
-schema_version = 1
-authors = ["JSasta Contributors"]
-description = "Language support for JSasta - a JavaScript-like language that compiles to native code"
-repository = "https://github.com/dimitarnanov/JSasta"

@@ -53,6 +53,22 @@ void ast_free(ASTNode* node) {
             ast_free(node->func_decl.body);
             break;
 
+        case AST_STRUCT_DECL:
+            free(node->struct_decl.name);
+            for (int i = 0; i < node->struct_decl.property_count; i++) {
+                free(node->struct_decl.property_names[i]);
+                ast_free(node->struct_decl.default_values[i]);
+            }
+            free(node->struct_decl.property_names);
+            // Note: property_types are references to TypeContext, don't free the TypeInfo objects
+            if (node->struct_decl.property_types) {
+                free(node->struct_decl.property_types);
+            }
+            if (node->struct_decl.default_values) {
+                free(node->struct_decl.default_values);
+            }
+            break;
+
         case AST_RETURN:
             ast_free(node->return_stmt.value);
             break;
@@ -227,6 +243,36 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->func_decl.body = ast_clone(node->func_decl.body);
             clone->func_decl.return_type_hint = node->func_decl.return_type_hint;
             clone->func_decl.is_variadic = node->func_decl.is_variadic;
+            break;
+
+        case AST_STRUCT_DECL:
+            clone->struct_decl.name = strdup(node->struct_decl.name);
+            clone->struct_decl.property_count = node->struct_decl.property_count;
+
+            clone->struct_decl.property_names = (char**)malloc(sizeof(char*) * node->struct_decl.property_count);
+            for (int i = 0; i < node->struct_decl.property_count; i++) {
+                clone->struct_decl.property_names[i] = strdup(node->struct_decl.property_names[i]);
+            }
+
+            // Copy type references (don't clone - they're managed by TypeContext)
+            if (node->struct_decl.property_types) {
+                clone->struct_decl.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->struct_decl.property_count);
+                for (int i = 0; i < node->struct_decl.property_count; i++) {
+                    clone->struct_decl.property_types[i] = node->struct_decl.property_types[i];
+                }
+            } else {
+                clone->struct_decl.property_types = NULL;
+            }
+
+            // Clone default values
+            if (node->struct_decl.default_values) {
+                clone->struct_decl.default_values = (ASTNode**)malloc(sizeof(ASTNode*) * node->struct_decl.property_count);
+                for (int i = 0; i < node->struct_decl.property_count; i++) {
+                    clone->struct_decl.default_values[i] = ast_clone(node->struct_decl.default_values[i]);
+                }
+            } else {
+                clone->struct_decl.default_values = NULL;
+            }
             break;
 
         case AST_RETURN:

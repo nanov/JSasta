@@ -1,4 +1,0 @@
-target/
-extension.wasm
-grammars/*/node_modules/
-grammars/*/deno.lock

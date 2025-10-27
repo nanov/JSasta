@@ -139,6 +139,7 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "const") == 0) type = TOKEN_CONST;
     else if (strcmp(buffer, "function") == 0) type = TOKEN_FUNCTION;
     else if (strcmp(buffer, "external") == 0) type = TOKEN_EXTERNAL;
+    else if (strcmp(buffer, "struct") == 0) type = TOKEN_STRUCT;
     else if (strcmp(buffer, "return") == 0) type = TOKEN_RETURN;
     else if (strcmp(buffer, "if") == 0) type = TOKEN_IF;
     else if (strcmp(buffer, "else") == 0) type = TOKEN_ELSE;

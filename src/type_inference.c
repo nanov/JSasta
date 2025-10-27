@@ -221,6 +221,78 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
     }
 }
 
+// Pass 0: Collect struct declarations (before functions, so functions can use struct types)
+static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx) {
+    if (!node) return;
+
+    switch (node->type) {
+        case AST_PROGRAM:
+        case AST_BLOCK:
+            for (int i = 0; i < node->program.count; i++) {
+                collect_struct_declarations(node->program.statements[i], symbols, type_ctx);
+            }
+            break;
+
+        case AST_STRUCT_DECL: {
+            const char* struct_name = node->struct_decl.name;
+            char** property_names = node->struct_decl.property_names;
+            TypeInfo** property_types = node->struct_decl.property_types;
+            ASTNode** default_values = node->struct_decl.default_values;
+            int property_count = node->struct_decl.property_count;
+
+            // Validate and infer types for default values
+            for (int i = 0; i < property_count; i++) {
+                if (default_values[i]) {
+                    // Infer the literal's type
+                    infer_literal_types(default_values[i], symbols, NULL);
+                    
+                    // Check if default value type matches property type
+                    TypeInfo* default_type = default_values[i]->type_info;
+                    TypeInfo* prop_type = property_types[i];
+                    
+                    if (default_type != prop_type) {
+                        // Allow int -> double promotion
+                        if (!(prop_type == Type_Double && default_type == Type_Int)) {
+                            log_error_at(&node->loc,
+                                "Type mismatch in struct '%s': property '%s' has type %s but default value has type %s",
+                                struct_name, property_names[i],
+                                prop_type ? prop_type->type_name : "unknown",
+                                default_type ? default_type->type_name : "unknown");
+                        }
+                    }
+                }
+            }
+
+            // Register struct type in TypeContext (if not already registered during parsing)
+            if (type_ctx) {
+                // Check if already registered during parsing
+                TypeInfo* existing = type_context_find_struct_type(type_ctx, struct_name);
+                if (!existing) {
+                    TypeInfo* struct_type = type_context_create_struct_type(
+                        type_ctx,
+                        struct_name,
+                        property_names,
+                        property_types,
+                        property_count,
+                        node  // Pass the struct declaration node for default values
+                    );
+
+                    if (struct_type) {
+                        log_verbose("Registered struct type during type inference: %s with %d properties", 
+                                   struct_name, property_count);
+                    }
+                } else {
+                    log_verbose("Struct type already registered: %s", struct_name);
+                }
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
 // Pass 1: Collect function signatures
 static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx) {
     if (!node) return;
@@ -344,7 +416,16 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_VAR_DECL:
             if (node->var_decl.init) {
-                infer_literal_types(node->var_decl.init, symbols, type_ctx);
+                // Special case: if we have a struct type hint and object literal, 
+                // skip normal type inference to avoid creating anonymous types
+                bool is_struct_literal = (node->var_decl.type_hint && 
+                                         type_info_is_object(node->var_decl.type_hint) &&
+                                         node->var_decl.type_hint->data.object.struct_decl_node &&
+                                         node->var_decl.init->type == AST_OBJECT_LITERAL);
+                
+                if (!is_struct_literal) {
+                    infer_literal_types(node->var_decl.init, symbols, type_ctx);
+                }
 
                 // If type hint is provided, validate it matches the initialization value
                 if (node->var_decl.type_hint) {
@@ -363,40 +444,120 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         }
                     }
 
-                    // For objects, validate structure matches if both are objects
-                    if (type_info_is_object(declared_type) && type_info_is_object(inferred_type) &&
-                        node->var_decl.init->type == AST_OBJECT_LITERAL &&
-                        node->var_decl.init->type_info) {
+                    // For objects (especially structs), validate and fill in default values
+                    if (type_info_is_object(declared_type) &&
+                        node->var_decl.init->type == AST_OBJECT_LITERAL) {
 
                         TypeInfo* declared_info = node->var_decl.type_hint;
-                        TypeInfo* actual_info = node->var_decl.init->type_info;
-
-                        // Validate property count matches
-                        if (declared_info->data.object.property_count != actual_info->data.object.property_count) {
-                            log_error_at(&node->loc,
-                                "Object property count mismatch: expected %d properties but got %d",
-                                declared_info->data.object.property_count, actual_info->data.object.property_count);
-                        }
-
-                        // Validate each property
-                        for (int i = 0; i < declared_info->data.object.property_count && i < actual_info->data.object.property_count; i++) {
-                            // Check property name
-                            if (strcmp(declared_info->data.object.property_names[i], actual_info->data.object.property_names[i]) != 0) {
-                                log_error_at(&node->loc,
-                                    "Property name mismatch: expected '%s' but got '%s'",
-                                    declared_info->data.object.property_names[i], actual_info->data.object.property_names[i]);
+                        ASTNode* obj_literal = node->var_decl.init;
+                        
+                        // If this is a struct, we need to infer types for the property values
+                        // (but not create an anonymous object type)
+                        if (is_struct_literal) {
+                            for (int i = 0; i < obj_literal->object_literal.count; i++) {
+                                infer_literal_types(obj_literal->object_literal.values[i], symbols, type_ctx);
                             }
-
-                            // Check property type
-                            // TODO: utiliti fucntion to check if same
-                            TypeInfo* declared_prop_type = declared_info->data.object.property_types[i];
-                            TypeInfo* actual_prop_type = actual_info->data.object.property_types[i];
-                            if (declared_prop_type != actual_prop_type) {
+                        }
+                        
+                        // Check if this is a struct type with default values
+                        ASTNode* struct_decl = declared_info->data.object.struct_decl_node;
+                        
+                        // Build a map of provided properties
+                        bool* provided = (bool*)calloc(declared_info->data.object.property_count, sizeof(bool));
+                        
+                        // Validate provided properties and mark them
+                        for (int i = 0; i < obj_literal->object_literal.count; i++) {
+                            const char* provided_key = obj_literal->object_literal.keys[i];
+                            bool found = false;
+                            
+                            // Find this property in the struct definition
+                            for (int j = 0; j < declared_info->data.object.property_count; j++) {
+                                if (strcmp(declared_info->data.object.property_names[j], provided_key) == 0) {
+                                    found = true;
+                                    provided[j] = true;
+                                    
+                                    // Validate type
+                                    TypeInfo* expected_type = declared_info->data.object.property_types[j];
+                                    TypeInfo* actual_type = obj_literal->object_literal.values[i]->type_info;
+                                    if (expected_type != actual_type) {
+                                        // Allow int -> double promotion
+                                        if (!(expected_type == Type_Double && actual_type == Type_Int)) {
+                                            log_error_at(&node->loc,
+                                                "Property '%s' type mismatch: expected %s but got %s",
+                                                provided_key,
+                                                expected_type->type_name,
+                                                actual_type->type_name);
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            
+                            if (!found) {
                                 log_error_at(&node->loc,
-                                    "Property '%s' type mismatch: expected %s but got %s",
-                                    declared_info->data.object.property_names[i],
-                                    declared_prop_type->type_name,
-                                    actual_prop_type->type_name);
+                                    "Unknown property '%s' in struct '%s'",
+                                    provided_key, declared_info->type_name);
+                            }
+                        }
+                        
+                        // Rebuild the object literal with properties in the correct struct order
+                        if (struct_decl && struct_decl->type == AST_STRUCT_DECL) {
+                            char** new_keys = (char**)malloc(sizeof(char*) * declared_info->data.object.property_count);
+                            ASTNode** new_values = (ASTNode**)malloc(sizeof(ASTNode*) * declared_info->data.object.property_count);
+                            
+                            for (int i = 0; i < declared_info->data.object.property_count; i++) {
+                                new_keys[i] = strdup(declared_info->data.object.property_names[i]);
+                                
+                                if (provided[i]) {
+                                    // Find this property in the original object literal
+                                    for (int j = 0; j < obj_literal->object_literal.count; j++) {
+                                        if (strcmp(obj_literal->object_literal.keys[j], declared_info->data.object.property_names[i]) == 0) {
+                                            new_values[i] = obj_literal->object_literal.values[j];
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    // Property is missing - use default value
+                                    if (struct_decl->struct_decl.default_values[i]) {
+                                        new_values[i] = ast_clone(struct_decl->struct_decl.default_values[i]);
+                                        log_verbose("Filled in default value for property '%s' in struct '%s'",
+                                                   declared_info->data.object.property_names[i],
+                                                   declared_info->type_name);
+                                    } else {
+                                        // No default value - this is an error
+                                        log_error_at(&node->loc,
+                                            "Missing required property '%s' in struct '%s' (no default value)",
+                                            declared_info->data.object.property_names[i],
+                                            declared_info->type_name);
+                                        new_values[i] = NULL;
+                                    }
+                                }
+                            }
+                            
+                            // Free old arrays (but not the values we're keeping)
+                            for (int i = 0; i < obj_literal->object_literal.count; i++) {
+                                free(obj_literal->object_literal.keys[i]);
+                            }
+                            free(obj_literal->object_literal.keys);
+                            free(obj_literal->object_literal.values);
+                            
+                            // Replace with new ordered arrays
+                            obj_literal->object_literal.keys = new_keys;
+                            obj_literal->object_literal.values = new_values;
+                            obj_literal->object_literal.count = declared_info->data.object.property_count;
+                        }
+                        
+                        free(provided);
+                        
+                        // For structs, use the struct type directly instead of creating anonymous type
+                        if (struct_decl && struct_decl->type == AST_STRUCT_DECL) {
+                            obj_literal->type_info = declared_info;
+                            log_verbose("Assigned struct type '%s' to object literal (no anonymous type created)",
+                                       declared_info->type_name);
+                        } else {
+                            // For non-struct object types, re-infer the type
+                            if (type_ctx) {
+                                obj_literal->type_info = type_context_create_object_type_from_literal(type_ctx, obj_literal);
                             }
                         }
                     }
@@ -1351,6 +1512,10 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
     if (!ast || !symbols || !type_ctx) return;
 
     log_verbose("Starting multi-pass type inference");
+
+    // Pass 0: Collect struct declarations first (so functions can use struct types)
+    log_verbose_indent(1, "Pass 0: Collecting struct declarations");
+    collect_struct_declarations(ast, symbols, type_ctx);
 
     // Pass 1: Collect function signatures
     log_verbose_indent(1, "Pass 1: Collecting function signatures");

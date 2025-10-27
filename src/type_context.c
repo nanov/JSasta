@@ -305,6 +305,54 @@ TypeInfo* type_context_find_function_type(TypeContext* ctx, const char* func_nam
     return NULL;
 }
 
+// Create and register a struct type from struct declaration
+TypeInfo* type_context_create_struct_type(TypeContext* ctx, const char* struct_name,
+                                          char** property_names, TypeInfo** property_types,
+                                          int property_count, ASTNode* struct_decl_node) {
+    if (!ctx || !struct_name) return NULL;
+
+    // Check if struct type already exists
+    TypeEntry* entry = ctx->type_table;
+    while (entry) {
+        if (entry->type->kind == TYPE_KIND_OBJECT &&
+            entry->type->type_name &&
+            strcmp(entry->type->type_name, struct_name) == 0) {
+            log_error("Struct '%s' is already defined", struct_name);
+            return entry->type; // Return existing
+        }
+        entry = entry->next;
+    }
+
+    // Create new struct type (as an object type with a specific name)
+    TypeInfo* struct_type = type_info_create(TYPE_KIND_OBJECT, strdup(struct_name));
+    struct_type->data.object.property_names = property_names;
+    struct_type->data.object.property_types = property_types;
+    struct_type->data.object.property_count = property_count;
+    struct_type->data.object.struct_decl_node = struct_decl_node;  // Store reference for default values
+
+    return type_context_register_type(ctx, struct_type);
+}
+
+// Find a struct type by name
+TypeInfo* type_context_find_struct_type(TypeContext* ctx, const char* struct_name) {
+    if (!ctx || !struct_name) return NULL;
+
+    TypeEntry* entry = ctx->type_table;
+    while (entry) {
+        // Structs are registered as TYPE_KIND_OBJECT with explicit names
+        // Anonymous objects have generated names like "Object_N"
+        if (entry->type->kind == TYPE_KIND_OBJECT &&
+            entry->type->type_name &&
+            strcmp(entry->type->type_name, struct_name) == 0 &&
+            strncmp(struct_name, "Object_", 7) != 0) { // Not an anonymous object
+            return entry->type;
+        }
+        entry = entry->next;
+    }
+
+    return NULL;
+}
+
 // Helper: Check if two TypeInfo arrays match
 static bool type_arrays_match(TypeInfo** types1, TypeInfo** types2, int count) {
     for (int i = 0; i < count; i++) {

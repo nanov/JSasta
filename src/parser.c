@@ -126,13 +126,24 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
     } else if (strcmp(type_name, "void") == 0) {
 	    type_info = Type_Void;
     } else {
-        log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->line), "Unknown type '%s'", type_name);
-      type_info = Type_Unknown;
+        // Try to look up struct type from TypeContext
+        if (parser->type_ctx) {
+            type_info = type_context_find_struct_type(parser->type_ctx, type_name);
+            if (!type_info) {
+                log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column), 
+                            "Unknown type '%s'", type_name);
+                type_info = Type_Unknown;
+            }
+        } else {
+            log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column), 
+                        "Unknown type '%s'", type_name);
+            type_info = Type_Unknown;
+        }
     }
 
     parser_advance(parser);  // consume type name
 
-    // Create TypeInfo for primitive type
+    // Return type info (primitive or struct)
     return type_info;
 }
 
@@ -854,6 +865,126 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
     return node;
 }
 
+static ASTNode* parse_struct_declaration(Parser* parser) {
+    parser_advance(parser); // skip 'struct'
+
+    ASTNode* node = AST_NODE(parser, AST_STRUCT_DECL);
+    
+    // Parse struct name
+    if (parser->current_token->type != TOKEN_IDENTIFIER) {
+        SourceLocation loc = {
+            .filename = parser->filename,
+            .line = parser->current_token->line,
+            .column = parser->current_token->column
+        };
+        log_error_at(&loc, "Expected struct name after 'struct' keyword");
+        return node;
+    }
+    
+    node->struct_decl.name = strdup(parser->current_token->value);
+    parser_advance(parser);
+    
+    parser_expect(parser, TOKEN_LBRACE);
+    
+    // Parse properties
+    int capacity = 4;
+    node->struct_decl.property_names = (char**)malloc(sizeof(char*) * capacity);
+    node->struct_decl.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
+    node->struct_decl.default_values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+    node->struct_decl.property_count = 0;
+    
+    while (!parser_match(parser, TOKEN_RBRACE) && !parser_match(parser, TOKEN_EOF)) {
+        if (node->struct_decl.property_count >= capacity) {
+            capacity *= 2;
+            node->struct_decl.property_names = (char**)realloc(node->struct_decl.property_names, sizeof(char*) * capacity);
+            node->struct_decl.property_types = (TypeInfo**)realloc(node->struct_decl.property_types, sizeof(TypeInfo*) * capacity);
+            node->struct_decl.default_values = (ASTNode**)realloc(node->struct_decl.default_values, sizeof(ASTNode*) * capacity);
+        }
+        
+        // Parse property name
+        if (parser->current_token->type != TOKEN_IDENTIFIER) {
+            SourceLocation loc = {
+                .filename = parser->filename,
+                .line = parser->current_token->line,
+                .column = parser->current_token->column
+            };
+            log_error_at(&loc, "Expected property name in struct declaration");
+            return node;
+        }
+        
+        char* prop_name = strdup(parser->current_token->value);
+        parser_advance(parser);
+        
+        // Parse type annotation (required) - parse_type_annotation checks for and consumes the colon
+        TypeInfo* prop_type = parse_type_annotation(parser);
+        if (!prop_type) {
+            SourceLocation loc = {
+                .filename = parser->filename,
+                .line = parser->current_token->line,
+                .column = parser->current_token->column
+            };
+            log_error_at(&loc, "Struct property '%s' must have a type annotation", prop_name);
+            free(prop_name);
+            return node;
+        }
+        
+        // Check for default value (optional)
+        ASTNode* default_value = NULL;
+        if (parser_match(parser, TOKEN_ASSIGN)) {
+            parser_advance(parser); // consume '='
+            
+            // Parse literal value only
+            if (parser->current_token->type == TOKEN_NUMBER) {
+                default_value = parse_primary(parser);
+            } else if (parser->current_token->type == TOKEN_STRING) {
+                default_value = parse_primary(parser);
+            } else if (parser->current_token->type == TOKEN_TRUE || parser->current_token->type == TOKEN_FALSE) {
+                default_value = parse_primary(parser);
+            } else {
+                SourceLocation loc = {
+                    .filename = parser->filename,
+                    .line = parser->current_token->line,
+                    .column = parser->current_token->column
+                };
+                log_error_at(&loc, "Default values must be literals (number, string, true, or false)");
+                free(prop_name);
+                return node;
+            }
+            
+            // Validate default value type matches property type
+            // Type inference will handle the actual validation
+        }
+        
+        node->struct_decl.property_names[node->struct_decl.property_count] = prop_name;
+        node->struct_decl.property_types[node->struct_decl.property_count] = prop_type;
+        node->struct_decl.default_values[node->struct_decl.property_count] = default_value;
+        node->struct_decl.property_count++;
+        
+        // Expect semicolon after property
+        parser_expect(parser, TOKEN_SEMICOLON);
+    }
+    
+    parser_expect(parser, TOKEN_RBRACE);
+    
+    // Register struct type immediately so it can be used in later declarations
+    if (parser->type_ctx) {
+        TypeInfo* struct_type = type_context_create_struct_type(
+            parser->type_ctx,
+            node->struct_decl.name,
+            node->struct_decl.property_names,
+            node->struct_decl.property_types,
+            node->struct_decl.property_count,
+            node  // Pass the struct declaration node for default values
+        );
+        
+        if (struct_type) {
+            log_verbose("Registered struct type during parsing: %s", node->struct_decl.name);
+        }
+    }
+    
+    return node;
+}
+
 static ASTNode* parse_return_statement(Parser* parser) {
     parser_advance(parser); // skip 'return'
 
@@ -949,6 +1080,8 @@ static ASTNode* parse_statement(Parser* parser) {
         return parse_function_declaration(parser);
     } else if (parser_match(parser, TOKEN_EXTERNAL)) {
         return parse_external_function_declaration(parser);
+    } else if (parser_match(parser, TOKEN_STRUCT)) {
+        return parse_struct_declaration(parser);
     } else if (parser_match(parser, TOKEN_RETURN)) {
         return parse_return_statement(parser);
     } else if (parser_match(parser, TOKEN_IF)) {

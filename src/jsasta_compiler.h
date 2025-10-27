@@ -17,6 +17,7 @@ typedef enum {
     TOKEN_CONST,
     TOKEN_FUNCTION,
     TOKEN_EXTERNAL,
+    TOKEN_STRUCT,
     TOKEN_RETURN,
     TOKEN_IF,
     TOKEN_ELSE,
@@ -77,6 +78,7 @@ typedef enum {
     AST_PROGRAM,
     AST_VAR_DECL,
     AST_FUNCTION_DECL,  // Used for both user and external functions
+    AST_STRUCT_DECL,    // Struct type definition
     AST_RETURN,
     AST_IF,
     AST_FOR,
@@ -130,6 +132,7 @@ struct TypeInfo {
             char** property_names;      // Property names
             TypeInfo** property_types;  // Property types (allows nested objects)
             int property_count;         // Number of properties
+            ASTNode* struct_decl_node;  // Reference to struct declaration (for default values)
         } object;
 
         // For TYPE_KIND_ARRAY: element type
@@ -217,6 +220,14 @@ struct ASTNode {
             TypeInfo* return_type_hint;   // Optional for user functions, required for external
             bool is_variadic;             // Variable arguments support (... in parameter list)
         } func_decl;
+
+        struct {
+            char* name;                   // Struct name
+            char** property_names;        // Property names
+            TypeInfo** property_types;    // Property types
+            ASTNode** default_values;     // Default literal values (NULL if no default)
+            int property_count;
+        } struct_decl;
 
         struct {
             ASTNode* value;
@@ -511,6 +522,10 @@ TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_n
                                             TypeInfo* return_type, ASTNode* original_body,
                                             bool is_variadic);
 TypeInfo* type_context_find_function_type(TypeContext* ctx, const char* func_name);
+TypeInfo* type_context_create_struct_type(TypeContext* ctx, const char* struct_name,
+                                          char** property_names, TypeInfo** property_types,
+                                          int property_count, ASTNode* struct_decl_node);
+TypeInfo* type_context_find_struct_type(TypeContext* ctx, const char* struct_name);
 FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeInfo* func_type,
                                                         TypeInfo** param_type_info, int param_count);
 FunctionSpecialization* type_context_find_specialization(TypeContext* ctx, TypeInfo* func_type,

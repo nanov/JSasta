@@ -14,6 +14,7 @@ Syntax highlighting and editor support for the JSasta programming language.
 ## Supported Editors
 
 - [Visual Studio Code](#visual-studio-code)
+- [Zed](#zed)
 - [Sublime Text](#sublime-text)
 - [Vim/Neovim](#vimneovim)
 - [Emacs](#emacs)
