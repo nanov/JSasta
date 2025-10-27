@@ -253,7 +253,8 @@ TypeInfo* type_context_get_void(TypeContext* ctx) {
 // Create or find a function type
 TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_name,
                                             TypeInfo** param_types, int param_count,
-                                            TypeInfo* return_type, ASTNode* original_body) {
+                                            TypeInfo* return_type, ASTNode* original_body,
+                                            bool is_variadic) {
     if (!ctx || !func_name) return NULL;
 
     // Check if function type already exists
@@ -267,8 +268,22 @@ TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_n
     func_type->data.function.param_types = param_types;
     func_type->data.function.param_count = param_count;
     func_type->data.function.return_type = return_type;
+    func_type->data.function.is_variadic = is_variadic;
     func_type->data.function.specializations = NULL;
     func_type->data.function.original_body = original_body;  // Store reference, don't own
+
+    // Compute is_fully_typed flag (cached check)
+    func_type->data.function.is_fully_typed = false;
+    if (return_type && !type_info_is_unknown(return_type)) {
+        bool all_params_typed = true;
+        for (int i = 0; i < param_count; i++) {
+            if (!param_types || !param_types[i] || type_info_is_unknown(param_types[i])) {
+                all_params_typed = false;
+                break;
+            }
+        }
+        func_type->data.function.is_fully_typed = all_params_typed;
+    }
 
     return type_context_register_type(ctx, func_type);
 }

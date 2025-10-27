@@ -53,17 +53,6 @@ void ast_free(ASTNode* node) {
             ast_free(node->func_decl.body);
             break;
 
-        case AST_EXTERNAL_FUNCTION_DECL:
-            free(node->external_func_decl.name);
-            for (int i = 0; i < node->external_func_decl.param_count; i++) {
-                free(node->external_func_decl.params[i]);
-            }
-            free(node->external_func_decl.params);
-            // Note: param_type_hints are references to TypeContext, don't free the TypeInfo objects
-            free(node->external_func_decl.param_type_hints);
-            // Note: return_type_hint is a reference to TypeContext, don't free it
-            break;
-
         case AST_RETURN:
             ast_free(node->return_stmt.value);
             break;
@@ -237,24 +226,7 @@ ASTNode* ast_clone(ASTNode* node) {
 
             clone->func_decl.body = ast_clone(node->func_decl.body);
             clone->func_decl.return_type_hint = node->func_decl.return_type_hint;
-            break;
-
-        case AST_EXTERNAL_FUNCTION_DECL:
-            clone->external_func_decl.name = strdup(node->external_func_decl.name);
-            clone->external_func_decl.param_count = node->external_func_decl.param_count;
-
-            clone->external_func_decl.params = (char**)malloc(sizeof(char*) * node->external_func_decl.param_count);
-            for (int i = 0; i < node->external_func_decl.param_count; i++) {
-                clone->external_func_decl.params[i] = strdup(node->external_func_decl.params[i]);
-            }
-
-            // Copy type hint references (don't clone - they're managed by TypeContext)
-            clone->external_func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->external_func_decl.param_count);
-            for (int i = 0; i < node->external_func_decl.param_count; i++) {
-                clone->external_func_decl.param_type_hints[i] = node->external_func_decl.param_type_hints[i];
-            }
-
-            clone->external_func_decl.return_type_hint = node->external_func_decl.return_type_hint;
+            clone->func_decl.is_variadic = node->func_decl.is_variadic;
             break;
 
         case AST_RETURN:

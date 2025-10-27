@@ -57,6 +57,7 @@ typedef enum {
     TOKEN_SEMICOLON,
     TOKEN_COMMA,
     TOKEN_DOT,
+    TOKEN_ELLIPSIS,    // ...
     TOKEN_AND,
     TOKEN_OR,
     TOKEN_NOT,
@@ -75,8 +76,7 @@ typedef struct {
 typedef enum {
     AST_PROGRAM,
     AST_VAR_DECL,
-    AST_FUNCTION_DECL,
-    AST_EXTERNAL_FUNCTION_DECL,
+    AST_FUNCTION_DECL,  // Used for both user and external functions
     AST_RETURN,
     AST_IF,
     AST_FOR,
@@ -142,6 +142,8 @@ struct TypeInfo {
             TypeInfo** param_types;              // Generic parameter types (may be NULL for untyped)
             TypeInfo* return_type;               // Return type
             int param_count;                     // Number of parameters
+            bool is_variadic;                    // True if function accepts variable arguments (...)
+            bool is_fully_typed;                 // True if all params and return type are known (cached)
             FunctionSpecialization* specializations;  // Linked list of specializations
             ASTNode* original_body;              // Original AST body (for cloning during specialization)
             ASTNode* func_decl_node;             // Function declaration node (for function variables)
@@ -210,18 +212,11 @@ struct ASTNode {
             char* name;
             char** params;
             int param_count;
-            ASTNode* body;
-            TypeInfo** param_type_hints;  // Optional type annotations for params (NULL if not specified, supports objects)
-            TypeInfo* return_type_hint;   // Optional return type annotation (NULL if not specified, supports objects)
+            ASTNode* body;                // NULL for external functions
+            TypeInfo** param_type_hints;  // Optional for user functions, required for external
+            TypeInfo* return_type_hint;   // Optional for user functions, required for external
+            bool is_variadic;             // Variable arguments support (... in parameter list)
         } func_decl;
-
-        struct {
-            char* name;
-            char** params;
-            int param_count;
-            TypeInfo** param_type_hints;  // Required type annotations for params
-            TypeInfo* return_type_hint;   // Required return type annotation
-        } external_func_decl;
 
         struct {
             ASTNode* value;
@@ -483,29 +478,6 @@ static inline bool type_info_is_function_ctx(TypeInfo* type_info) {
     return type_info && type_info->kind == TYPE_KIND_FUNCTION;
 }
 
-// Check if a function is fully typed (all params and return type specified)
-static inline bool type_info_is_function_fully_typed(TypeInfo* func_type) {
-    if (!func_type || func_type->kind != TYPE_KIND_FUNCTION) {
-        return false;
-    }
-
-    // Check if return type is specified and not unknown
-    if (!func_type->data.function.return_type ||
-        type_info_is_unknown(func_type->data.function.return_type)) {
-        return false;
-    }
-
-    // Check if all parameters have types specified
-    for (int i = 0; i < func_type->data.function.param_count; i++) {
-        if (!func_type->data.function.param_types[i] ||
-            type_info_is_unknown(func_type->data.function.param_types[i])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 // Helper to check if void with TypeContext (for compatibility)
 static inline bool type_info_is_void_ctx(TypeInfo* type_info, TypeContext* ctx) {
     (void)ctx;  // unused for now
@@ -536,7 +508,8 @@ TypeInfo* type_context_get_void(TypeContext* ctx);
 // Function type management
 TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_name,
                                             TypeInfo** param_types, int param_count,
-                                            TypeInfo* return_type, ASTNode* original_body);
+                                            TypeInfo* return_type, ASTNode* original_body,
+                                            bool is_variadic);
 TypeInfo* type_context_find_function_type(TypeContext* ctx, const char* func_name);
 FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeInfo* func_type,
                                                         TypeInfo** param_type_info, int param_count);

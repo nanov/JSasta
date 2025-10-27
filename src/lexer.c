@@ -221,7 +221,14 @@ Token* lexer_next_token(Lexer* lexer) {
             case ']': return token_create(TOKEN_RBRACKET, "]", line, col);
             case ';': return token_create(TOKEN_SEMICOLON, ";", line, col);
             case ',': return token_create(TOKEN_COMMA, ",", line, col);
-            case '.': return token_create(TOKEN_DOT, ".", line, col);
+            case '.':
+                // Check for ... (ellipsis)
+                if (lexer->current == '.' && lexer->source[lexer->position + 1] == '.') {
+                    lexer_advance(lexer); // consume second .
+                    lexer_advance(lexer); // consume third .
+                    return token_create(TOKEN_ELLIPSIS, "...", line, col);
+                }
+                return token_create(TOKEN_DOT, ".", line, col);
             case '?': return token_create(TOKEN_QUESTION, "?", line, col);
             case ':': return token_create(TOKEN_COLON, ":", line, col);
             case '=':

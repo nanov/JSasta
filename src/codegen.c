@@ -875,13 +875,9 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 if (func_decl_node && func_decl_node->type == AST_FUNCTION_DECL) {
                     // It's a function variable - use the actual function name from the func_decl
                     func_name = func_decl_node->func_decl.name;
-                    log_verbose("Function variable '%s' resolves to '%s'", 
-                               node->call.callee->identifier.name, func_name);
-                } else if (func_decl_node && func_decl_node->type == AST_EXTERNAL_FUNCTION_DECL) {
-                    // External function variable - use the actual function name
-                    func_name = func_decl_node->external_func_decl.name;
-                    log_verbose("External function variable '%s' resolves to '%s'", 
-                               node->call.callee->identifier.name, func_name);
+                    const char* func_type = func_decl_node->func_decl.body ? "Function" : "External function";
+                    log_verbose("%s variable '%s' resolves to '%s'", 
+                               func_type, node->call.callee->identifier.name, func_name);
                 } else {
                     log_verbose("Function variable '%s' has no func_decl_node in TypeInfo", 
                                node->call.callee->identifier.name);
@@ -1483,9 +1479,8 @@ static LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecializ
         log_error("No function declaration node for %s", spec->specialized_name);
         return NULL;
     }
-    char** param_names = (func_decl->type == AST_EXTERNAL_FUNCTION_DECL) ? 
-                         func_decl->external_func_decl.params : 
-                         func_decl->func_decl.params;
+    // All functions now use func_decl structure (whether user or external)
+    char** param_names = func_decl->func_decl.params;
 
     // Get the already-declared function
     LLVMValueRef func = LLVMGetNamedFunction(gen->module, spec->specialized_name);
@@ -1674,13 +1669,17 @@ static void codegen_initialize_types(CodeGen* gen) {
                 // Create return type
                 LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type_info);
 
+                // Check if variadic (only for external functions)
+                int is_var_arg = type->data.function.is_variadic ? 1 : 0;
+
                 // Create function type
-                LLVMTypeRef llvm_func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, 0);
+                LLVMTypeRef llvm_func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, is_var_arg);
 
                 // Declare function (just add to module, don't generate body yet)
                 LLVMAddFunction(gen->module, spec->specialized_name, llvm_func_type);
 
-                log_verbose_indent(1, "Declared: %s with %d params", spec->specialized_name, spec->param_count);
+                log_verbose_indent(1, "Declared: %s with %d params%s", spec->specialized_name, spec->param_count,
+                                  is_var_arg ? " (variadic)" : "");
 
                 free(param_types);
                 spec = spec->next;

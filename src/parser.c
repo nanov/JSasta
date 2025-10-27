@@ -711,6 +711,7 @@ static ASTNode* parse_function_declaration(Parser* parser) {
     node->func_decl.params = (char**)malloc(sizeof(char*) * capacity);
     node->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
     node->func_decl.param_count = 0;
+    node->func_decl.is_variadic = false;
 
     if (!parser_match(parser, TOKEN_RPAREN)) {
         do {
@@ -744,48 +745,101 @@ static ASTNode* parse_function_declaration(Parser* parser) {
 static ASTNode* parse_external_function_declaration(Parser* parser) {
     parser_advance(parser); // skip 'external'
 
-    ASTNode* node = AST_NODE(parser, AST_EXTERNAL_FUNCTION_DECL);
-    node->external_func_decl.name = strdup(parser->current_token->value);
+    ASTNode* node = AST_NODE(parser, AST_FUNCTION_DECL);
+    node->func_decl.name = strdup(parser->current_token->value);
+    node->func_decl.body = NULL;  // External functions have no body
     parser_expect(parser, TOKEN_IDENTIFIER);
 
     parser_expect(parser, TOKEN_LPAREN);
 
     int capacity = 4;
-    node->external_func_decl.params = (char**)malloc(sizeof(char*) * capacity);
-    node->external_func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
-    node->external_func_decl.param_count = 0;
+    node->func_decl.params = (char**)malloc(sizeof(char*) * capacity);
+    node->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
+    node->func_decl.param_count = 0;
+    node->func_decl.is_variadic = false;
 
     if (!parser_match(parser, TOKEN_RPAREN)) {
         do {
-            if (node->external_func_decl.param_count >= capacity) {
-                capacity *= 2;
-                node->external_func_decl.params = (char**)realloc(node->external_func_decl.params, sizeof(char*) * capacity);
-                node->external_func_decl.param_type_hints = (TypeInfo**)realloc(node->external_func_decl.param_type_hints, sizeof(TypeInfo*) * capacity);
+            // Check for variadic parameter (...)
+            if (parser->current_token->type == TOKEN_ELLIPSIS) {
+                node->func_decl.is_variadic = true;
+                parser_advance(parser); // consume ...
+                break; // ... must be the last parameter
             }
-            node->external_func_decl.params[node->external_func_decl.param_count] = strdup(parser->current_token->value);
-            parser_expect(parser, TOKEN_IDENTIFIER);
-
-            // Parse REQUIRED type annotation for parameter
-            TypeInfo* param_type = parse_type_annotation(parser);
-            if (!param_type) {
+            
+            if (node->func_decl.param_count >= capacity) {
+                capacity *= 2;
+                node->func_decl.params = (char**)realloc(node->func_decl.params, sizeof(char*) * capacity);
+                node->func_decl.param_type_hints = (TypeInfo**)realloc(node->func_decl.param_type_hints, sizeof(TypeInfo*) * capacity);
+            }
+            
+            // Check if parameter has a name or is just a type
+            // Two cases:
+            // 1. name:type - identifier followed by colon
+            // 2. type - just the type name
+            char* param_name = NULL;
+            TypeInfo* param_type = NULL;
+            
+            if (parser->current_token->type == TOKEN_IDENTIFIER) {
+                char* first_identifier = strdup(parser->current_token->value);
+                parser_advance(parser);
+                
+                // Check if this is "name:type" or just "type"
+                if (parser->current_token->type == TOKEN_COLON) {
+                    // It's "name:type"
+                    param_name = first_identifier;
+                    param_type = parse_type_annotation(parser);
+                    if (!param_type) {
+                        SourceLocation loc = {
+                            .filename = parser->filename,
+                            .line = parser->current_token->line,
+                            .column = parser->current_token->column
+                        };
+                        log_error_at(&loc, "External function parameters must have type annotations");
+                        free(first_identifier);
+                        return node;
+                    }
+                } else {
+                    // It's just "type" - the identifier is the type name
+                    // Look up the type by name
+                    param_type = type_context_find_type(parser->type_ctx, first_identifier);
+                    if (!param_type) {
+                        SourceLocation loc = {
+                            .filename = parser->filename,
+                            .line = parser->current_token->line,
+                            .column = parser->current_token->column
+                        };
+                        log_error_at(&loc, "Unknown type '%s' in external function parameter", first_identifier);
+                        free(first_identifier);
+                        return node;
+                    }
+                    // Generate a placeholder name for the parameter
+                    char buffer[32];
+                    snprintf(buffer, sizeof(buffer), "param%d", node->func_decl.param_count);
+                    param_name = strdup(buffer);
+                    free(first_identifier);
+                }
+            } else {
                 SourceLocation loc = {
                     .filename = parser->filename,
                     .line = parser->current_token->line,
                     .column = parser->current_token->column
                 };
-                log_error_at(&loc, "External function parameters must have type annotations");
+                log_error_at(&loc, "Expected parameter name or type in external function declaration");
                 return node;
             }
-            node->external_func_decl.param_type_hints[node->external_func_decl.param_count] = param_type;
-            node->external_func_decl.param_count++;
+            
+            node->func_decl.params[node->func_decl.param_count] = param_name;
+            node->func_decl.param_type_hints[node->func_decl.param_count] = param_type;
+            node->func_decl.param_count++;
         } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
     }
 
     parser_expect(parser, TOKEN_RPAREN);
 
     // Parse REQUIRED return type annotation
-    node->external_func_decl.return_type_hint = parse_type_annotation(parser);
-    if (!node->external_func_decl.return_type_hint) {
+    node->func_decl.return_type_hint = parse_type_annotation(parser);
+    if (!node->func_decl.return_type_hint) {
         SourceLocation loc = {
             .filename = parser->filename,
             .line = parser->current_token->line,

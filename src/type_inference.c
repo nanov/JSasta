@@ -233,29 +233,14 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             }
             break;
 
-        case AST_FUNCTION_DECL:
-        case AST_EXTERNAL_FUNCTION_DECL: {
-            // Extract common fields based on node type
-            const char* func_name;
-            TypeInfo** param_type_hints;
-            int param_count;
-            TypeInfo* return_type_hint;
-            ASTNode* body;
-            bool is_external = (node->type == AST_EXTERNAL_FUNCTION_DECL);
-
-            if (is_external) {
-                func_name = node->external_func_decl.name;
-                param_type_hints = node->external_func_decl.param_type_hints;
-                param_count = node->external_func_decl.param_count;
-                return_type_hint = node->external_func_decl.return_type_hint;
-                body = NULL;  // External functions have no body
-            } else {
-                func_name = node->func_decl.name;
-                param_type_hints = node->func_decl.param_type_hints;
-                param_count = node->func_decl.param_count;
-                return_type_hint = node->func_decl.return_type_hint;
-                body = node->func_decl.body;
-            }
+        case AST_FUNCTION_DECL: {
+            // All functions (user and external) now use the same structure
+            const char* func_name = node->func_decl.name;
+            TypeInfo** param_type_hints = node->func_decl.param_type_hints;
+            int param_count = node->func_decl.param_count;
+            TypeInfo* return_type_hint = node->func_decl.return_type_hint;
+            ASTNode* body = node->func_decl.body;  // NULL for external functions
+            bool is_variadic = node->func_decl.is_variadic;
 
             // Register function in symbol table
             symbol_table_insert_func_declaration(symbols, func_name, node);
@@ -268,16 +253,17 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                     param_type_hints,
                     param_count,
                     return_type_hint,
-                    body
+                    body,
+                    is_variadic
                 );
 
                 // Store the function declaration node in the TypeInfo
                 func_type->data.function.func_decl_node = node;
 
-                log_verbose("Created %sfunction type: %s", is_external ? "external " : "", func_type->type_name);
+                log_verbose("Created %sfunction type: %s", body ? "" : "external ", func_type->type_name);
 
-                // If fully typed (or external, which is always fully typed), create a single specialization
-                if (is_external || type_info_is_function_fully_typed(func_type)) {
+                // If fully typed (external functions have no body and are always fully typed)
+                if (func_type->data.function.is_fully_typed) {
                     FunctionSpecialization* spec = type_context_add_specialization(
                         type_ctx, func_type,
                         param_type_hints,
@@ -299,10 +285,9 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
 
                             // Run type inference on the body with known parameter types
                             SymbolTable* temp_symbols = symbol_table_create(symbols);
-                            char** param_names_arr = is_external ? node->external_func_decl.params : node->func_decl.params;
                             for (int i = 0; i < param_count; i++) {
                                 symbol_table_insert(temp_symbols,
-                                                  param_names_arr[i],
+                                                  node->func_decl.params[i],
                                                   param_type_hints[i], NULL, false);
                             }
                             infer_literal_types(cloned_body, temp_symbols, NULL);
@@ -315,7 +300,7 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                         }
 
                         log_verbose("Created single specialization for %sfunction: %s",
-                                  is_external ? "external " : "fully typed ", func_name);
+                                  body ? "fully typed " : "external ", func_name);
                     }
                 }
 
@@ -807,13 +792,12 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                     const char* actual_func_name = func_name;
                     ASTNode* func_decl = entry->node;
 
-                    // Skip external and fully typed functions - they already have a specialization
-                    if (func_decl->type == AST_EXTERNAL_FUNCTION_DECL ||
-                        (entry->type_info && type_info_is_function_fully_typed(entry->type_info))) {
-                        break;
-                    }
-
                     if (func_decl->type == AST_FUNCTION_DECL) {
+                        // Skip fully typed functions (including external) - they already have a specialization
+                        if (entry->type_info && entry->type_info->data.function.is_fully_typed) {
+                            break;
+                        }
+
                         // Use the function's actual name for specialization
                         actual_func_name = func_decl->func_decl.name;
                     }
