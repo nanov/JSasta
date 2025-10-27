@@ -1,0 +1,19 @@
+{
+  "name": "tree-sitter-jsasta",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for JSasta",
+  "main": "bindings/node",
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "jsasta"
+  ],
+  "author": "JSasta Contributors",
+  "license": "MIT",
+  "tree-sitter": [
+    {
+      "scope": "source.jsasta",
+      "file-types": ["js", "jsa"]
+    }
+  ]
+}
