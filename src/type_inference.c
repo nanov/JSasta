@@ -1,4 +1,6 @@
 #include "jsasta_compiler.h"
+#include "traits.h"
+#include "operator_utils.h"
 #include "logger.h"
 #include <stdlib.h>
 #include <string.h>
@@ -23,44 +25,36 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTable* scope);
 static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
-
-// Helper: Infer type from binary operation
+// Helper: Infer type from binary operation using trait system
 static TypeInfo* infer_binary_result_type(const char* op, TypeInfo* left, TypeInfo* right) {
     log_verbose("      infer_binary_result_type: %s op=%s %s",
                 left ? left->type_name : "NULL", op, right ? right->type_name : "NULL");
-    if (strcmp(op, "+") == 0) {
-        if (left == Type_String || right == Type_String) return Type_String;
-        if (left == Type_Double || right == Type_Double) return Type_Double;
-        if (left == Type_Int && right == Type_Int) return Type_Int;
-    }
-
-    if (strcmp(op, "-") == 0 || strcmp(op, "*") == 0 || strcmp(op, "/") == 0) {
-        if (left == Type_Double || right == Type_Double) return Type_Double;
-        if (left == Type_Int && right == Type_Int) return Type_Int;
-    }
-
-    if (strcmp(op, "%") == 0) {
-        if (left == Type_Int && right == Type_Int) return Type_Int;
-    }
-
-    if (strcmp(op, ">>") == 0 || strcmp(op, "<<") == 0) {
-        if (left == Type_Int && right == Type_Int) return Type_Int;
-    }
-
-    if (strcmp(op, "&") == 0 || strcmp(op, "|") == 0 || strcmp(op, "^") == 0) {
-	    if (left == Type_Int && right == Type_Int) {
-            log_verbose("      Returning Type_Int for bitwise op");
-            return Type_Int;
-        }
-    }
-
-    if (strcmp(op, "<") == 0 || strcmp(op, ">") == 0 ||
-        strcmp(op, "<=") == 0 || strcmp(op, ">=") == 0 ||
-        strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
-        strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
+    
+    // Special handling for logical operators (not implemented as traits yet)
+    if (strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
         return Type_Bool;
     }
-
+    
+    // Special handling for string concatenation (will be implemented as trait later)
+    if (strcmp(op, "+") == 0) {
+        if (left == Type_String || right == Type_String) {
+            return Type_String;
+        }
+    }
+    
+    // Use trait system to determine output type
+    Trait* trait = operator_to_trait(op);
+    if (trait && left && right) {
+        TypeInfo* output = trait_get_binary_output(trait, left, right);
+        if (output) {
+            log_verbose("      Trait %s returned output type: %s", trait->name, output->type_name);
+            return output;
+        }
+    }
+    
+    // Fallback to unknown if no trait implementation found
+    log_verbose("      No trait implementation found for %s %s %s", 
+                left ? left->type_name : "NULL", op, right ? right->type_name : "NULL");
     return Type_Unknown;
 }
 

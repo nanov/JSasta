@@ -106,26 +106,58 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
         return type_info;
     }
 
-    // Parse primitive type
-    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        log_error("Expected type name after ':'");
-        return NULL;
+    // Parse primitive type - check for type tokens first
+    TypeInfo* type_info = NULL;
+    
+    // Check for integer type tokens
+    if (parser_match(parser, TOKEN_I8)) {
+        type_info = Type_I8;
+    } else if (parser_match(parser, TOKEN_I16)) {
+        type_info = Type_I16;
+    } else if (parser_match(parser, TOKEN_I32)) {
+        type_info = Type_I32;
+    } else if (parser_match(parser, TOKEN_I64)) {
+        type_info = Type_I64;
+    } else if (parser_match(parser, TOKEN_U8)) {
+        type_info = Type_U8;
+    } else if (parser_match(parser, TOKEN_U16)) {
+        type_info = Type_U16;
+    } else if (parser_match(parser, TOKEN_U32)) {
+        type_info = Type_U32;
+    } else if (parser_match(parser, TOKEN_U64)) {
+        type_info = Type_U64;
+    } else if (parser_match(parser, TOKEN_INT)) {
+        type_info = Type_Int;
+    } else if (parser_match(parser, TOKEN_IDENTIFIER)) {
+        // Parse by identifier name (for backward compatibility and other types)
+        const char* type_name = parser->current_token->value;
+
+        if (strcmp(type_name, "int") == 0) {
+            type_info = Type_Int;
+        } else if (strcmp(type_name, "double") == 0) {
+            type_info = Type_Double;
+        } else if (strcmp(type_name, "string") == 0) {
+            type_info = Type_String;
+        } else if (strcmp(type_name, "bool") == 0) {
+            type_info = Type_Bool;
+        } else if (strcmp(type_name, "void") == 0) {
+            type_info = Type_Void;
+        } else if (strcmp(type_name, "usize") == 0) {
+            type_info = Type_Usize;
+        } else if (strcmp(type_name, "nint") == 0) {
+            type_info = Type_Nint;
+        } else if (strcmp(type_name, "uint") == 0) {
+            type_info = Type_Uint;
+        }
     }
-
-    const char* type_name = parser->current_token->value;
-
-    TypeInfo* type_info;
-    if (strcmp(type_name, "int") == 0) {
-      type_info = Type_Int;
-    } else if (strcmp(type_name, "double") == 0) {
-	    type_info = Type_Double;
-    } else if (strcmp(type_name, "string") == 0) {
-	    type_info = Type_String;
-    } else if (strcmp(type_name, "bool") == 0) {
-	    type_info = Type_Bool;
-    } else if (strcmp(type_name, "void") == 0) {
-	    type_info = Type_Void;
-    } else {
+    
+    if (!type_info) {
+        // Try identifier for struct types
+        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+            log_error("Expected type name after ':'");
+            return NULL;
+        }
+        const char* type_name = parser->current_token->value;
         // Try to look up struct type from TypeContext
         if (parser->type_ctx) {
             type_info = type_context_find_struct_type(parser->type_ctx, type_name);
@@ -174,13 +206,68 @@ static ASTNode* parse_primary(Parser* parser) {
 
     if (parser_match(parser, TOKEN_NUMBER)) {
         node = AST_NODE(parser, AST_NUMBER);
-        node->number.value = atof(parser->current_token->value);
-        // Determine if it's an int or double
-        if (strchr(parser->current_token->value, '.') || strchr(parser->current_token->value, 'e') || strchr(parser->current_token->value, 'E')) {
-            node->type_info = Type_Double;
-        } else {
-            node->type_info = Type_Int;
+        const char* value_str = parser->current_token->value;
+        
+        // Check for integer type suffix (i8, i16, i32, i64, u8, u16, u32, u64)
+        TypeInfo* explicit_type = NULL;
+        size_t len = strlen(value_str);
+        
+        // Check for 2-character suffixes (i8, u8)
+        if (len >= 2) {
+            const char* suffix = &value_str[len - 2];
+            if (strcmp(suffix, "i8") == 0) {
+                explicit_type = Type_I8;
+                len -= 2;
+            } else if (strcmp(suffix, "u8") == 0) {
+                explicit_type = Type_U8;
+                len -= 2;
+            }
         }
+        
+        // Check for 3-character suffixes (i16, i32, i64, u16, u32, u64)
+        if (!explicit_type && len >= 3) {
+            const char* suffix = &value_str[len - 3];
+            if (strcmp(suffix, "i16") == 0) {
+                explicit_type = Type_I16;
+                len -= 3;
+            } else if (strcmp(suffix, "i32") == 0) {
+                explicit_type = Type_I32;
+                len -= 3;
+            } else if (strcmp(suffix, "i64") == 0) {
+                explicit_type = Type_I64;
+                len -= 3;
+            } else if (strcmp(suffix, "u16") == 0) {
+                explicit_type = Type_U16;
+                len -= 3;
+            } else if (strcmp(suffix, "u32") == 0) {
+                explicit_type = Type_U32;
+                len -= 3;
+            } else if (strcmp(suffix, "u64") == 0) {
+                explicit_type = Type_U64;
+                len -= 3;
+            }
+        }
+        
+        // Parse the numeric value (without suffix)
+        if (explicit_type) {
+            // Create temporary string without suffix
+            char* num_str = strndup(value_str, len);
+            node->number.value = atof(num_str);
+            free(num_str);
+            node->type_info = explicit_type;
+        } else {
+            // No suffix - determine type automatically
+            node->number.value = atof(value_str);
+            
+            // Check if it's a floating point number
+            if (strchr(value_str, '.') || strchr(value_str, 'e') || strchr(value_str, 'E')) {
+                node->type_info = Type_Double;
+            } else {
+                // Integer literal without suffix defaults to i32
+                node->type_info = Type_I32;
+            }
+        }
+        
         parser_advance(parser);
     } else if (parser_match(parser, TOKEN_STRING)) {
         node = AST_NODE(parser, AST_STRING);
@@ -457,7 +544,7 @@ static ASTNode* parse_bit_shift(Parser* parser) {
         op->binary_op.op = strdup(parser->current_token->value);
         op->binary_op.left = node;
         parser_advance(parser);
-        op->binary_op.right = parse_multiplicative(parser);
+        op->binary_op.right = parse_additive(parser);
         node = op;
     }
 
@@ -503,7 +590,37 @@ static ASTNode* parse_bit_and(Parser* parser) {
         op->binary_op.op = strdup(parser->current_token->value);
         op->binary_op.left = node;
         parser_advance(parser);
-        op->binary_op.right = parse_multiplicative(parser);
+        op->binary_op.right = parse_equality(parser);
+        node = op;
+    }
+
+    return node;
+}
+
+static ASTNode* parse_bit_xor(Parser* parser) {
+    ASTNode* node = parse_bit_and(parser);
+
+    while (parser_match(parser, TOKEN_BIT_XOR)) {
+        ASTNode* op = AST_NODE(parser, AST_BINARY_OP);
+        op->binary_op.op = strdup(parser->current_token->value);
+        op->binary_op.left = node;
+        parser_advance(parser);
+        op->binary_op.right = parse_bit_and(parser);
+        node = op;
+    }
+
+    return node;
+}
+
+static ASTNode* parse_bit_or(Parser* parser) {
+    ASTNode* node = parse_bit_xor(parser);
+
+    while (parser_match(parser, TOKEN_BIT_OR)) {
+        ASTNode* op = AST_NODE(parser, AST_BINARY_OP);
+        op->binary_op.op = strdup(parser->current_token->value);
+        op->binary_op.left = node;
+        parser_advance(parser);
+        op->binary_op.right = parse_bit_xor(parser);
         node = op;
     }
 
@@ -511,7 +628,7 @@ static ASTNode* parse_bit_and(Parser* parser) {
 }
 
 static ASTNode* parse_logical_and(Parser* parser) {
-    ASTNode* node = parse_bit_and(parser);
+    ASTNode* node = parse_bit_or(parser);
 
     while (parser_match(parser, TOKEN_AND)) {
         ASTNode* op = AST_NODE(parser, AST_BINARY_OP);
@@ -656,7 +773,10 @@ static ASTNode* parse_block(Parser* parser) {
             capacity *= 2;
             node->block.statements = (ASTNode**)realloc(node->block.statements, sizeof(ASTNode*) * capacity);
         }
-        node->block.statements[node->block.count++] = parse_statement(parser);
+        ASTNode* stmt = parse_statement(parser);
+        if (stmt) {
+            node->block.statements[node->block.count++] = stmt;
+        }
     }
 
     parser_expect(parser, TOKEN_RBRACE);
@@ -673,7 +793,24 @@ static ASTNode* parse_var_declaration(Parser* parser) {
             .line = parser->current_token->line,
             .column = parser->current_token->column
         };
-        log_error_at(&loc, "Expected identifier after var/let/const");
+        // Check if a type keyword was used as a variable name
+        if (parser->current_token->type >= TOKEN_I8 && parser->current_token->type <= TOKEN_INT) {
+            log_error_at(&loc, "Cannot use type keyword '%s' as variable name", 
+                        parser->current_token->value);
+        } else {
+            log_error_at(&loc, "Expected identifier after var/let/const");
+        }
+        
+        // Error recovery: skip to next semicolon or statement boundary
+        while (!parser_match(parser, TOKEN_SEMICOLON) && 
+               !parser_match(parser, TOKEN_EOF) &&
+               !parser_match(parser, TOKEN_RBRACE)) {
+            parser_advance(parser);
+        }
+        if (parser_match(parser, TOKEN_SEMICOLON)) {
+            parser_advance(parser);
+        }
+        
         return NULL;
     }
 
@@ -1130,6 +1267,13 @@ ASTNode* parser_parse(Parser* parser) {
     program->program.count = 0;
 
     while (!parser_match(parser, TOKEN_EOF)) {
+        // Check if we have any errors - abort parsing to prevent segfaults
+        if (logger_has_errors()) {
+            // Don't bother freeing - we're about to exit anyway
+            // and partial AST cleanup can cause double-free errors
+            return NULL;
+        }
+        
         // Save current position to detect if we're stuck
         size_t prev_line = parser->current_token->line;
         size_t prev_col = parser->current_token->column;

@@ -1,4 +1,5 @@
 #include "jsasta_compiler.h"
+#include "traits.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,13 +11,41 @@ TypeContext* type_context_create() {
     ctx->type_count = 0;
     ctx->next_anonymous_id = 0;
     ctx->specialization_count = 0;
+    ctx->trait_registry = NULL;
 
     // Pre-register primitive types and cache them
     Type_Unknown = type_info_create(TYPE_KIND_UNKNOWN, strdup("unknown"));
     type_context_register_type(ctx, Type_Unknown);
 
-    Type_Int = type_info_create_primitive(strdup("int"));
-    ctx->int_type = type_context_register_type(ctx, Type_Int);
+    // Signed integer types
+    Type_I8 = type_info_create_integer(strdup("i8"), 8, true);
+    ctx->i8_type = type_context_register_type(ctx, Type_I8);
+
+    Type_I16 = type_info_create_integer(strdup("i16"), 16, true);
+    ctx->i16_type = type_context_register_type(ctx, Type_I16);
+
+    Type_I32 = type_info_create_integer(strdup("i32"), 32, true);
+    ctx->i32_type = type_context_register_type(ctx, Type_I32);
+
+    Type_I64 = type_info_create_integer(strdup("i64"), 64, true);
+    ctx->i64_type = type_context_register_type(ctx, Type_I64);
+
+    // Unsigned integer types
+    Type_U8 = type_info_create_integer(strdup("u8"), 8, false);
+    ctx->u8_type = type_context_register_type(ctx, Type_U8);
+
+    Type_U16 = type_info_create_integer(strdup("u16"), 16, false);
+    ctx->u16_type = type_context_register_type(ctx, Type_U16);
+
+    Type_U32 = type_info_create_integer(strdup("u32"), 32, false);
+    ctx->u32_type = type_context_register_type(ctx, Type_U32);
+
+    Type_U64 = type_info_create_integer(strdup("u64"), 64, false);
+    ctx->u64_type = type_context_register_type(ctx, Type_U64);
+
+    // Legacy "int" type (alias for i32)
+    Type_Int = Type_I32;
+    ctx->int_type = ctx->i32_type;
 
     Type_Double = type_info_create_primitive(strdup("double"));
     ctx->double_type = type_context_register_type(ctx, Type_Double);
@@ -30,10 +59,41 @@ TypeContext* type_context_create() {
     Type_Void = type_info_create_primitive(strdup("void"));
     ctx->void_type = type_context_register_type(ctx, Type_Void);
 
-    // Create array types
-    Type_Array_Int = type_info_create(TYPE_KIND_ARRAY, strdup("int[]"));
-    Type_Array_Int->data.array.element_type = Type_Int;
-    type_context_register_type(ctx, Type_Array_Int);
+    // Create array types for all integer types
+    Type_Array_I8 = type_info_create(TYPE_KIND_ARRAY, strdup("i8[]"));
+    Type_Array_I8->data.array.element_type = Type_I8;
+    type_context_register_type(ctx, Type_Array_I8);
+
+    Type_Array_I16 = type_info_create(TYPE_KIND_ARRAY, strdup("i16[]"));
+    Type_Array_I16->data.array.element_type = Type_I16;
+    type_context_register_type(ctx, Type_Array_I16);
+
+    Type_Array_I32 = type_info_create(TYPE_KIND_ARRAY, strdup("i32[]"));
+    Type_Array_I32->data.array.element_type = Type_I32;
+    type_context_register_type(ctx, Type_Array_I32);
+
+    Type_Array_I64 = type_info_create(TYPE_KIND_ARRAY, strdup("i64[]"));
+    Type_Array_I64->data.array.element_type = Type_I64;
+    type_context_register_type(ctx, Type_Array_I64);
+
+    Type_Array_U8 = type_info_create(TYPE_KIND_ARRAY, strdup("u8[]"));
+    Type_Array_U8->data.array.element_type = Type_U8;
+    type_context_register_type(ctx, Type_Array_U8);
+
+    Type_Array_U16 = type_info_create(TYPE_KIND_ARRAY, strdup("u16[]"));
+    Type_Array_U16->data.array.element_type = Type_U16;
+    type_context_register_type(ctx, Type_Array_U16);
+
+    Type_Array_U32 = type_info_create(TYPE_KIND_ARRAY, strdup("u32[]"));
+    Type_Array_U32->data.array.element_type = Type_U32;
+    type_context_register_type(ctx, Type_Array_U32);
+
+    Type_Array_U64 = type_info_create(TYPE_KIND_ARRAY, strdup("u64[]"));
+    Type_Array_U64->data.array.element_type = Type_U64;
+    type_context_register_type(ctx, Type_Array_U64);
+
+    // Legacy array type (alias for i32[])
+    Type_Array_Int = Type_Array_I32;
 
     Type_Array_Double = type_info_create(TYPE_KIND_ARRAY, strdup("double[]"));
     Type_Array_Double->data.array.element_type = Type_Double;
@@ -51,12 +111,41 @@ TypeContext* type_context_create() {
     Type_Object = type_info_create(TYPE_KIND_OBJECT, strdup("object"));
     type_context_register_type(ctx, Type_Object);
 
+    // Initialize trait registry with built-in traits
+    ctx->trait_registry = trait_registry_create();
+    traits_init_builtins(ctx->trait_registry, ctx);
+    traits_register_builtin_impls(ctx->trait_registry, ctx);
+
+    // Create platform-specific type aliases
+    // Determine platform pointer size to decide which types to use
+    #if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
+        // 64-bit platform
+        Type_Usize = type_info_create_alias(strdup("usize"), Type_U64);
+        Type_Nint = type_info_create_alias(strdup("nint"), Type_I64);
+        Type_Uint = type_info_create_alias(strdup("uint"), Type_U64);
+    #else
+        // 32-bit platform
+        Type_Usize = type_info_create_alias(strdup("usize"), Type_U32);
+        Type_Nint = type_info_create_alias(strdup("nint"), Type_I32);
+        Type_Uint = type_info_create_alias(strdup("uint"), Type_U32);
+    #endif
+    
+    type_context_register_type(ctx, Type_Usize);
+    type_context_register_type(ctx, Type_Nint);
+    type_context_register_type(ctx, Type_Uint);
+
     return ctx;
 }
 
 // Free TypeContext and all registered types
 void type_context_free(TypeContext* ctx) {
     if (!ctx) return;
+
+    // Free trait registry
+    if (ctx->trait_registry) {
+        trait_registry_destroy(ctx->trait_registry);
+        ctx->trait_registry = NULL;
+    }
 
     // Free all types in the type table (linked list)
     // Note: type_info_free will handle freeing specializations for function types
@@ -229,25 +318,25 @@ TypeInfo* type_context_find_or_create_object_type(TypeContext* ctx, TypeInfo* ob
     return type_context_register_type(ctx, obj_type);
 }
 
-// Primitive type accessors (return cached types for O(1) access)
+// Primitive type accessors (return actual types with aliases resolved)
 TypeInfo* type_context_get_int(TypeContext* ctx) {
-    return ctx ? ctx->int_type : NULL;
+    return type_info_resolve_alias(ctx ? ctx->int_type : NULL);
 }
 
 TypeInfo* type_context_get_double(TypeContext* ctx) {
-    return ctx ? ctx->double_type : NULL;
+    return type_info_resolve_alias(ctx ? ctx->double_type : NULL);
 }
 
 TypeInfo* type_context_get_string(TypeContext* ctx) {
-    return ctx ? ctx->string_type : NULL;
+    return type_info_resolve_alias(ctx ? ctx->string_type : NULL);
 }
 
 TypeInfo* type_context_get_bool(TypeContext* ctx) {
-    return ctx ? ctx->bool_type : NULL;
+    return type_info_resolve_alias(ctx ? ctx->bool_type : NULL);
 }
 
 TypeInfo* type_context_get_void(TypeContext* ctx) {
-    return ctx ? ctx->void_type : NULL;
+    return type_info_resolve_alias(ctx ? ctx->void_type : NULL);
 }
 
 // Create or find a function type

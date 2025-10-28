@@ -58,6 +58,11 @@ void log_error_indent_at(int indent, SourceLocation* loc, const char* format, ..
 // Section headers (for major compilation phases)
 void log_section(const char* format, ...);
 
+// Error counting
+int logger_get_error_count();
+void logger_reset_error_count();
+bool logger_has_errors();
+
 // Helper macro to create source location
 #define SRC_LOC(file, ln, col) &(SourceLocation){.filename = file, .line = ln, .column = col}
 

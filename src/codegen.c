@@ -1,4 +1,6 @@
 #include "jsasta_compiler.h"
+#include "traits.h"
+#include "operator_utils.h"
 #include "logger.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +51,7 @@ CodeGen* codegen_create(const char* module_name) {
     gen->current_function = NULL;
     gen->runtime_functions = NULL;
     gen->type_ctx = NULL;             // Will be set during generation (contains types and specializations)
+    gen->trait_registry = NULL;       // Will be shared with type_ctx
 
     // Initialize runtime library
     runtime_init(gen);
@@ -76,12 +79,20 @@ void codegen_free(CodeGen* gen) {
 static LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     if (!type_info) return LLVMInt32TypeInContext(gen->context);
     
+    // Note: type_info should already be resolved if it came from type_context getters
+    // But we resolve here as a safety measure for types from other sources
+    type_info = type_info_resolve_alias(type_info);
+    
     TypeContext* ctx = gen->type_ctx;
     
-    // Check primitive types by pointer comparison
-    if (type_info == ctx->int_type) {
-        return LLVMInt32TypeInContext(gen->context);
-    } else if (type_info == ctx->double_type) {
+    // Check integer types by bit width
+    if (type_info_is_integer(type_info)) {
+        int bit_width = type_info_get_int_width(type_info);
+        return LLVMIntTypeInContext(gen->context, bit_width);
+    }
+    
+    // Check other primitive types by pointer comparison
+    if (type_info == ctx->double_type) {
         return LLVMDoubleTypeInContext(gen->context);
     } else if (type_info == ctx->string_type) {
         return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
@@ -147,42 +158,34 @@ static LLVMValueRef codegen_string_concat(CodeGen* gen, LLVMValueRef left, LLVMV
     return result;
 }
 
-static LLVMValueRef codegen_int_to_string(CodeGen* gen, LLVMValueRef value) {
+// Helper to convert a value to string using sprintf
+static LLVMValueRef codegen_value_to_string_sprintf(CodeGen* gen, LLVMValueRef value, 
+                                                     const char* format, int buffer_size, 
+                                                     const char* buf_name) {
     LLVMValueRef malloc_func = LLVMGetNamedFunction(gen->module, "malloc");
     LLVMValueRef sprintf_func = LLVMGetNamedFunction(gen->module, "sprintf");
 
-    // Allocate 32 bytes for the string (enough for any 32-bit int)
-    LLVMValueRef size = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 32, 0);
+    // Allocate buffer
+    LLVMValueRef size = LLVMConstInt(LLVMInt64TypeInContext(gen->context), buffer_size, 0);
     LLVMValueRef malloc_args[] = { size };
     LLVMValueRef buffer = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(malloc_func),
-                                         malloc_func, malloc_args, 1, "int_buf");
+                                         malloc_func, malloc_args, 1, buf_name);
 
-    // Format the integer
-    LLVMValueRef format = LLVMBuildGlobalStringPtr(gen->builder, "%d", "int_fmt");
-    LLVMValueRef sprintf_args[] = { buffer, format, value };
+    // Format the value
+    LLVMValueRef format_str = LLVMBuildGlobalStringPtr(gen->builder, format, "fmt");
+    LLVMValueRef sprintf_args[] = { buffer, format_str, value };
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(sprintf_func),
                   sprintf_func, sprintf_args, 3, "");
 
     return buffer;
 }
 
+static LLVMValueRef codegen_int_to_string(CodeGen* gen, LLVMValueRef value) {
+    return codegen_value_to_string_sprintf(gen, value, "%d", 32, "int_buf");
+}
+
 static LLVMValueRef codegen_double_to_string(CodeGen* gen, LLVMValueRef value) {
-    LLVMValueRef malloc_func = LLVMGetNamedFunction(gen->module, "malloc");
-    LLVMValueRef sprintf_func = LLVMGetNamedFunction(gen->module, "sprintf");
-
-    // Allocate 64 bytes for the string (enough for any double)
-    LLVMValueRef size = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 64, 0);
-    LLVMValueRef malloc_args[] = { size };
-    LLVMValueRef buffer = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(malloc_func),
-                                         malloc_func, malloc_args, 1, "double_buf");
-
-    // Format the double
-    LLVMValueRef format = LLVMBuildGlobalStringPtr(gen->builder, "%f", "double_fmt");
-    LLVMValueRef sprintf_args[] = { buffer, format, value };
-    LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(sprintf_func),
-                  sprintf_func, sprintf_args, 3, "");
-
-    return buffer;
+    return codegen_value_to_string_sprintf(gen, value, "%f", 64, "double_buf");
 }
 
 static LLVMValueRef codegen_bool_to_string(CodeGen* gen, LLVMValueRef value) {
@@ -203,7 +206,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             if (type_info_is_double(node->type_info)) {
                 return LLVMConstReal(LLVMDoubleTypeInContext(gen->context), node->number.value);
             } else {
-                return LLVMConstInt(LLVMInt32TypeInContext(gen->context), (int)node->number.value, 0);
+                // Use the actual integer type from type_info
+                LLVMTypeRef int_type = get_llvm_type(gen, node->type_info);
+                bool is_signed = type_info_is_signed_int(node->type_info);
+                return LLVMConstInt(int_type, (long long)node->number.value, is_signed);
             }
 
         case AST_STRING:
@@ -239,27 +245,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_BINARY_OP: {
             LLVMValueRef left = codegen_node(gen, node->binary_op.left);
             LLVMValueRef right = codegen_node(gen, node->binary_op.right);
-
-            if (strcmp(node->binary_op.op, "%") == 0 &&
-                (type_info_is_int(node->binary_op.left->type_info) &&
-                 type_info_is_int(node->binary_op.right->type_info))) {
-                 return LLVMBuildSRem(gen->builder, left, right, "modtmp");
+            
+            // Special handling for logical operators (not traits yet)
+            if (strcmp(node->binary_op.op, "&&") == 0) {
+                return LLVMBuildAnd(gen->builder, left, right, "andtmp");
+            } else if (strcmp(node->binary_op.op, "||") == 0) {
+                return LLVMBuildOr(gen->builder, left, right, "ortmp");
             }
-            if (strcmp(node->binary_op.op, ">>") == 0 &&
-                (type_info_is_int(node->binary_op.left->type_info) ||
-                 type_info_is_int(node->binary_op.right->type_info))) {
-                 return LLVMBuildAShr(gen->builder, left, right, "ashrtmp");
-            }
-            if (strcmp(node->binary_op.op, "<<") == 0 &&
-                (type_info_is_int(node->binary_op.left->type_info) ||
-                 type_info_is_int(node->binary_op.right->type_info))) {
-                 return LLVMBuildShl(gen->builder, left, right, "shltmp");
-            }
-            // Handle string concatenation
+            
+            // Special handling for string concatenation (will use traits later)
             if (strcmp(node->binary_op.op, "+") == 0 &&
                 (type_info_is_string(node->binary_op.left->type_info) ||
                  type_info_is_string(node->binary_op.right->type_info))) {
-
+                
                 // Convert non-strings to strings if needed
                 if (type_info_is_int(node->binary_op.left->type_info)) {
                     left = codegen_int_to_string(gen, left);
@@ -268,7 +266,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 } else if (type_info_is_bool(node->binary_op.left->type_info)) {
                     left = codegen_bool_to_string(gen, left);
                 }
-
+                
                 if (type_info_is_int(node->binary_op.right->type_info)) {
                     right = codegen_int_to_string(gen, right);
                 } else if (type_info_is_double(node->binary_op.right->type_info)) {
@@ -276,192 +274,34 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 } else if (type_info_is_bool(node->binary_op.right->type_info)) {
                     right = codegen_bool_to_string(gen, right);
                 }
-
+                
                 return codegen_string_concat(gen, left, right);
             }
-
-            // Arithmetic operations
-            if (strcmp(node->binary_op.op, "+") == 0) {
-
-                if (type_info_is_double(node->type_info)) {
-                    // Convert int operands to double if needed
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFAdd(gen->builder, left, right, "addtmp");
-                }
-                return LLVMBuildAdd(gen->builder, left, right, "addtmp");
-            } else if (strcmp(node->binary_op.op, "-") == 0) {
-                if (type_info_is_double(node->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFSub(gen->builder, left, right, "subtmp");
-                }
-                return LLVMBuildSub(gen->builder, left, right, "subtmp");
-            } else if (strcmp(node->binary_op.op, "*") == 0) {
-                // Check if result should be double (from type_info or from LLVM operand types)
-                bool is_double_op = type_info_is_double(node->type_info) ||
-                                    type_info_is_double(node->binary_op.left->type_info) ||
-                                    type_info_is_double(node->binary_op.right->type_info);
+            
+            // Use trait system for all other binary operations
+            Trait* trait;
+            const char* method_name;
+            operator_get_trait_and_method(node->binary_op.op, &trait, &method_name);
+            
+            if (trait && method_name) {
+                TypeInfo* left_type = node->binary_op.left->type_info;
+                TypeInfo* right_type = node->binary_op.right->type_info;
                 
-                // If type_info not set, check LLVM types
-                if (!is_double_op && (!node->type_info || type_info_is_unknown(node->type_info))) {
-                    LLVMTypeKind left_kind = LLVMGetTypeKind(LLVMTypeOf(left));
-                    LLVMTypeKind right_kind = LLVMGetTypeKind(LLVMTypeOf(right));
-                    is_double_op = (left_kind == LLVMDoubleTypeKind || right_kind == LLVMDoubleTypeKind);
-                }
-                
-                if (is_double_op) {
-                    if (type_info_is_int(node->binary_op.left->type_info) ||
-                        LLVMGetTypeKind(LLVMTypeOf(left)) == LLVMIntegerTypeKind) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
+                if (left_type && right_type) {
+                    MethodImpl* method = trait_get_binary_method(trait, left_type, right_type, method_name);
+                    
+                    if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
+                        // Call intrinsic codegen function
+                        LLVMValueRef args[] = { left, right };
+                        return method->codegen(gen, args, 2);
+                    } else {
+                        log_error_at(&node->loc, "No trait implementation found for %s %s %s",
+                                   left_type->type_name, node->binary_op.op, right_type->type_name);
                     }
-                    if (type_info_is_int(node->binary_op.right->type_info) ||
-                        LLVMGetTypeKind(LLVMTypeOf(right)) == LLVMIntegerTypeKind) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFMul(gen->builder, left, right, "multmp");
                 }
-                return LLVMBuildMul(gen->builder, left, right, "multmp");
-            } else if (strcmp(node->binary_op.op, "/") == 0) {
-                // Check if result should be double (from type_info or from LLVM operand types)
-                bool is_double_op = type_info_is_double(node->type_info) ||
-                                    type_info_is_double(node->binary_op.left->type_info) ||
-                                    type_info_is_double(node->binary_op.right->type_info);
-                
-                // If type_info not set, check LLVM types
-                if (!is_double_op && (!node->type_info || type_info_is_unknown(node->type_info))) {
-                    LLVMTypeKind left_kind = LLVMGetTypeKind(LLVMTypeOf(left));
-                    LLVMTypeKind right_kind = LLVMGetTypeKind(LLVMTypeOf(right));
-                    is_double_op = (left_kind == LLVMDoubleTypeKind || right_kind == LLVMDoubleTypeKind);
-                }
-                
-                if (is_double_op) {
-                    if (type_info_is_int(node->binary_op.left->type_info) ||
-                        LLVMGetTypeKind(LLVMTypeOf(left)) == LLVMIntegerTypeKind) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info) ||
-                        LLVMGetTypeKind(LLVMTypeOf(right)) == LLVMIntegerTypeKind) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFDiv(gen->builder, left, right, "divtmp");
-                }
-                return LLVMBuildSDiv(gen->builder, left, right, "divtmp");
             }
-
-            // Comparison operations
-            else if (strcmp(node->binary_op.op, "<") == 0) {
-                if (type_info_is_double(node->binary_op.left->type_info) ||
-                    type_info_is_double(node->binary_op.right->type_info)) {
-                    // Convert int to double if needed
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFCmp(gen->builder, LLVMRealOLT, left, right, "cmptmp");
-                }
-                return LLVMBuildICmp(gen->builder, LLVMIntSLT, left, right, "cmptmp");
-            } else if (strcmp(node->binary_op.op, ">") == 0) {
-                if (type_info_is_double(node->binary_op.left->type_info) ||
-                    type_info_is_double(node->binary_op.right->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFCmp(gen->builder, LLVMRealOGT, left, right, "cmptmp");
-                }
-                return LLVMBuildICmp(gen->builder, LLVMIntSGT, left, right, "cmptmp");
-            } else if (strcmp(node->binary_op.op, "<=") == 0) {
-                if (type_info_is_double(node->binary_op.left->type_info) ||
-                    type_info_is_double(node->binary_op.right->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFCmp(gen->builder, LLVMRealOLE, left, right, "cmptmp");
-                }
-                return LLVMBuildICmp(gen->builder, LLVMIntSLE, left, right, "cmptmp");
-            } else if (strcmp(node->binary_op.op, ">=") == 0) {
-                if (type_info_is_double(node->binary_op.left->type_info) ||
-                    type_info_is_double(node->binary_op.right->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFCmp(gen->builder, LLVMRealOGE, left, right, "cmptmp");
-                }
-                return LLVMBuildICmp(gen->builder, LLVMIntSGE, left, right, "cmptmp");
-            } else if (strcmp(node->binary_op.op, "==") == 0) {
-                if (type_info_is_double(node->binary_op.left->type_info) ||
-                    type_info_is_double(node->binary_op.right->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, left, right, "cmptmp");
-                }
-                return LLVMBuildICmp(gen->builder, LLVMIntEQ, left, right, "cmptmp");
-            } else if (strcmp(node->binary_op.op, "!=") == 0) {
-                if (type_info_is_double(node->binary_op.left->type_info) ||
-                    type_info_is_double(node->binary_op.right->type_info)) {
-                    if (type_info_is_int(node->binary_op.left->type_info)) {
-                        left = LLVMBuildSIToFP(gen->builder, left,
-                                              LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->binary_op.right->type_info)) {
-                        right = LLVMBuildSIToFP(gen->builder, right,
-                                               LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    return LLVMBuildFCmp(gen->builder, LLVMRealONE, left, right, "cmptmp");
-                }
-                return LLVMBuildICmp(gen->builder, LLVMIntNE, left, right, "cmptmp");
-            }
-
-            // Logical operations
-            else if (strcmp(node->binary_op.op, "&&") == 0) {
-                return LLVMBuildAnd(gen->builder, left, right, "andtmp");
-            } else if (strcmp(node->binary_op.op, "||") == 0) {
-                return LLVMBuildOr(gen->builder, left, right, "ortmp");
-		        } else if (strcmp(node->binary_op.op, "&") == 0) {
-								return LLVMBuildAnd(gen->builder, left, right, "bandtmp");;
-            }
-
+            
+            log_error_at(&node->loc, "Unsupported binary operation: %s", node->binary_op.op);
             return NULL;
         }
 
@@ -482,36 +322,32 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
         case AST_PREFIX_OP: {
             // ++i or --i: increment/decrement, then return new value
-            SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->prefix_op.name);
+            const char* var_name = node->prefix_op.name;
+            const char* op = node->prefix_op.op;
+            SymbolEntry* entry = symbol_table_lookup(gen->symbols, var_name);
+            
             if (!entry || !entry->value) {
-                log_error_at(&node->loc, "Undefined variable in prefix operator: %s", node->prefix_op.name);
+                log_error_at(&node->loc, "Undefined variable in prefix operator: %s", var_name);
                 return NULL;
             }
-
             if (entry->is_const) {
-                log_error_at(&node->loc, "Cannot modify const variable: %s", node->prefix_op.name);
+                log_error_at(&node->loc, "Cannot modify const variable: %s", var_name);
                 return NULL;
             }
 
             LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type_info),
-                                                  entry->value, node->prefix_op.name);
-            LLVMValueRef one;
-            LLVMValueRef new_value;
+                                                  entry->value, var_name);
+            LLVMValueRef one, new_value;
+            bool is_increment = (strcmp(op, "++") == 0);
 
             if (type_info_is_double(entry->type_info)) {
                 one = LLVMConstReal(LLVMDoubleTypeInContext(gen->context), 1.0);
-                if (strcmp(node->prefix_op.op, "++") == 0) {
-                    new_value = LLVMBuildFAdd(gen->builder, current, one, "preinc");
-                } else {
-                    new_value = LLVMBuildFSub(gen->builder, current, one, "predec");
-                }
+                new_value = is_increment ? LLVMBuildFAdd(gen->builder, current, one, "preinc")
+                                         : LLVMBuildFSub(gen->builder, current, one, "predec");
             } else {
                 one = LLVMConstInt(get_llvm_type(gen, entry->type_info), 1, 0);
-                if (strcmp(node->prefix_op.op, "++") == 0) {
-                    new_value = LLVMBuildAdd(gen->builder, current, one, "preinc");
-                } else {
-                    new_value = LLVMBuildSub(gen->builder, current, one, "predec");
-                }
+                new_value = is_increment ? LLVMBuildAdd(gen->builder, current, one, "preinc")
+                                         : LLVMBuildSub(gen->builder, current, one, "predec");
             }
 
             LLVMBuildStore(gen->builder, new_value, entry->value);
@@ -520,35 +356,52 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
         case AST_POSTFIX_OP: {
             // i++ or i--: return old value, then increment/decrement
-            SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->postfix_op.name);
+            const char* var_name = node->postfix_op.name;
+            const char* op = node->postfix_op.op;
+            SymbolEntry* entry = symbol_table_lookup(gen->symbols, var_name);
+            
             if (!entry || !entry->value) {
-                log_error_at(&node->loc, "Undefined variable in postfix operator: %s", node->postfix_op.name);
+                log_error_at(&node->loc, "Undefined variable in postfix operator: %s", var_name);
                 return NULL;
             }
-
             if (entry->is_const) {
-                log_error_at(&node->loc, "Cannot modify const variable: %s", node->postfix_op.name);
+                log_error_at(&node->loc, "Cannot modify const variable: %s", var_name);
                 return NULL;
             }
 
             LLVMValueRef current = LLVMBuildLoad2(gen->builder, get_llvm_type(gen, entry->type_info),
-                                                  entry->value, node->postfix_op.name);
+                                                  entry->value, var_name);
+            
+            // Use trait system for increment/decrement
+            bool is_increment = (strcmp(op, "++") == 0);
+            Trait* trait = is_increment ? Trait_AddAssign : Trait_SubAssign;
+            const char* method_name = is_increment ? "add_assign" : "sub_assign";
+            
             LLVMValueRef one;
-            LLVMValueRef new_value;
-
             if (type_info_is_double(entry->type_info)) {
                 one = LLVMConstReal(LLVMDoubleTypeInContext(gen->context), 1.0);
-                if (strcmp(node->postfix_op.op, "++") == 0) {
-                    new_value = LLVMBuildFAdd(gen->builder, current, one, "postinc");
-                } else {
-                    new_value = LLVMBuildFSub(gen->builder, current, one, "postdec");
-                }
             } else {
                 one = LLVMConstInt(get_llvm_type(gen, entry->type_info), 1, 0);
-                if (strcmp(node->postfix_op.op, "++") == 0) {
-                    new_value = LLVMBuildAdd(gen->builder, current, one, "postinc");
+            }
+            
+            LLVMValueRef new_value = NULL;
+            if (trait && entry->type_info) {
+                MethodImpl* method = trait_get_binary_method(trait, entry->type_info, entry->type_info, method_name);
+                
+                if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
+                    LLVMValueRef args[] = { current, one };
+                    new_value = method->codegen(gen, args, 2);
+                }
+            }
+            
+            // Fallback if trait lookup failed
+            if (!new_value) {
+                if (type_info_is_double(entry->type_info)) {
+                    new_value = is_increment ? LLVMBuildFAdd(gen->builder, current, one, "postinc")
+                                             : LLVMBuildFSub(gen->builder, current, one, "postdec");
                 } else {
-                    new_value = LLVMBuildSub(gen->builder, current, one, "postdec");
+                    new_value = is_increment ? LLVMBuildAdd(gen->builder, current, one, "postinc")
+                                             : LLVMBuildSub(gen->builder, current, one, "postdec");
                 }
             }
 
@@ -696,89 +549,26 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Generate the right-hand side value
             LLVMValueRef rhs = codegen_node(gen, node->compound_assignment.value);
 
-            // Perform the operation
-            LLVMValueRef new_value;
+            // Use trait system for all compound assignments
             const char* op = node->compound_assignment.op;
-
-            if (strcmp(op, "+=") == 0) {
-                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
-                    // Convert to double if needed
-                    if (type_info_is_int(entry->type_info)) {
-                        current = LLVMBuildSIToFP(gen->builder, current,
-                                                 LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
-                        rhs = LLVMBuildSIToFP(gen->builder, rhs,
-                                             LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    new_value = LLVMBuildFAdd(gen->builder, current, rhs, "addassign");
-                    // Convert back to int if variable is int type
-                    if (type_info_is_int(entry->type_info)) {
-                        new_value = LLVMBuildFPToSI(gen->builder, new_value,
-                                                   LLVMInt32TypeInContext(gen->context), "doubletoint");
-                    }
-                } else {
-                    new_value = LLVMBuildAdd(gen->builder, current, rhs, "addassign");
+            Trait* trait;
+            const char* method_name;
+            operator_get_trait_and_method(op, &trait, &method_name);
+            
+            LLVMValueRef new_value = NULL;
+            if (trait && method_name && entry->type_info && node->compound_assignment.value->type_info) {
+                MethodImpl* method = trait_get_binary_method(trait, entry->type_info, 
+                                                             node->compound_assignment.value->type_info, 
+                                                             method_name);
+                
+                if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
+                    LLVMValueRef args[] = { current, rhs };
+                    new_value = method->codegen(gen, args, 2);
                 }
-            } else if (strcmp(op, "-=") == 0) {
-                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
-                    if (type_info_is_int(entry->type_info)) {
-                        current = LLVMBuildSIToFP(gen->builder, current,
-                                                 LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
-                        rhs = LLVMBuildSIToFP(gen->builder, rhs,
-                                             LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    new_value = LLVMBuildFSub(gen->builder, current, rhs, "subassign");
-                    // Convert back to int if variable is int type
-                    if (type_info_is_int(entry->type_info)) {
-                        new_value = LLVMBuildFPToSI(gen->builder, new_value,
-                                                   LLVMInt32TypeInContext(gen->context), "doubletoint");
-                    }
-                } else {
-                    new_value = LLVMBuildSub(gen->builder, current, rhs, "subassign");
-                }
-            } else if (strcmp(op, "*=") == 0) {
-                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
-                    if (type_info_is_int(entry->type_info)) {
-                        current = LLVMBuildSIToFP(gen->builder, current,
-                                                 LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
-                        rhs = LLVMBuildSIToFP(gen->builder, rhs,
-                                             LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    new_value = LLVMBuildFMul(gen->builder, current, rhs, "mulassign");
-                    // Convert back to int if variable is int type
-                    if (type_info_is_int(entry->type_info)) {
-                        new_value = LLVMBuildFPToSI(gen->builder, new_value,
-                                                   LLVMInt32TypeInContext(gen->context), "doubletoint");
-                    }
-                } else {
-                    new_value = LLVMBuildMul(gen->builder, current, rhs, "mulassign");
-                }
-            } else if (strcmp(op, "/=") == 0) {
-                if (type_info_is_double(entry->type_info) || type_info_is_double(node->compound_assignment.value->type_info)) {
-                    if (type_info_is_int(entry->type_info)) {
-                        current = LLVMBuildSIToFP(gen->builder, current,
-                                                 LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    if (type_info_is_int(node->compound_assignment.value->type_info)) {
-                        rhs = LLVMBuildSIToFP(gen->builder, rhs,
-                                             LLVMDoubleTypeInContext(gen->context), "inttodouble");
-                    }
-                    new_value = LLVMBuildFDiv(gen->builder, current, rhs, "divassign");
-                    // Convert back to int if variable is int type
-                    if (type_info_is_int(entry->type_info)) {
-                        new_value = LLVMBuildFPToSI(gen->builder, new_value,
-                                                   LLVMInt32TypeInContext(gen->context), "doubletoint");
-                    }
-                } else {
-                    new_value = LLVMBuildSDiv(gen->builder, current, rhs, "divassign");
-                }
-            } else {
-                log_error_at(&node->loc, "Unknown compound assignment operator: %s", op);
+            }
+            
+            if (!new_value) {
+                log_error_at(&node->loc, "No trait implementation for compound assignment operator: %s", op);
                 return NULL;
             }
 
@@ -891,6 +681,17 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             for (int i = 0; i < node->call.arg_count; i++) {
                 args[i] = codegen_node(gen, node->call.args[i]);
                 arg_type_infos[i] = node->call.args[i]->type_info;
+                
+                // For variadic functions (like printf), promote bool (i1) to i32 for proper printing
+                if (arg_type_infos[i] && type_info_is_bool(arg_type_infos[i])) {
+                    LLVMTypeRef arg_llvm_type = LLVMTypeOf(args[i]);
+                    if (LLVMGetTypeKind(arg_llvm_type) == LLVMIntegerTypeKind && 
+                        LLVMGetIntTypeWidth(arg_llvm_type) == 1) {
+                        // Extend i1 to i32
+                        args[i] = LLVMBuildZExt(gen->builder, args[i], 
+                                               LLVMInt32TypeInContext(gen->context), "bool_to_int");
+                    }
+                }
             }
 
             // Try to find specialized version
@@ -1693,6 +1494,7 @@ static void codegen_initialize_types(CodeGen* gen) {
 void codegen_generate(CodeGen* gen, ASTNode* ast) {
     // Store type context from type inference (contains types and specializations)
     gen->type_ctx = ast->type_ctx;
+    gen->trait_registry = ast->type_ctx ? ast->type_ctx->trait_registry : NULL;
 
     // PASS 0: Initialize all types - objects and function prototypes
     // This allows forward references and recursive calls

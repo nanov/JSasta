@@ -25,6 +25,16 @@ typedef enum {
     TOKEN_WHILE,
     TOKEN_TRUE,
     TOKEN_FALSE,
+    // Integer type keywords
+    TOKEN_I8,
+    TOKEN_I16,
+    TOKEN_I32,
+    TOKEN_I64,
+    TOKEN_U8,
+    TOKEN_U16,
+    TOKEN_U32,
+    TOKEN_U64,
+    TOKEN_INT,       // Keep 'int' as legacy keyword
     TOKEN_IDENTIFIER,
     TOKEN_NUMBER,
     TOKEN_STRING,
@@ -36,6 +46,8 @@ typedef enum {
     TOKEN_RIGHT_SHIFT,
     TOKEN_LEFT_SHIFT,
     TOKEN_BIT_AND,
+    TOKEN_BIT_OR,
+    TOKEN_BIT_XOR,
     TOKEN_STAR,
     TOKEN_SLASH,
     TOKEN_ASSIGN,
@@ -116,6 +128,7 @@ typedef enum {
     TYPE_KIND_OBJECT,       // User-defined object types
     TYPE_KIND_ARRAY,        // Array types
     TYPE_KIND_FUNCTION,     // Function types
+    TYPE_KIND_ALIAS,        // Type alias (e.g., usize -> u64)
     TYPE_KIND_UNKNOWN       // Unknown/unresolved types
 } TypeKind;
 
@@ -127,6 +140,12 @@ struct TypeInfo {
 
     // Type-specific data (use union to save memory and improve organization)
     union {
+        // For TYPE_KIND_PRIMITIVE: integer metadata
+        struct {
+            int bit_width;      // 8, 16, 32, 64 (for integer types)
+            bool is_signed;     // true for i8-i64, false for u8-u64 (future)
+        } integer;
+
         // For TYPE_KIND_OBJECT: property metadata
         struct {
             char** property_names;      // Property names
@@ -151,6 +170,11 @@ struct TypeInfo {
             ASTNode* original_body;              // Original AST body (for cloning during specialization)
             ASTNode* func_decl_node;             // Function declaration node (for function variables)
         } function;
+
+        // For TYPE_KIND_ALIAS: points to the actual type
+        struct {
+            TypeInfo* target_type;  // The type this alias resolves to
+        } alias;
     } data;
 };
 
@@ -161,6 +185,16 @@ typedef struct TypeEntry {
     struct TypeEntry* next;
 } TypeEntry;
 
+// TypeAlias for type aliasing (e.g., type usize = u64)
+typedef struct TypeAlias {
+    char* alias_name;          // The alias name (e.g., "usize")
+    TypeInfo* target_type;     // The actual type it resolves to (e.g., Type_U64)
+    struct TypeAlias* next;    // Linked list
+} TypeAlias;
+
+// Forward declare TraitRegistry
+typedef struct TraitRegistry TraitRegistry;
+
 // TypeContext manages all type information
 typedef struct TypeContext {
     TypeEntry* type_table;           // Linked list of all registered types
@@ -168,12 +202,32 @@ typedef struct TypeContext {
     int next_anonymous_id;           // For generating unique anonymous type names
     int specialization_count;        // Total number of specializations across all functions
 
-    // Cached primitive types
-    TypeInfo* int_type;
+    // Cached signed integer types
+    TypeInfo* i8_type;
+    TypeInfo* i16_type;
+    TypeInfo* i32_type;
+    TypeInfo* i64_type;
+    
+    // Cached unsigned integer types
+    TypeInfo* u8_type;
+    TypeInfo* u16_type;
+    TypeInfo* u32_type;
+    TypeInfo* u64_type;
+    
+    // Legacy alias for default integer (i32)
+    TypeInfo* int_type;  // Points to i32_type
+
+    // Other primitive types
     TypeInfo* double_type;
     TypeInfo* string_type;
     TypeInfo* bool_type;
     TypeInfo* void_type;
+
+    // Trait system for operator overloading and methods
+    TraitRegistry* trait_registry;
+
+    // Type aliases (e.g., usize, nint, uint)
+    TypeAlias* type_aliases;  // Linked list of type aliases
 
     // Note: Function specializations are now stored in TypeInfo.data.function.specializations
 } TypeContext;
@@ -413,6 +467,7 @@ SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name);
 // TypeInfo management
 TypeInfo* type_info_create(TypeKind kind, char* name);
 TypeInfo* type_info_create_primitive(char* name);
+TypeInfo* type_info_create_integer(char* name, int bit_width, bool is_signed);
 TypeInfo* type_info_create_unknown();
 TypeInfo* type_info_create_int();
 TypeInfo* type_info_create_double();
@@ -420,83 +475,168 @@ TypeInfo* type_info_create_bool();
 TypeInfo* type_info_create_string();
 TypeInfo* type_info_create_void();
 TypeInfo* type_info_create_from_object_literal(ASTNode* obj_literal);
+TypeInfo* type_info_create_alias(char* alias_name, TypeInfo* target_type);
 void type_info_free_shallow(TypeInfo* type_info);  // Shallow free (doesn't free referenced types)
 void type_info_free(TypeInfo* type_info);           // Deep free (frees nested types)
 TypeInfo* type_info_clone(TypeInfo* type_info);
+TypeInfo* type_info_resolve_alias(TypeInfo* type_info);  // Recursively resolve aliases
 int type_info_find_property(TypeInfo* type_info, const char* property_name);
 
+// Global type variables
 TypeInfo* Type_Unknown;
 TypeInfo* Type_Bool;
 TypeInfo* Type_Void;
+
+// Signed integer types
+TypeInfo* Type_I8;
+TypeInfo* Type_I16;
+TypeInfo* Type_I32;
+TypeInfo* Type_I64;
+
+// Unsigned integer types
+TypeInfo* Type_U8;
+TypeInfo* Type_U16;
+TypeInfo* Type_U32;
+TypeInfo* Type_U64;
+
+// Legacy integer type (alias for i32)
 TypeInfo* Type_Int;
+
+// Platform-specific type aliases
+TypeInfo* Type_Usize;  // Alias for platform size_t (u32 or u64 depending on platform)
+TypeInfo* Type_Nint;   // Alias for platform int (i32 or i64 depending on platform)
+TypeInfo* Type_Uint;   // Alias for platform unsigned int (u32 or u64 depending on platform)
+
+// Other primitive types
 TypeInfo* Type_Double;
 TypeInfo* Type_Object;
 TypeInfo* Type_String;
-TypeInfo* Type_Array_Int;
+
+// Array types
+TypeInfo* Type_Array_Int;    // Legacy, will use Type_Array_I32
+TypeInfo* Type_Array_I8;
+TypeInfo* Type_Array_I16;
+TypeInfo* Type_Array_I32;
+TypeInfo* Type_Array_I64;
+TypeInfo* Type_Array_U8;
+TypeInfo* Type_Array_U16;
+TypeInfo* Type_Array_U32;
+TypeInfo* Type_Array_U64;
 TypeInfo* Type_Array_Bool;
 TypeInfo* Type_Array_Double;
 TypeInfo* Type_Array_String;
 
 static inline bool type_info_is_unknown(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_UNKNOWN;
 }
 
+// Check if type is any integer type (signed or unsigned)
+static inline bool type_info_is_integer(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
+    if (!type_info || type_info->kind != TYPE_KIND_PRIMITIVE) return false;
+    return type_info == Type_I8 || type_info == Type_I16 || 
+           type_info == Type_I32 || type_info == Type_I64 ||
+           type_info == Type_U8 || type_info == Type_U16 ||
+           type_info == Type_U32 || type_info == Type_U64;
+}
+
+// Check if type is signed integer
+static inline bool type_info_is_signed_int(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
+    if (!type_info || type_info->kind != TYPE_KIND_PRIMITIVE) return false;
+    return type_info == Type_I8 || type_info == Type_I16 || 
+           type_info == Type_I32 || type_info == Type_I64;
+}
+
+// Check if type is unsigned integer
+static inline bool type_info_is_unsigned_int(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
+    if (!type_info || type_info->kind != TYPE_KIND_PRIMITIVE) return false;
+    return type_info == Type_U8 || type_info == Type_U16 ||
+           type_info == Type_U32 || type_info == Type_U64;
+}
+
+// Get integer bit width (returns 0 for non-integer types)
+static inline int type_info_get_int_width(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
+    if (!type_info || type_info->kind != TYPE_KIND_PRIMITIVE) return 0;
+    if (!type_info_is_integer(type_info)) return 0;
+    return type_info->data.integer.bit_width;
+}
+
+// Legacy: check if type is i32 or the old "int"
 static inline bool type_info_is_int(TypeInfo* type_info) {
-    return type_info == Type_Int;
+    type_info = type_info_resolve_alias(type_info);
+    return type_info == Type_I32 || type_info == Type_Int;
 }
 
 static inline bool type_info_is_double_ctx(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_Double;
 }
 
 static inline bool type_info_is_double(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_Double;
 }
 
 static inline bool type_info_is_string_ctx(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_String;
 }
 
 static inline bool type_info_is_string(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_String;
 }
 
 static inline bool type_info_is_bool_ctx(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_Bool;
 }
 
 static inline bool type_info_is_bool(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_Bool;
 }
 
 static inline bool type_info_is_void(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_Void;
 }
 
 static inline bool type_info_is_object(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_OBJECT;
 }
 
 static inline bool type_info_is_array(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_ARRAY;
 }
 
 static inline bool type_info_is_function(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_FUNCTION;
 }
 
 static inline bool type_info_is_function_ctx(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_FUNCTION;
 }
 
 // Helper to check if void with TypeContext (for compatibility)
 static inline bool type_info_is_void_ctx(TypeInfo* type_info, TypeContext* ctx) {
     (void)ctx;  // unused for now
+    type_info = type_info_resolve_alias(type_info);
     return type_info == Type_Void;
 }
 
 // Check if array has specific element type
 static inline bool type_info_is_array_of(TypeInfo* array_type, TypeInfo* element_type) {
+    array_type = type_info_resolve_alias(array_type);
+    element_type = type_info_resolve_alias(element_type);
     return array_type && array_type->kind == TYPE_KIND_ARRAY &&
            array_type->data.array.element_type == element_type;
 }
@@ -509,7 +649,7 @@ TypeInfo* type_context_find_type(TypeContext* ctx, const char* type_name);
 TypeInfo* type_context_create_object_type_from_literal(TypeContext* ctx, ASTNode* obj_literal);
 TypeInfo* type_context_find_or_create_object_type(TypeContext* ctx, TypeInfo* obj_type);
 
-// Primitive type accessors (cached in type table)
+// Primitive type accessors (return actual types with aliases resolved)
 TypeInfo* type_context_get_int(TypeContext* ctx);
 TypeInfo* type_context_get_double(TypeContext* ctx);
 TypeInfo* type_context_get_string(TypeContext* ctx);
@@ -530,6 +670,10 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
                                                         TypeInfo** param_type_info, int param_count);
 FunctionSpecialization* type_context_find_specialization(TypeContext* ctx, TypeInfo* func_type,
                                                          TypeInfo** param_type_info, int param_count);
+
+// Type alias management
+void type_context_register_alias(TypeContext* ctx, const char* alias_name, TypeInfo* target_type);
+TypeInfo* type_context_resolve_alias(TypeContext* ctx, const char* alias_name);
 
 // Type analysis
 void type_analyze(ASTNode* node, SymbolTable* symbols);
@@ -571,6 +715,7 @@ typedef struct CodeGen {
     LLVMValueRef current_function;
     RuntimeFunction* runtime_functions;
     TypeContext* type_ctx;                      // Type context for TypeInfo and specializations
+    TraitRegistry* trait_registry;              // Trait registry (shared with type_ctx)
 } CodeGen;
 
 CodeGen* codegen_create(const char* module_name);

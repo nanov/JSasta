@@ -19,9 +19,36 @@ TypeInfo* type_info_create_primitive(char* name) {
 	return type_info_create(TYPE_KIND_PRIMITIVE, name);
 }
 
+// Create an integer type with specific bit width and signedness
+TypeInfo* type_info_create_integer(char* name, int bit_width, bool is_signed) {
+    TypeInfo* info = type_info_create(TYPE_KIND_PRIMITIVE, name);
+    info->data.integer.bit_width = bit_width;
+    info->data.integer.is_signed = is_signed;
+    return info;
+}
+
 // Create a fresh unknown type instance
 TypeInfo* type_info_create_unknown() {
     return type_info_create(TYPE_KIND_UNKNOWN, strdup("unknown"));
+}
+
+// Create a type alias
+TypeInfo* type_info_create_alias(char* alias_name, TypeInfo* target_type) {
+    TypeInfo* info = type_info_create(TYPE_KIND_ALIAS, alias_name);
+    info->data.alias.target_type = target_type;
+    return info;
+}
+
+// Recursively resolve type aliases to get the actual type
+TypeInfo* type_info_resolve_alias(TypeInfo* type_info) {
+    if (!type_info) return NULL;
+    
+    // Keep following alias chain until we hit a non-alias type
+    while (type_info && type_info->kind == TYPE_KIND_ALIAS) {
+        type_info = type_info->data.alias.target_type;
+    }
+    
+    return type_info;
 }
 
 // Create TypeInfo from an object literal AST node
@@ -99,10 +126,11 @@ void type_info_free(TypeInfo* type_info) {
         free(type_info->data.object.property_names);
         free(type_info->data.object.property_types);
     } else if (type_info->kind == TYPE_KIND_ARRAY) {
-        // Free element type for arrays
-        if (type_info->data.array.element_type) {
-            type_info_free(type_info->data.array.element_type);
-        }
+        // Note: element_type is a reference to a type in TypeContext, don't free it
+        // The TypeContext will free all registered types
+    } else if (type_info->kind == TYPE_KIND_ALIAS) {
+        // Note: target_type is a reference to a type in TypeContext, don't free it
+        // The TypeContext will free all registered types
     } else if (type_info->kind == TYPE_KIND_FUNCTION) {
         // Note: param_types and return_type are references to types in TypeContext, don't free them
         // Just free the array itself

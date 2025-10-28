@@ -18,10 +18,12 @@ static struct {
     LogLevel min_level;
     bool verbose_enabled;
     bool use_colors;
+    int error_count;
 } logger_state = {
     .min_level = LOG_INFO,
     .verbose_enabled = false,
-    .use_colors = false  // Will be set by logger_init()
+    .use_colors = false,  // Will be set by logger_init()
+    .error_count = 0
 };
 
 // Check if terminal supports colors
@@ -168,6 +170,7 @@ void log_warning(const char* format, ...) {
 }
 
 void log_error(const char* format, ...) {
+    logger_state.error_count++;
     va_list args;
     va_start(args, format);
     log_impl(LOG_ERROR, 0, NULL, format, args);
@@ -197,6 +200,7 @@ void log_warning_at(SourceLocation* loc, const char* format, ...) {
 }
 
 void log_error_at(SourceLocation* loc, const char* format, ...) {
+    logger_state.error_count++;
     va_list args;
     va_start(args, format);
     log_impl(LOG_ERROR, 0, loc, format, args);
@@ -226,6 +230,7 @@ void log_warning_indent(int indent, const char* format, ...) {
 }
 
 void log_error_indent(int indent, const char* format, ...) {
+    logger_state.error_count++;
     va_list args;
     va_start(args, format);
     log_impl(LOG_ERROR, indent, NULL, format, args);
@@ -255,6 +260,7 @@ void log_warning_indent_at(int indent, SourceLocation* loc, const char* format, 
 }
 
 void log_error_indent_at(int indent, SourceLocation* loc, const char* format, ...) {
+    logger_state.error_count++;
     va_list args;
     va_start(args, format);
     log_impl(LOG_ERROR, indent, loc, format, args);
@@ -278,4 +284,17 @@ void log_section(const char* format, ...) {
     va_end(args);
 
     fprintf(stderr, " ===%s\n", reset);
+}
+
+// Error counting functions
+int logger_get_error_count() {
+    return logger_state.error_count;
+}
+
+void logger_reset_error_count() {
+    logger_state.error_count = 0;
+}
+
+bool logger_has_errors() {
+    return logger_state.error_count > 0;
 }

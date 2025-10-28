@@ -75,10 +75,46 @@ static Token* lexer_read_number(Lexer* lexer) {
     char buffer[256];
     int i = 0;
 
+    // Read digits and decimal point
     while (isdigit(lexer->current) || lexer->current == '.') {
         buffer[i++] = lexer->current;
         lexer_advance(lexer);
     }
+    
+    // Check for scientific notation (e/E)
+    if (lexer->current == 'e' || lexer->current == 'E') {
+        buffer[i++] = lexer->current;
+        lexer_advance(lexer);
+        if (lexer->current == '+' || lexer->current == '-') {
+            buffer[i++] = lexer->current;
+            lexer_advance(lexer);
+        }
+        while (isdigit(lexer->current)) {
+            buffer[i++] = lexer->current;
+            lexer_advance(lexer);
+        }
+    }
+    
+    // Check for integer type suffix (i8, i16, i32, i64, u8, u16, u32, u64)
+    // This allows suffixes like: 42i32, 255u8, 1000i64
+    if (lexer->current == 'i' || lexer->current == 'u') {
+        char suffix_start = lexer->current;
+        buffer[i++] = lexer->current;
+        lexer_advance(lexer);
+        
+        // Read the bit width (8, 16, 32, 64)
+        if (isdigit(lexer->current)) {
+            buffer[i++] = lexer->current;
+            lexer_advance(lexer);
+            
+            // Could be 2 digits (16, 32, 64)
+            if (isdigit(lexer->current)) {
+                buffer[i++] = lexer->current;
+                lexer_advance(lexer);
+            }
+        }
+    }
+    
     buffer[i] = '\0';
 
     return token_create(TOKEN_NUMBER, buffer, start_line, start_col);
@@ -147,6 +183,16 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "while") == 0) type = TOKEN_WHILE;
     else if (strcmp(buffer, "true") == 0) type = TOKEN_TRUE;
     else if (strcmp(buffer, "false") == 0) type = TOKEN_FALSE;
+    // Integer type keywords
+    else if (strcmp(buffer, "i8") == 0) type = TOKEN_I8;
+    else if (strcmp(buffer, "i16") == 0) type = TOKEN_I16;
+    else if (strcmp(buffer, "i32") == 0) type = TOKEN_I32;
+    else if (strcmp(buffer, "i64") == 0) type = TOKEN_I64;
+    else if (strcmp(buffer, "u8") == 0) type = TOKEN_U8;
+    else if (strcmp(buffer, "u16") == 0) type = TOKEN_U16;
+    else if (strcmp(buffer, "u32") == 0) type = TOKEN_U32;
+    else if (strcmp(buffer, "u64") == 0) type = TOKEN_U64;
+    else if (strcmp(buffer, "int") == 0) type = TOKEN_INT;
 
     return token_create(type, buffer, start_line, start_col);
 }
@@ -251,10 +297,10 @@ Token* lexer_next_token(Lexer* lexer) {
                 }
                 return token_create(TOKEN_NOT, "!", line, col);
             case '<':
-		            if (lexer->current == '>') {
-									lexer_advance(lexer);
-                  return token_create(TOKEN_LEFT_SHIFT, "<<", line, col);
-								} else if (lexer->current == '=') {
+                if (lexer->current == '<') {
+                    lexer_advance(lexer);
+                    return token_create(TOKEN_LEFT_SHIFT, "<<", line, col);
+                } else if (lexer->current == '=') {
                     lexer_advance(lexer);
                     return token_create(TOKEN_LE, "<=", line, col);
                 }
@@ -279,7 +325,9 @@ Token* lexer_next_token(Lexer* lexer) {
                     lexer_advance(lexer);
                     return token_create(TOKEN_OR, "||", line, col);
                 }
-                break;
+                return token_create(TOKEN_BIT_OR, "|", line, col);
+            case '^':
+                return token_create(TOKEN_BIT_XOR, "^", line, col);
         }
     }
 
