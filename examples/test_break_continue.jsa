@@ -1,0 +1,58 @@
+// Test 1: break in for loop
+console.log("Test 1: break in for loop");
+for (var i = 0; i < 10; i++) {
+    if (i === 5) {
+        break;
+    }
+    printf("%d ", i);
+}
+console.log();
+
+// Test 2: continue in for loop
+console.log("Test 2: continue in for loop");
+for (var j = 0; j < 10; j++) {
+    if (j % 2 === 0) {
+        continue;
+    }
+    printf("%d ", j);
+}
+console.log();
+
+// Test 3: break in while loop
+console.log("Test 3: break in while loop");
+var k = 0;
+while (k < 10) {
+    if (k === 5) {
+        break;
+    }
+    printf("%d ", k);
+    k++;
+}
+console.log();
+
+// Test 4: continue in while loop  
+console.log("Test 4: continue in while loop");
+var m = 0;
+while (m < 10) {
+    m++;
+    if (m % 2 === 0) {
+        continue;
+    }
+    printf("%d ", m);
+}
+console.log();
+
+// Test 5: nested loops with break
+console.log("Test 5: nested loops with break");
+for (var x = 0; x < 3; x++) {
+    printf("x=%d: ", x);
+    for (var y = 0; y < 5; y++) {
+        if (y === 3) {
+            break;
+        }
+        printf("%d ", y);
+    }
+    console.log();
+}
+
+console.log("All tests complete!");

@@ -127,8 +127,8 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         }
         case AST_INDEX_ACCESS: {
             TypeInfo* obj_type = infer_expr_type_simple(node->index_access.object, scope);
-            // String indexing returns string (single char)
-            if (obj_type == Type_String) return Type_String;
+            // String indexing returns u8 (byte value)
+            if (obj_type == Type_String) return Type_U8;
             if (type_info_is_array(obj_type)) return obj_type->data.array.element_type;
             return Type_Unknown;
         }
@@ -169,6 +169,11 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
                 log_verbose("    Return statement type: %s", ret_type ? ret_type->type_name : "NULL");
                 return ret_type;
             }
+            return Type_Void;
+
+        case AST_BREAK:
+        case AST_CONTINUE:
+            // Break and continue don't have a type
             return Type_Void;
 
         case AST_VAR_DECL:
@@ -446,10 +451,28 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         ASTNode* obj_literal = node->var_decl.init;
                         
                         // If this is a struct, we need to infer types for the property values
-                        // (but not create an anonymous object type)
+                        // with contextual typing from the expected struct field types
                         if (is_struct_literal) {
                             for (int i = 0; i < obj_literal->object_literal.count; i++) {
-                                infer_literal_types(obj_literal->object_literal.values[i], symbols, type_ctx);
+                                // Find the expected type for this property
+                                const char* prop_key = obj_literal->object_literal.keys[i];
+                                TypeInfo* expected_prop_type = NULL;
+                                
+                                for (int j = 0; j < declared_info->data.object.property_count; j++) {
+                                    if (strcmp(declared_info->data.object.property_names[j], prop_key) == 0) {
+                                        expected_prop_type = declared_info->data.object.property_types[j];
+                                        break;
+                                    }
+                                }
+                                
+                                // Apply contextual typing to literals
+                                ASTNode* value = obj_literal->object_literal.values[i];
+                                if (value->type == AST_NUMBER && expected_prop_type && type_info_is_integer(expected_prop_type)) {
+                                    // Set the literal to the expected type directly
+                                    value->type_info = expected_prop_type;
+                                } else {
+                                    infer_literal_types(value, symbols, type_ctx);
+                                }
                             }
                         }
                         
@@ -474,8 +497,19 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                     TypeInfo* expected_type = declared_info->data.object.property_types[j];
                                     TypeInfo* actual_type = obj_literal->object_literal.values[i]->type_info;
                                     if (expected_type != actual_type) {
-                                        // Allow int -> double promotion
-                                        if (!(expected_type == Type_Double && actual_type == Type_Int)) {
+                                        // Allow safe type conversions:
+                                        // 1. int -> double promotion
+                                        // 2. any integer type -> any other integer type (will be handled by LLVM cast)
+                                        bool allow_conversion = false;
+                                        
+                                        if (expected_type == Type_Double && actual_type == Type_Int) {
+                                            allow_conversion = true;
+                                        } else if (type_info_is_integer(expected_type) && type_info_is_integer(actual_type)) {
+                                            // Allow any integer to integer conversion (i32 -> u8, i32 -> u64, etc.)
+                                            allow_conversion = true;
+                                        }
+                                        
+                                        if (!allow_conversion) {
                                             log_error_at(&node->loc,
                                                 "Property '%s' type mismatch: expected %s but got %s",
                                                 provided_key,
@@ -644,12 +678,37 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_MEMBER_ASSIGNMENT: {
-            // Infer types for object and value
+            // Infer types for object
             infer_literal_types(node->member_assignment.object, symbols, type_ctx);
-            infer_literal_types(node->member_assignment.value, symbols, type_ctx);
-
-            // Type check: verify the assigned value matches the property's original type
+            
+            // Apply contextual typing to the value if it's a literal
             ASTNode* obj = node->member_assignment.object;
+            TypeInfo* expected_prop_type = NULL;
+            
+            if (obj->type == AST_IDENTIFIER) {
+                SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
+                
+                // Check if it's a struct with type hint
+                if (entry && entry->node && entry->node->type == AST_VAR_DECL) {
+                    TypeInfo* var_type = entry->node->var_decl.type_hint;
+                    if (var_type && type_info_is_object(var_type)) {
+                        // Find the property type in the struct definition
+                        int prop_idx = type_info_find_property(var_type, node->member_assignment.property);
+                        if (prop_idx >= 0) {
+                            expected_prop_type = var_type->data.object.property_types[prop_idx];
+                        }
+                    }
+                }
+            }
+            
+            // Apply contextual typing to number literals
+            if (node->member_assignment.value->type == AST_NUMBER && expected_prop_type && type_info_is_integer(expected_prop_type)) {
+                node->member_assignment.value->type_info = expected_prop_type;
+            } else {
+                infer_literal_types(node->member_assignment.value, symbols, type_ctx);
+            }
+
+            // Type check: verify the assigned value matches the property type
             if (obj->type == AST_IDENTIFIER) {
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
                 if (entry && entry->node && entry->node->type == AST_VAR_DECL &&
@@ -663,11 +722,19 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                             TypeInfo* assigned_type = node->member_assignment.value->type_info;
 
                             if (prop_type != assigned_type) {
-                                log_error_at(&node->loc,
-                                    "Type mismatch: cannot assign %s to property '%s' of type %s",
-                                    assigned_type ? assigned_type->type_name : "unknown",
-                                    node->member_assignment.property,
-                                    prop_type ? prop_type->type_name : "unknown");
+                                // Allow safe integer conversions
+                                bool allow_conversion = false;
+                                if (type_info_is_integer(prop_type) && type_info_is_integer(assigned_type)) {
+                                    allow_conversion = true;
+                                }
+                                
+                                if (!allow_conversion) {
+                                    log_error_at(&node->loc,
+                                        "Type mismatch: cannot assign %s to property '%s' of type %s",
+                                        assigned_type ? assigned_type->type_name : "unknown",
+                                        node->member_assignment.property,
+                                        prop_type ? prop_type->type_name : "unknown");
+                                }
                             }
                             break;
                         }
@@ -721,6 +788,11 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 infer_literal_types(node->return_stmt.value, symbols, type_ctx);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->return_stmt.value);
             }
+            break;
+
+        case AST_BREAK:
+        case AST_CONTINUE:
+            // Nothing to infer for break/continue
             break;
 
         case AST_PREFIX_OP:
@@ -788,7 +860,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             infer_literal_types(node->index_access.index, symbols, type_ctx);
             // Determine result type based on object type
             if (node->index_access.object->type_info == Type_String) {
-                node->type_info = Type_String;
+                node->type_info = Type_U8;  // String indexing returns u8
             } else if (node->index_access.object->type_info == Type_Array_Int) {
                 node->type_info = Type_Int;
             } else if (node->index_access.object->type_info == Type_Array_Double) {
@@ -1102,6 +1174,11 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             }
             break;
 
+        case AST_BREAK:
+        case AST_CONTINUE:
+            // Nothing to analyze for break/continue
+            break;
+
         case AST_EXPR_STMT:
             analyze_call_sites(node->expr_stmt.expression, symbols, ctx);
             break;
@@ -1284,7 +1361,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             infer_with_specializations(node->index_access.index, symbols, ctx);
             // Determine result type based on object type
             if (node->index_access.object->type_info == Type_String) {
-                node->type_info = Type_String;
+                node->type_info = Type_U8;  // String indexing returns u8
             } else if (node->index_access.object->type_info == Type_Array_Int) {
                 node->type_info = Type_Int;
             } else if (node->index_access.object->type_info == Type_Array_Double) {
@@ -1391,6 +1468,11 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 infer_with_specializations(node->return_stmt.value, symbols, ctx);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->return_stmt.value);
             }
+            break;
+
+        case AST_BREAK:
+        case AST_CONTINUE:
+            // Nothing to infer for break/continue
             break;
 
         case AST_PREFIX_OP:

@@ -19,6 +19,8 @@ typedef enum {
     TOKEN_EXTERNAL,
     TOKEN_STRUCT,
     TOKEN_RETURN,
+    TOKEN_BREAK,
+    TOKEN_CONTINUE,
     TOKEN_IF,
     TOKEN_ELSE,
     TOKEN_FOR,
@@ -92,6 +94,8 @@ typedef enum {
     AST_FUNCTION_DECL,  // Used for both user and external functions
     AST_STRUCT_DECL,    // Struct type definition
     AST_RETURN,
+    AST_BREAK,
+    AST_CONTINUE,
     AST_IF,
     AST_FOR,
     AST_WHILE,
@@ -716,6 +720,10 @@ typedef struct CodeGen {
     RuntimeFunction* runtime_functions;
     TypeContext* type_ctx;                      // Type context for TypeInfo and specializations
     TraitRegistry* trait_registry;              // Trait registry (shared with type_ctx)
+    
+    // Loop control - for break/continue
+    LLVMBasicBlockRef loop_exit_block;          // Block to jump to on 'break'
+    LLVMBasicBlockRef loop_continue_block;      // Block to jump to on 'continue'
 } CodeGen;
 
 CodeGen* codegen_create(const char* module_name);

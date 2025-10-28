@@ -52,6 +52,8 @@ CodeGen* codegen_create(const char* module_name) {
     gen->runtime_functions = NULL;
     gen->type_ctx = NULL;             // Will be set during generation (contains types and specializations)
     gen->trait_registry = NULL;       // Will be shared with type_ctx
+    gen->loop_exit_block = NULL;      // Initialize loop control blocks
+    gen->loop_continue_block = NULL;
 
     // Initialize runtime library
     runtime_init(gen);
@@ -995,6 +997,33 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             int prop_count = node->object_literal.count;
             for (int i = 0; i < prop_count; i++) {
                 LLVMValueRef prop_value = codegen_node(gen, node->object_literal.values[i]);
+                
+                // Get the expected field type and convert if needed
+                TypeInfo* field_type = node->type_info->data.object.property_types[i];
+                LLVMTypeRef expected_llvm_type = get_llvm_type(gen, field_type);
+                LLVMTypeRef actual_type = LLVMTypeOf(prop_value);
+                
+                // Convert integer types if they don't match
+                if (LLVMGetTypeKind(expected_llvm_type) == LLVMIntegerTypeKind && 
+                    LLVMGetTypeKind(actual_type) == LLVMIntegerTypeKind &&
+                    expected_llvm_type != actual_type) {
+                    // Truncate or extend to match the target type
+                    unsigned expected_width = LLVMGetIntTypeWidth(expected_llvm_type);
+                    unsigned actual_width = LLVMGetIntTypeWidth(actual_type);
+                    
+                    if (actual_width > expected_width) {
+                        prop_value = LLVMBuildTrunc(gen->builder, prop_value, expected_llvm_type, "trunc");
+                    } else {
+                        // Check if source type is signed or unsigned to use appropriate extension
+                        TypeInfo* src_type = node->object_literal.values[i]->type_info;
+                        if (type_info_is_signed_int(src_type)) {
+                            prop_value = LLVMBuildSExt(gen->builder, prop_value, expected_llvm_type, "sext");
+                        } else {
+                            prop_value = LLVMBuildZExt(gen->builder, prop_value, expected_llvm_type, "zext");
+                        }
+                    }
+                }
+                
                 LLVMValueRef field_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, obj_ptr,
                                                               (unsigned)i, "field_ptr");
                 LLVMBuildStore(gen->builder, prop_value, field_ptr);
@@ -1007,33 +1036,16 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef object = codegen_node(gen, node->index_access.object);
             LLVMValueRef index = codegen_node(gen, node->index_access.index);
 
-            // String indexing: return single character as string
+            // String indexing: return character as u8 (byte value)
             if (type_info_is_string(node->index_access.object->type_info)) {
                 // Get pointer to character at index
                 LLVMValueRef char_ptr = LLVMBuildGEP2(gen->builder,
                                                        LLVMInt8TypeInContext(gen->context),
                                                        object, &index, 1, "char_ptr");
 
-                // Allocate memory for single-char string (2 bytes: char + null terminator)
-                LLVMValueRef malloc_func = LLVMGetNamedFunction(gen->module, "malloc");
-                LLVMValueRef size = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 2, 0);
-                LLVMValueRef malloc_args[] = { size };
-                LLVMValueRef str_buf = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(malloc_func),
-                                                       malloc_func, malloc_args, 1, "char_str");
-
-                // Copy character
-                LLVMValueRef ch = LLVMBuildLoad2(gen->builder, LLVMInt8TypeInContext(gen->context),
-                                                  char_ptr, "ch");
-                LLVMBuildStore(gen->builder, ch, str_buf);
-
-                // Add null terminator
-                LLVMValueRef one = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 1, 0);
-                LLVMValueRef null_ptr = LLVMBuildGEP2(gen->builder, LLVMInt8TypeInContext(gen->context),
-                                                       str_buf, &one, 1, "null_ptr");
-                LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt8TypeInContext(gen->context), 0, 0),
-                              null_ptr);
-
-                return str_buf;
+                // Load and return the byte value
+                return LLVMBuildLoad2(gen->builder, LLVMInt8TypeInContext(gen->context),
+                                     char_ptr, "char");
             }
             // Array indexing: return element
             else {
@@ -1061,6 +1073,24 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return LLVMBuildRet(gen->builder, ret_val);
             } else {
                 return LLVMBuildRetVoid(gen->builder);
+            }
+        }
+
+        case AST_BREAK: {
+            if (gen->loop_exit_block) {
+                return LLVMBuildBr(gen->builder, gen->loop_exit_block);
+            } else {
+                fprintf(stderr, "Error: 'break' statement outside of loop\n");
+                return NULL;
+            }
+        }
+
+        case AST_CONTINUE: {
+            if (gen->loop_continue_block) {
+                return LLVMBuildBr(gen->builder, gen->loop_continue_block);
+            } else {
+                fprintf(stderr, "Error: 'continue' statement outside of loop\n");
+                return NULL;
             }
         }
 
@@ -1104,6 +1134,14 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(gen->context, gen->current_function, "whilebody");
             LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(gen->context, gen->current_function, "whileend");
 
+            // Save previous loop blocks for nested loops
+            LLVMBasicBlockRef prev_exit = gen->loop_exit_block;
+            LLVMBasicBlockRef prev_continue = gen->loop_continue_block;
+            
+            // Set current loop blocks
+            gen->loop_exit_block = end_bb;
+            gen->loop_continue_block = cond_bb;
+
             LLVMBuildBr(gen->builder, cond_bb);
 
             // Condition
@@ -1117,6 +1155,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
                 LLVMBuildBr(gen->builder, cond_bb);
             }
+
+            // Restore previous loop blocks
+            gen->loop_exit_block = prev_exit;
+            gen->loop_continue_block = prev_continue;
 
             LLVMPositionBuilderAtEnd(gen->builder, end_bb);
 
@@ -1133,6 +1175,14 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(gen->context, gen->current_function, "forbody");
             LLVMBasicBlockRef update_bb = LLVMAppendBasicBlockInContext(gen->context, gen->current_function, "forupdate");
             LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(gen->context, gen->current_function, "forend");
+
+            // Save previous loop blocks for nested loops
+            LLVMBasicBlockRef prev_exit = gen->loop_exit_block;
+            LLVMBasicBlockRef prev_continue = gen->loop_continue_block;
+            
+            // Set current loop blocks (continue goes to update block in for loops)
+            gen->loop_exit_block = end_bb;
+            gen->loop_continue_block = update_bb;
 
             LLVMBuildBr(gen->builder, cond_bb);
 
@@ -1158,6 +1208,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 codegen_node(gen, node->for_stmt.update);
             }
             LLVMBuildBr(gen->builder, cond_bb);
+
+            // Restore previous loop blocks
+            gen->loop_exit_block = prev_exit;
+            gen->loop_continue_block = prev_continue;
 
             LLVMPositionBuilderAtEnd(gen->builder, end_bb);
 

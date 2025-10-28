@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Forward declarations
+static bool type_info_is_global_singleton(TypeInfo* type_info);
+
 // Create a basic TypeInfo with just a base type
 TypeInfo* type_info_create(TypeKind kind, char* name) {
     TypeInfo* info = (TypeInfo*)malloc(sizeof(TypeInfo));
@@ -175,6 +178,11 @@ typedef struct CloneContext {
 static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx) {
     if (!type_info) return NULL;
 
+    // Don't clone global singleton types - preserve the reference
+    if (type_info_is_global_singleton(type_info)) {
+        return type_info;
+    }
+
     // Check if we've already cloned this TypeInfo (cycle detection)
     for (int i = 0; i < ctx->count; i++) {
         if (ctx->visited_originals[i] == type_info) {
@@ -212,6 +220,7 @@ static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx
 
         for (int i = 0; i < clone->data.object.property_count; i++) {
             clone->data.object.property_names[i] = strdup(type_info->data.object.property_names[i]);
+            // Recursively clone property types, but primitives will return themselves
             clone->data.object.property_types[i] = type_info_clone_internal(type_info->data.object.property_types[i], ctx);
         }
     }
@@ -220,7 +229,7 @@ static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx
 }
 
 // Check if a TypeInfo is a global primitive/singleton that shouldn't be cloned
-bool type_info_is_global_singleton(TypeInfo* type_info) {
+static bool type_info_is_global_singleton(TypeInfo* type_info) {
     if (!type_info) return false;
 
     // Check if it's one of the global singleton types
@@ -231,7 +240,26 @@ bool type_info_is_global_singleton(TypeInfo* type_info) {
            type_info == Type_Double ||
            type_info == Type_Object ||
            type_info == Type_String ||
+           // Signed integer types
+           type_info == Type_I8 ||
+           type_info == Type_I16 ||
+           type_info == Type_I32 ||
+           type_info == Type_I64 ||
+           // Unsigned integer types
+           type_info == Type_U8 ||
+           type_info == Type_U16 ||
+           type_info == Type_U32 ||
+           type_info == Type_U64 ||
+           // Array types
            type_info == Type_Array_Int ||
+           type_info == Type_Array_I8 ||
+           type_info == Type_Array_I16 ||
+           type_info == Type_Array_I32 ||
+           type_info == Type_Array_I64 ||
+           type_info == Type_Array_U8 ||
+           type_info == Type_Array_U16 ||
+           type_info == Type_Array_U32 ||
+           type_info == Type_Array_U64 ||
            type_info == Type_Array_Bool ||
            type_info == Type_Array_Double ||
            type_info == Type_Array_String;

@@ -80,7 +80,7 @@ static Token* lexer_read_number(Lexer* lexer) {
         buffer[i++] = lexer->current;
         lexer_advance(lexer);
     }
-    
+
     // Check for scientific notation (e/E)
     if (lexer->current == 'e' || lexer->current == 'E') {
         buffer[i++] = lexer->current;
@@ -94,19 +94,18 @@ static Token* lexer_read_number(Lexer* lexer) {
             lexer_advance(lexer);
         }
     }
-    
+
     // Check for integer type suffix (i8, i16, i32, i64, u8, u16, u32, u64)
     // This allows suffixes like: 42i32, 255u8, 1000i64
     if (lexer->current == 'i' || lexer->current == 'u') {
-        char suffix_start = lexer->current;
         buffer[i++] = lexer->current;
         lexer_advance(lexer);
-        
+
         // Read the bit width (8, 16, 32, 64)
         if (isdigit(lexer->current)) {
             buffer[i++] = lexer->current;
             lexer_advance(lexer);
-            
+
             // Could be 2 digits (16, 32, 64)
             if (isdigit(lexer->current)) {
                 buffer[i++] = lexer->current;
@@ -114,7 +113,7 @@ static Token* lexer_read_number(Lexer* lexer) {
             }
         }
     }
-    
+
     buffer[i] = '\0';
 
     return token_create(TOKEN_NUMBER, buffer, start_line, start_col);
@@ -177,6 +176,8 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "external") == 0) type = TOKEN_EXTERNAL;
     else if (strcmp(buffer, "struct") == 0) type = TOKEN_STRUCT;
     else if (strcmp(buffer, "return") == 0) type = TOKEN_RETURN;
+    else if (strcmp(buffer, "break") == 0) type = TOKEN_BREAK;
+    else if (strcmp(buffer, "continue") == 0) type = TOKEN_CONTINUE;
     else if (strcmp(buffer, "if") == 0) type = TOKEN_IF;
     else if (strcmp(buffer, "else") == 0) type = TOKEN_ELSE;
     else if (strcmp(buffer, "for") == 0) type = TOKEN_FOR;

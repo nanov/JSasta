@@ -1140,6 +1140,30 @@ static ASTNode* parse_return_statement(Parser* parser) {
     return node;
 }
 
+static ASTNode* parse_break_statement(Parser* parser) {
+    parser_advance(parser); // skip 'break'
+
+    ASTNode* node = AST_NODE(parser, AST_BREAK);
+
+    if (parser_match(parser, TOKEN_SEMICOLON)) {
+        parser_advance(parser);
+    }
+
+    return node;
+}
+
+static ASTNode* parse_continue_statement(Parser* parser) {
+    parser_advance(parser); // skip 'continue'
+
+    ASTNode* node = AST_NODE(parser, AST_CONTINUE);
+
+    if (parser_match(parser, TOKEN_SEMICOLON)) {
+        parser_advance(parser);
+    }
+
+    return node;
+}
+
 static ASTNode* parse_if_statement(Parser* parser) {
     parser_advance(parser); // skip 'if'
 
@@ -1221,6 +1245,10 @@ static ASTNode* parse_statement(Parser* parser) {
         return parse_struct_declaration(parser);
     } else if (parser_match(parser, TOKEN_RETURN)) {
         return parse_return_statement(parser);
+    } else if (parser_match(parser, TOKEN_BREAK)) {
+        return parse_break_statement(parser);
+    } else if (parser_match(parser, TOKEN_CONTINUE)) {
+        return parse_continue_statement(parser);
     } else if (parser_match(parser, TOKEN_IF)) {
         return parse_if_statement(parser);
     } else if (parser_match(parser, TOKEN_FOR)) {
