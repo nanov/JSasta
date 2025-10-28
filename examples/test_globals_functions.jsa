@@ -1,0 +1,48 @@
+// Test global variables accessed from functions
+
+var globalCounter = 0;
+var globalMessage = "Initial";
+
+// Define functions using function keyword (not calling yet)
+function showCounter() {
+    console.log("Counter is:");
+    printf("%d\n", globalCounter);
+}
+
+function increment() {
+    globalCounter = globalCounter + 1;
+}
+
+function showMessage() {
+    console.log("Message:");
+    console.log(globalMessage);
+}
+
+function setMessage() {
+    globalMessage = "Modified";
+}
+
+// Now test by calling the functions
+console.log("=== Testing Globals in Functions ===");
+console.log();
+
+showCounter();
+showMessage();
+
+console.log();
+console.log("Incrementing...");
+increment();
+showCounter();
+
+console.log();
+console.log("Incrementing again...");
+increment();
+showCounter();
+
+console.log();
+console.log("Setting message...");
+setMessage();
+showMessage();
+
+console.log();
+console.log("=== Done ===");

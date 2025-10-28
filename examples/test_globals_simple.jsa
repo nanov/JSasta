@@ -1,0 +1,25 @@
+// Simple test of global variable access
+
+// Global variables
+var globalCounter = 5;
+var globalName = "Hello";
+
+console.log("Initial counter:");
+printf("%d\n", globalCounter);
+
+console.log("Initial name:");
+console.log(globalName);
+
+console.log("Modifying counter...");
+globalCounter = globalCounter + 10;
+
+console.log("New counter:");
+printf("%d\n", globalCounter);
+
+console.log("Setting name...");
+globalName = "World";
+
+console.log("New name:");
+console.log(globalName);
+
+console.log("Done!");

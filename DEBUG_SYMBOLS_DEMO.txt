@@ -1,0 +1,37 @@
+# Debug Symbols Feature Demo
+
+## Compilation with -g flag:
+./build/jsastac -g examples/test_break_continue.jsa test_debug.ll
+
+## Compile to executable:
+clang -g test_debug.ll -o test_debug
+
+## Debug with lldb:
+lldb test_debug
+
+## Example session:
+(lldb) b examples/test_break_continue.jsa:4
+Breakpoint 1: where = test_debug`main + 84 at test_break_continue.jsa:4:9
+
+(lldb) run
+Process stopped at:
+    frame #0: test_debug`main at test_break_continue.jsa:4:9
+   1   	// Test 1: break in for loop
+   2   	console.log("Test 1: break in for loop");
+   3   	for (var i = 0; i < 10; i++) {
+-> 4   	    if (i === 5) {
+   5   	        break;
+   6   	    }
+   7   	    printf("%d ", i);
+
+## Features implemented:
+✓ -g flag added to compiler
+✓ LLVM DIBuilder integration
+✓ Compile unit with file information
+✓ Debug info for main function
+✓ Line-by-line debug locations for all statements
+✓ Proper DWARF version metadata (version 4)
+✓ Debug Info Version metadata (version 3)
+✓ Works with lldb debugger
+✓ Source code display in debugger
+✓ Breakpoints by line number

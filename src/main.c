@@ -24,7 +24,7 @@ char* read_file(const char* filename) {
     return content;
 }
 
-void compile_file(const char* input_file, const char* output_file) {
+void compile_file(const char* input_file, const char* output_file, bool enable_debug) {
     // Read source file
     char* source = read_file(input_file);
     if (!source) {
@@ -32,6 +32,9 @@ void compile_file(const char* input_file, const char* output_file) {
     }
 
     log_info("Compiling %s...", input_file);
+    if (enable_debug) {
+        log_verbose("Debug symbols enabled");
+    }
 
     // Create TypeContext (shared between parser and type inference)
     TypeContext* type_ctx = type_context_create();
@@ -72,6 +75,10 @@ void compile_file(const char* input_file, const char* output_file) {
     log_section("Code Generation");
     CodeGen* gen = codegen_create("js_module");
     gen->type_ctx = type_ctx;  // Set type context for codegen
+    gen->enable_debug = enable_debug;  // Set debug flag
+    if (enable_debug) {
+        gen->source_filename = input_file;
+    }
     codegen_generate(gen, ast);
 
     log_info("Code generation complete");
@@ -90,6 +97,7 @@ void compile_file(const char* input_file, const char* output_file) {
 void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s [options] <input.js> [output.ll]\n", program_name);
     fprintf(stderr, "\nOptions:\n");
+    fprintf(stderr, "  -g, --debug        Generate debug symbols\n");
     fprintf(stderr, "  -v, --verbose      Enable verbose output\n");
     fprintf(stderr, "  -q, --quiet        Suppress info messages (warnings and errors only)\n");
     fprintf(stderr, "  -h, --help         Show this help message\n");
@@ -97,9 +105,11 @@ void print_usage(const char* program_name) {
 
 int main(int argc, char** argv) {
     LogLevel log_level = LOG_INFO;
+    bool enable_debug = false;
 
     // Parse command-line options
     static struct option long_options[] = {
+        {"debug",   no_argument, 0, 'g'},
         {"verbose", no_argument, 0, 'v'},
         {"quiet",   no_argument, 0, 'q'},
         {"help",    no_argument, 0, 'h'},
@@ -107,8 +117,11 @@ int main(int argc, char** argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "vqh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "gvqh", long_options, NULL)) != -1) {
         switch (opt) {
+            case 'g':
+                enable_debug = true;
+                break;
             case 'v':
                 log_level = LOG_VERBOSE;
                 break;
@@ -137,7 +150,7 @@ int main(int argc, char** argv) {
     const char* input_file = argv[optind];
     const char* output_file = (optind + 1 < argc) ? argv[optind + 1] : "output.ll";
 
-    compile_file(input_file, output_file);
+    compile_file(input_file, output_file, enable_debug);
 
     return 0;
 }

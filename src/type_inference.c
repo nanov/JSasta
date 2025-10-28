@@ -1593,6 +1593,21 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
     log_verbose_indent(1, "Pass 0: Collecting struct declarations");
     collect_struct_declarations(ast, symbols, type_ctx);
 
+    // Pass 0.5: Collect global variables (so functions can reference them)
+    log_verbose_indent(1, "Pass 0.5: Collecting global variables");
+    if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
+        for (int i = 0; i < ast->program.count; i++) {
+            ASTNode* stmt = ast->program.statements[i];
+            if (stmt->type == AST_VAR_DECL) {
+                // Add variable to symbol table with unknown type initially
+                // Type will be refined in Pass 2
+                symbol_table_insert_var_declaration(symbols, stmt->var_decl.name, 
+                                                    Type_Unknown, stmt->var_decl.is_const, stmt);
+                log_verbose_indent(2, "Registered global variable: %s", stmt->var_decl.name);
+            }
+        }
+    }
+
     // Pass 1: Collect function signatures
     log_verbose_indent(1, "Pass 1: Collecting function signatures");
     collect_function_signatures(ast, symbols, type_ctx);

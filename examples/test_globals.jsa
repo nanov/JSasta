@@ -1,0 +1,66 @@
+// Test global variable access from functions
+
+// Global variables
+var globalCounter = 0;
+var globalName = "JSasta";
+var globalArray = [1, 2, 3];
+
+// Function that reads a global
+function printGlobals() {
+    console.log("Counter: ");
+    printf("%d\n", globalCounter);
+    console.log("Name: ");
+    console.log(globalName);
+}
+
+// Function that modifies a global
+function incrementCounter() {
+    globalCounter = globalCounter + 1;
+}
+
+// Function that both reads and writes globals
+function doubleCounter() {
+    var temp = globalCounter;
+    globalCounter = temp * 2;
+    return globalCounter;
+}
+
+// Function that accesses global array
+function sumArray() {
+    var sum = 0;
+    sum = sum + globalArray[0];
+    sum = sum + globalArray[1];
+    sum = sum + globalArray[2];
+    return sum;
+}
+
+// Test the functions
+console.log("=== Testing Global Variable Access ===");
+console.log();
+
+console.log("Initial state:");
+printGlobals();
+console.log();
+
+console.log("Incrementing counter...");
+incrementCounter();
+printGlobals();
+console.log();
+
+console.log("Incrementing again...");
+incrementCounter();
+printGlobals();
+console.log();
+
+console.log("Doubling counter...");
+var result = doubleCounter();
+printf("Result: %d\n", result);
+printGlobals();
+console.log();
+
+console.log("Sum of global array:");
+var arraySum = sumArray();
+printf("Sum: %d\n", arraySum);
+console.log();
+
+console.log("=== All tests complete! ===");

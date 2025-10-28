@@ -6,6 +6,7 @@
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
+#include <llvm-c/DebugInfo.h>
 #include <stdbool.h>
 #include "logger.h"
 
@@ -724,6 +725,14 @@ typedef struct CodeGen {
     // Loop control - for break/continue
     LLVMBasicBlockRef loop_exit_block;          // Block to jump to on 'break'
     LLVMBasicBlockRef loop_continue_block;      // Block to jump to on 'continue'
+    
+    // Debug information
+    bool enable_debug;                          // Whether to generate debug info
+    const char* source_filename;                // Source file name for debug info
+    LLVMDIBuilderRef di_builder;                // Debug info builder
+    LLVMMetadataRef di_compile_unit;            // Compile unit for debug info
+    LLVMMetadataRef di_file;                    // File metadata
+    LLVMMetadataRef current_di_scope;           // Current debug scope (function or file)
 } CodeGen;
 
 CodeGen* codegen_create(const char* module_name);
@@ -746,7 +755,7 @@ TypeInfo* runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);
-void compile_file(const char* input_file, const char* output_file);
+void compile_file(const char* input_file, const char* output_file, bool enable_debug);
 
 
 FunctionSpecialization* s;

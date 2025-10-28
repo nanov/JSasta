@@ -9,6 +9,22 @@
 // Forward declarations
 static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info);
 
+// Helper function to emit debug location for a node
+static void codegen_set_debug_location(CodeGen* gen, ASTNode* node) {
+    if (!gen->di_builder || !node || !gen->current_di_scope) {
+        return;
+    }
+    
+    unsigned line = (unsigned)node->loc.line;
+    unsigned col = (unsigned)node->loc.column;
+    
+    LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
+        gen->context, line, col, gen->current_di_scope, NULL
+    );
+    
+    LLVMSetCurrentDebugLocation2(gen->builder, loc);
+}
+
 // Runtime function registry
 void codegen_register_runtime_function(CodeGen* gen, const char* name, TypeInfo* return_type,
                                        LLVMValueRef (*handler)(CodeGen*, ASTNode*)) {
@@ -54,6 +70,14 @@ CodeGen* codegen_create(const char* module_name) {
     gen->trait_registry = NULL;       // Will be shared with type_ctx
     gen->loop_exit_block = NULL;      // Initialize loop control blocks
     gen->loop_continue_block = NULL;
+    
+    // Initialize debug info (will be configured later if -g is passed)
+    gen->enable_debug = false;
+    gen->source_filename = NULL;
+    gen->di_builder = NULL;
+    gen->di_compile_unit = NULL;
+    gen->di_file = NULL;
+    gen->current_di_scope = NULL;
 
     // Initialize runtime library
     runtime_init(gen);
@@ -69,6 +93,11 @@ void codegen_free(CodeGen* gen) {
         free(rf->name);
         free(rf);
         rf = next;
+    }
+
+    // Dispose debug info builder if it was created
+    if (gen->di_builder) {
+        LLVMDisposeDIBuilder(gen->di_builder);
     }
 
     symbol_table_free(gen->symbols);
@@ -202,6 +231,9 @@ static LLVMValueRef codegen_bool_to_string(CodeGen* gen, LLVMValueRef value) {
 
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
     if (!node) return NULL;
+    
+    // Set debug location for this node
+    codegen_set_debug_location(gen, node);
 
     switch (node->type) {
         case AST_NUMBER:
@@ -485,32 +517,76 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef init_value = NULL;
             TypeInfo* var_type_info = node->type_info;
             
-            if (node->var_decl.init) {
-                init_value = codegen_node(gen, node->var_decl.init);
-                
-                // Use the initializer's type_info if the var_decl doesn't have one
-                // This handles cases where type_inference hasn't propagated types properly
-                if (!var_type_info && node->var_decl.init->type_info) {
-                    var_type_info = node->var_decl.init->type_info;
+            // Determine the type
+            LLVMTypeRef var_llvm_type;
+            if (var_type_info && type_info_is_array(var_type_info)) {
+                // For arrays, we'll determine the type from init_value later
+                var_llvm_type = NULL;
+            } else {
+                var_llvm_type = get_llvm_type(gen, var_type_info);
+            }
+            
+            // Check if this is a global variable (parent scope is NULL)
+            bool is_global = (gen->symbols->parent == NULL);
+            
+            if (is_global) {
+                // Global variable - use LLVMAddGlobal
+                if (node->var_decl.init) {
+                    init_value = codegen_node(gen, node->var_decl.init);
+                    
+                    if (!var_type_info && node->var_decl.init->type_info) {
+                        var_type_info = node->var_decl.init->type_info;
+                    }
+                    
+                    // For arrays, use the actual type
+                    if (var_type_info && type_info_is_array(var_type_info)) {
+                        var_llvm_type = LLVMTypeOf(init_value);
+                    } else if (!var_llvm_type) {
+                        var_llvm_type = get_llvm_type(gen, var_type_info);
+                    }
                 }
+                
+                // Create global variable
+                LLVMValueRef global = LLVMAddGlobal(gen->module, var_llvm_type, node->var_decl.name);
+                
+                // Set initializer (must be constant)
+                if (init_value && LLVMIsConstant(init_value)) {
+                    LLVMSetInitializer(global, init_value);
+                } else {
+                    // Non-constant initializer - set to zero and store the value in main
+                    LLVMSetInitializer(global, LLVMConstInt(var_llvm_type, 0, 0));
+                    if (init_value) {
+                        LLVMBuildStore(gen->builder, init_value, global);
+                    }
+                }
+                
+                symbol_table_insert(gen->symbols, node->var_decl.name, var_type_info, global, node->var_decl.is_const);
+                return global;
             } else {
-                init_value = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+                // Local variable - use alloca as before
+                if (node->var_decl.init) {
+                    init_value = codegen_node(gen, node->var_decl.init);
+                    
+                    if (!var_type_info && node->var_decl.init->type_info) {
+                        var_type_info = node->var_decl.init->type_info;
+                    }
+                }  else {
+                    init_value = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+                }
+
+                // For arrays, use the actual type of the init_value
+                if (var_type_info && type_info_is_array(var_type_info) && init_value) {
+                    var_llvm_type = LLVMTypeOf(init_value);
+                } else if (!var_llvm_type) {
+                    var_llvm_type = get_llvm_type(gen, var_type_info);
+                }
+
+                LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, var_llvm_type, node->var_decl.name);
+                LLVMBuildStore(gen->builder, init_value, alloca);
+                symbol_table_insert(gen->symbols, node->var_decl.name, var_type_info, alloca, node->var_decl.is_const);
+
+                return alloca;
             }
-
-            // For arrays, use the actual type of the init_value (which is a pointer)
-            // instead of get_llvm_type which would give us the element type
-            LLVMTypeRef alloca_type;
-            if (var_type_info && type_info_is_array(var_type_info) && init_value) {
-                alloca_type = LLVMTypeOf(init_value);
-            } else {
-                alloca_type = get_llvm_type(gen, var_type_info);
-            }
-
-            LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, alloca_type, node->var_decl.name);
-            LLVMBuildStore(gen->builder, init_value, alloca);
-            symbol_table_insert(gen->symbols, node->var_decl.name, var_type_info, alloca, node->var_decl.is_const);
-
-            return alloca;
         }
 
         case AST_ASSIGNMENT: {
@@ -1550,6 +1626,60 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
     gen->type_ctx = ast->type_ctx;
     gen->trait_registry = ast->type_ctx ? ast->type_ctx->trait_registry : NULL;
 
+    // Initialize debug info if enabled
+    if (gen->enable_debug && gen->source_filename) {
+        gen->di_builder = LLVMCreateDIBuilder(gen->module);
+        
+        // Create debug info file
+        const char* filename = gen->source_filename;
+        const char* directory = ".";
+        gen->di_file = LLVMDIBuilderCreateFile(gen->di_builder, filename, strlen(filename),
+                                                directory, strlen(directory));
+        
+        // Create compile unit
+        const char* producer = "JSasta Compiler";
+        bool is_optimized = false;
+        const char* flags = "";
+        unsigned runtime_version = 0;
+        const char* split_name = "";
+        const char* sysroot = "";
+        const char* sdk = "";
+        LLVMDWARFSourceLanguage source_lang = LLVMDWARFSourceLanguageC; // Closest match
+        
+        gen->di_compile_unit = LLVMDIBuilderCreateCompileUnit(
+            gen->di_builder,
+            source_lang,
+            gen->di_file,
+            producer, strlen(producer),
+            is_optimized,
+            flags, strlen(flags),
+            runtime_version,
+            split_name, strlen(split_name),
+            LLVMDWARFEmissionFull,
+            0, false, false,
+            sysroot, strlen(sysroot),
+            sdk, strlen(sdk)
+        );
+        
+        // Add module flags for debug info
+        // Debug Info Version (LLVM expects version 3 for modern DWARF)
+        LLVMMetadataRef debug_version = LLVMValueAsMetadata(
+            LLVMConstInt(LLVMInt32TypeInContext(gen->context), 3, 0)
+        );
+        LLVMAddModuleFlag(gen->module, LLVMModuleFlagBehaviorWarning, 
+                         "Debug Info Version", 18, debug_version);
+        
+        // Dwarf Version
+        LLVMMetadataRef dwarf_version = LLVMValueAsMetadata(
+            LLVMConstInt(LLVMInt32TypeInContext(gen->context), 4, 0)
+        );
+        LLVMAddModuleFlag(gen->module, LLVMModuleFlagBehaviorWarning,
+                         "Dwarf Version", 13, dwarf_version);
+        
+        gen->current_di_scope = gen->di_file;
+        log_verbose("Debug info initialized for %s", filename);
+    }
+
     // PASS 0: Initialize all types - objects and function prototypes
     // This allows forward references and recursive calls
     codegen_initialize_types(gen);
@@ -1561,6 +1691,46 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
     gen->current_function = main_func;
+    
+    // Create debug info for main function
+    if (gen->di_builder) {
+        LLVMMetadataRef param_types[] = {};
+        LLVMMetadataRef func_type = LLVMDIBuilderCreateSubroutineType(
+            gen->di_builder, gen->di_file, param_types, 0, LLVMDIFlagZero
+        );
+        
+        LLVMMetadataRef di_func = LLVMDIBuilderCreateFunction(
+            gen->di_builder,
+            gen->di_file,           // scope
+            "main", 4,              // name
+            "main", 4,              // linkage name
+            gen->di_file,           // file
+            1,                      // line number
+            func_type,              // type
+            false,                  // is local to unit
+            true,                   // is definition
+            1,                      // scope line
+            LLVMDIFlagZero,         // flags
+            false                   // is optimized
+        );
+        
+        LLVMSetSubprogram(main_func, di_func);
+        gen->current_di_scope = di_func;
+    }
+
+    // PASS 0.5: Generate global variables first (before functions)
+    // This ensures globals are in the symbol table when functions reference them
+    if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
+        for (int i = 0; i < ast->program.count; i++) {
+            ASTNode* stmt = ast->program.statements[i];
+            
+            // Only process variable declarations in this pass
+            if (stmt->type == AST_VAR_DECL) {
+                log_verbose_indent(1, "Generating global variable: %s", stmt->var_decl.name);
+                codegen_node(gen, stmt);
+            }
+        }
+    }
 
     // PASS 1: Generate function bodies
     if (gen->type_ctx) {
@@ -1607,17 +1777,22 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
         }
     }
     
-    // Generate non-function statements in main
+    // PASS 2: Generate non-function, non-variable statements in main
     if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
         for (int i = 0; i < ast->program.count; i++) {
             ASTNode* stmt = ast->program.statements[i];
 
-            // Skip function declarations (already handled)
+            // Skip function declarations (already handled in PASS 1)
             if (stmt->type == AST_FUNCTION_DECL) {
                 continue;
             }
+            
+            // Skip variable declarations (already handled in PASS 0.5)
+            if (stmt->type == AST_VAR_DECL) {
+                continue;
+            }
 
-            // Generate the statement normally
+            // Generate the statement normally (function calls, expressions, etc.)
             codegen_node(gen, stmt);
 
             // Stop if current block is already terminated with a return
@@ -1637,6 +1812,12 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
     // Add return 0 if not present
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
         LLVMBuildRet(gen->builder, LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0));
+    }
+    
+    // Finalize debug info
+    if (gen->di_builder) {
+        LLVMDIBuilderFinalize(gen->di_builder);
+        log_verbose("Debug info finalized");
     }
 }
 

@@ -1,0 +1,89 @@
+// Demonstration of Global Variable Access in JSasta
+// This shows what currently works with global variables
+
+console.log("=== Global Variables Demo ===");
+console.log();
+
+// Test 1: Basic global variable declaration and access
+console.log("Test 1: Basic globals");
+var counter = 10;
+var message = "Hello JSasta";
+var pi = 3.14159;
+
+console.log("Counter:");
+printf("%d\n", counter);
+console.log("Message:");
+console.log(message);
+console.log("Pi:");
+printf("%.5f\n", pi);
+console.log();
+
+// Test 2: Modifying global variables
+console.log("Test 2: Modifying globals");
+counter = counter + 5;
+message = "Modified";
+pi = pi * 2;
+
+console.log("New counter:");
+printf("%d\n", counter);
+console.log("New message:");
+console.log(message);
+console.log("New pi:");
+printf("%.5f\n", pi);
+console.log();
+
+// Test 3: Global arrays
+console.log("Test 3: Global arrays");
+var numbers = [10, 20, 30];
+console.log("numbers[0]:");
+printf("%d\n", numbers[0]);
+console.log("numbers[1]:");
+printf("%d\n", numbers[1]);
+console.log("numbers[2]:");
+printf("%d\n", numbers[2]);
+
+numbers[1] = 99;
+console.log("After modifying numbers[1] to 99:");
+printf("%d\n", numbers[1]);
+console.log();
+
+// Test 4: Multiple operations on same global
+console.log("Test 4: Multiple operations");
+var accumulator = 1;
+console.log("Starting value:");
+printf("%d\n", accumulator);
+
+accumulator = accumulator * 2;
+printf("After doubling: %d\n", accumulator);
+
+accumulator = accumulator + 10;
+printf("After adding 10: %d\n", accumulator);
+
+accumulator = accumulator * 3;
+printf("After tripling: %d\n", accumulator);
+console.log();
+
+// Test 5: Global variables used in control flow
+console.log("Test 5: Globals in control flow");
+var condition = 1;
+if (condition > 0) {
+    console.log("Condition is positive");
+    condition = condition - 2;
+}
+printf("New condition: %d\n", condition);
+
+if (condition < 0) {
+    console.log("Condition is now negative");
+}
+console.log();
+
+// Test 6: Globals in loops
+console.log("Test 6: Globals in loops");
+var loopCounter = 0;
+for (var i = 0; i < 5; i++) {
+    loopCounter = loopCounter + i;
+}
+printf("Loop counter result: %d\n", loopCounter);
+console.log();
+
+console.log("=== All tests complete! ===");
