@@ -1,11 +1,9 @@
-const NCCS = 20; // seen on mac
+const NCCS = 20;
 const STDIN_FILENO = 0;
 const TCSANOW = 0;
 
-const ROWS:int = 10;
-const COLS:int = 10;
 
-// until we implemnt arrays in structs, this is my solution :/
+// termios.h on osx
 struct termios {
 	c_iflag: u64;
 	c_oflag: u64;
@@ -21,8 +19,18 @@ struct pos {
 	y: u8;
 }
 
+// termios.h
+external tcgetattr(fd:int, termios_p:termios):int;
+external tcsetattr(fd:int, optional_actions:int, termios_p:termios):int;
+external isatty(fd:int):int;
+// stdid.h
+external printf(format:string, ...):void;
+external read(fd:int, buf:string, count:int):int;
+external write(fd:int, buf:string, count:int):int;
+
+
 struct game_state {
-	cells: i8[100];
+	cells: bool[100];
 	states: i8[100];
 	cursour: pos;
 	move_up function(self: ref game_state):void {
@@ -43,14 +51,6 @@ struct game_state {
 	}
 }
 
-// termios.h
-external tcgetattr(fd:int, termios_p:termios):int;
-external tcsetattr(fd:int, optional_actions:int, termios_p:termios):int;
-external isatty(fd:int):int;
-// stdid.h
-external printf(format:string, ...):void;
-external read(fd:int, buf:string, count:int):int;
-external write(fd:int, buf:string, count:int):int;
 
 var cells = Array(ROWS*COLS);
 var states = Array(ROWS*COLS);

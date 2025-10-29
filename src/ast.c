@@ -36,6 +36,7 @@ void ast_free(ASTNode* node) {
         case AST_VAR_DECL:
             free(node->var_decl.name);
             ast_free(node->var_decl.init);
+            ast_free(node->var_decl.array_size_expr);
             // Note: type_hint is a reference to TypeContext, don't free it
             break;
 
@@ -280,6 +281,8 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->var_decl.name = strdup(node->var_decl.name);
             clone->var_decl.init = ast_clone(node->var_decl.init);
             clone->var_decl.is_const = node->var_decl.is_const;
+            clone->var_decl.array_size = node->var_decl.array_size;
+            clone->var_decl.array_size_expr = ast_clone(node->var_decl.array_size_expr);
             // Copy type hint reference (don't clone - it's managed by TypeContext)
             clone->var_decl.type_hint = node->var_decl.type_hint;
             // Don't copy symbol_entry - it will be set during type inference on the cloned AST

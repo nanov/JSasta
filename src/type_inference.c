@@ -25,6 +25,137 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTable* scope);
 static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
+// Helper: Evaluate a constant expression to an integer value
+// Returns -1 on error
+// The 'evaluating' set tracks nodes being evaluated to detect circular dependencies
+static int eval_const_expr_internal(ASTNode* expr, SymbolTable* symbols, ASTNode** evaluating, int eval_depth) {
+    if (!expr) {
+        log_error("NULL expression in const evaluation");
+        return -1;
+    }
+    
+    // Prevent infinite recursion
+    if (eval_depth > 20) {
+        log_error_at(&expr->loc, "Const expression recursion too deep (possible circular dependency)");
+        return -1;
+    }
+    
+    // Check for circular dependency
+    for (int i = 0; i < eval_depth; i++) {
+        if (evaluating[i] == expr) {
+            log_error_at(&expr->loc, "Circular dependency detected in const expression");
+            return -1;
+        }
+    }
+    
+    evaluating[eval_depth] = expr;
+    
+    switch (expr->type) {
+        case AST_NUMBER: {
+            // Check if it's an integer
+            double value = expr->number.value;
+            if (value != (int)value) {
+                log_error_at(&expr->loc, "Array size must be an integer, got %.2f", value);
+                return -1;
+            }
+            int int_val = (int)value;
+            if (int_val <= 0) {
+                log_error_at(&expr->loc, "Array size must be positive, got %d", int_val);
+                return -1;
+            }
+            return int_val;
+        }
+            
+        case AST_IDENTIFIER: {
+            // Look up const variable
+            SymbolEntry* entry = symbol_table_lookup(symbols, expr->identifier.name);
+            if (!entry) {
+                log_error_at(&expr->loc, "Undefined identifier '%s' in array size expression", expr->identifier.name);
+                return -1;
+            }
+            if (!entry->is_const) {
+                log_error_at(&expr->loc, "Variable '%s' is not declared as 'const' and cannot be used in array size expression", 
+                           expr->identifier.name);
+                log_error_at(&expr->loc, "  Hint: Change 'var %s' to 'const %s' if it's a compile-time constant", 
+                           expr->identifier.name, expr->identifier.name);
+                return -1;
+            }
+            if (!entry->node || entry->node->type != AST_VAR_DECL) {
+                log_error_at(&expr->loc, "Const '%s' is not a variable declaration", expr->identifier.name);
+                return -1;
+            }
+            if (!entry->node->var_decl.init) {
+                log_error_at(&expr->loc, "Const '%s' has no initializer and cannot be evaluated", expr->identifier.name);
+                return -1;
+            }
+            // Recursively evaluate the const's initializer
+            // (Type checking will happen when we evaluate the initializer)
+            return eval_const_expr_internal(entry->node->var_decl.init, symbols, evaluating, eval_depth + 1);
+        }
+        
+        case AST_BINARY_OP: {
+            int left = eval_const_expr_internal(expr->binary_op.left, symbols, evaluating, eval_depth + 1);
+            int right = eval_const_expr_internal(expr->binary_op.right, symbols, evaluating, eval_depth + 1);
+            if (left < 0 || right < 0) return -1;
+            
+            const char* op = expr->binary_op.op;
+            int result;
+            if (strcmp(op, "+") == 0) {
+                result = left + right;
+            } else if (strcmp(op, "-") == 0) {
+                result = left - right;
+            } else if (strcmp(op, "*") == 0) {
+                result = left * right;
+            } else if (strcmp(op, "/") == 0) {
+                if (right == 0) {
+                    log_error_at(&expr->loc, "Division by zero in array size expression");
+                    return -1;
+                }
+                result = left / right;
+            } else if (strcmp(op, "%") == 0) {
+                if (right == 0) {
+                    log_error_at(&expr->loc, "Modulo by zero in array size expression");
+                    return -1;
+                }
+                result = left % right;
+            } else {
+                log_error_at(&expr->loc, "Operator '%s' is not supported in array size expressions", op);
+                log_error_at(&expr->loc, "  Supported operators: + - * / %%");
+                return -1;
+            }
+            
+            if (result <= 0) {
+                log_error_at(&expr->loc, "Array size expression evaluates to %d, but must be positive", result);
+                return -1;
+            }
+            return result;
+        }
+        
+        case AST_STRING:
+            log_error_at(&expr->loc, "String literals cannot be used in array size expressions");
+            return -1;
+            
+        case AST_BOOLEAN:
+            log_error_at(&expr->loc, "Boolean values cannot be used in array size expressions");
+            return -1;
+            
+        case AST_CALL:
+            log_error_at(&expr->loc, "Function calls cannot be used in array size expressions");
+            log_error_at(&expr->loc, "  Array sizes must be compile-time constants");
+            return -1;
+        
+        default:
+            log_error_at(&expr->loc, "This expression cannot be used in array size (must be a const integer expression)");
+            return -1;
+    }
+}
+
+// Wrapper function for const expression evaluation
+static int eval_const_expr(ASTNode* expr, SymbolTable* symbols) {
+    ASTNode* evaluating[20];  // Stack to track evaluation path
+    return eval_const_expr_internal(expr, symbols, evaluating, 0);
+}
+
 // Helper: Infer type from binary operation using trait system
 static TypeInfo* infer_binary_result_type(SourceLocation* node, const char* op, TypeInfo* left, TypeInfo* right) {
     log_verbose_at(node, "      infer_binary_result_type: %s op=%s %s",
@@ -480,6 +611,17 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_VAR_DECL:
+            // Evaluate const expression for array size
+            if (node->var_decl.array_size_expr) {
+                int size = eval_const_expr(node->var_decl.array_size_expr, symbols);
+                if (size < 0) {
+                    log_error_at(&node->loc, "Invalid array size expression");
+                    node->var_decl.array_size = 0;
+                } else {
+                    node->var_decl.array_size = size;
+                }
+            }
+            
             if (node->var_decl.init) {
                 // Special case: if we have a struct type hint and object literal,
                 // skip normal type inference to avoid creating anonymous types

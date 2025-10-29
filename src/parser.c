@@ -957,15 +957,20 @@ static ASTNode* parse_var_declaration(Parser* parser) {
     if (parser_match(parser, TOKEN_LBRACKET)) {
         parser_advance(parser);  // consume '['
         
-        if (!parser_match(parser, TOKEN_NUMBER)) {
+        // Parse array size expression
+        // Use parse_ternary which handles arithmetic but stops at ] naturally
+        ASTNode* size_expr = parse_ternary(parser);
+        
+        if (!size_expr) {
             log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
-                        "Expected array size (number) after '['");
+                        "Expected array size expression after '['");
             ast_free(node);
             return NULL;
         }
         
-        node->var_decl.array_size = atoi(parser->current_token->value);
-        parser_advance(parser);  // consume number
+        // Store the expression
+        node->var_decl.array_size = 0;  // Will be evaluated during type inference
+        node->var_decl.array_size_expr = size_expr;
         
         if (!parser_match(parser, TOKEN_RBRACKET)) {
             log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),

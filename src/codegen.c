@@ -740,6 +740,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 TypeInfo* elem_type = var_type_info->data.array.element_type;
                 LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
                 var_llvm_type = LLVMArrayType2(elem_llvm_type, node->var_decl.array_size);
+            } else if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size == 0) {
+                // Array size evaluation failed (error already reported), skip codegen
+                log_error_at(&node->loc, "Cannot generate code for array with invalid size");
+                return NULL;
             } else if (var_type_info && type_info_is_array(var_type_info)) {
                 // For dynamic arrays, we'll determine the type from init_value later
                 var_llvm_type = NULL;

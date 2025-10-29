@@ -281,6 +281,7 @@ struct ASTNode {
             bool is_const;
             TypeInfo* type_hint;  // Optional type annotation (NULL if not specified, supports objects)
             int array_size;       // For array declarations (e.g., i32[10]), 0 if not an array
+            ASTNode* array_size_expr;  // Expression for array size (e.g., identifier or const expr)
             SymbolEntry* symbol_entry;  // Pointer to the symbol table entry for this variable (set during type inference)
         } var_decl;
 
