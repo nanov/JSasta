@@ -776,6 +776,9 @@ typedef struct CodeGen {
     LLVMBasicBlockRef loop_exit_block;          // Block to jump to on 'break'
     LLVMBasicBlockRef loop_continue_block;      // Block to jump to on 'continue'
     
+    // Stack allocation management
+    LLVMBasicBlockRef entry_block;              // Entry block of current function for allocas
+    
     // Debug information
     bool enable_debug;                          // Whether to generate debug info
     const char* source_filename;                // Source file name for debug info

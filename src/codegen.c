@@ -29,6 +29,36 @@ static void codegen_set_debug_location(CodeGen* gen, ASTNode* node) {
     LLVMSetCurrentDebugLocation2(gen->builder, loc);
 }
 
+// Helper function to create an alloca in the entry block of the current function
+// This ensures all stack allocations happen at function entry, not in loops or nested blocks
+static LLVMValueRef codegen_create_entry_block_alloca(CodeGen* gen, LLVMTypeRef type, const char* name) {
+    if (!gen->entry_block) {
+        // No entry block set - fallback to current position (shouldn't happen in well-formed code)
+        return LLVMBuildAlloca(gen->builder, type, name);
+    }
+    
+    // Save current position
+    LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
+    
+    // Position at the start of the entry block
+    LLVMValueRef first_instr = LLVMGetFirstInstruction(gen->entry_block);
+    if (first_instr) {
+        LLVMPositionBuilderBefore(gen->builder, first_instr);
+    } else {
+        LLVMPositionBuilderAtEnd(gen->builder, gen->entry_block);
+    }
+    
+    // Create the alloca
+    LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, type, name);
+    
+    // Restore builder position
+    if (current_block) {
+        LLVMPositionBuilderAtEnd(gen->builder, current_block);
+    }
+    
+    return alloca;
+}
+
 // Runtime function registry
 void codegen_register_runtime_function(CodeGen* gen, const char* name, TypeInfo* return_type,
                                        LLVMValueRef (*handler)(CodeGen*, ASTNode*)) {
@@ -74,6 +104,7 @@ CodeGen* codegen_create(const char* module_name) {
     gen->trait_registry = NULL;       // Will be shared with type_ctx
     gen->loop_exit_block = NULL;      // Initialize loop control blocks
     gen->loop_continue_block = NULL;
+    gen->entry_block = NULL;          // Initialize entry block for allocas
 
     // Initialize debug info (will be configured later if -g is passed)
     gen->enable_debug = false;
@@ -815,8 +846,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     // Use the array type created earlier (var_llvm_type)
                     LLVMTypeRef array_type = var_llvm_type;
 
-                    // Allocate on stack
-                    LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, array_type, node->var_decl.name);
+                    // Allocate on stack (in entry block)
+                    LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, array_type, node->var_decl.name);
 
                     // Zero-initialize the array
                     LLVMValueRef zero = LLVMConstNull(array_type);
@@ -848,7 +879,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     var_llvm_type = get_llvm_type(gen, var_type_info);
                 }
 
-                LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, var_llvm_type, node->var_decl.name);
+                LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, var_llvm_type, node->var_decl.name);
                 LLVMBuildStore(gen->builder, init_value, alloca);
 
                 // Update the symbol entry (created during type inference) with LLVM value
@@ -1458,8 +1489,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return NULL;
             }
 
-            // Allocate struct on the stack
-            LLVMValueRef obj_ptr = LLVMBuildAlloca(gen->builder, struct_type, "obj");
+            // Allocate struct on the stack (in entry block)
+            LLVMValueRef obj_ptr = codegen_create_entry_block_alloca(gen, struct_type, "obj");
 
             // Store each property value
             int prop_count = node->object_literal.count;
@@ -1845,9 +1876,11 @@ static LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecializ
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, func, "entry");
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
-    // Save previous function and scope
+    // Save previous function, entry block, and scope
     LLVMValueRef prev_func = gen->current_function;
+    LLVMBasicBlockRef prev_entry = gen->entry_block;
     gen->current_function = func;
+    gen->entry_block = entry;
 
     // Use the symbol table from the specialized body (created during type inference)
     // This contains parameters and local variables with their types already resolved
@@ -1887,8 +1920,8 @@ static LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecializ
         if (is_ref_to_object) {
             param_value = param;  // Use pointer directly for ref types
         } else {
-            LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, param_types[i],
-                                                  param_names[i]);
+            LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, param_types[i],
+                                                                     param_names[i]);
             LLVMBuildStore(gen->builder, param, alloca);
             param_value = alloca;
         }
@@ -1925,10 +1958,11 @@ static LLVMValueRef codegen_specialized_function(CodeGen* gen, FunctionSpecializ
         }
     }
 
-    // Restore scope and function
+    // Restore scope, function, and entry block
     // Note: Don't free the symbol table - it's owned by the specialized_body AST node
     gen->symbols = prev_scope;
     gen->current_function = prev_func;
+    gen->entry_block = prev_entry;
 
     free(param_types);
 
@@ -2160,6 +2194,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
     gen->current_function = main_func;
+    gen->entry_block = entry;
 
     // Create debug info for main function
     if (gen->di_builder) {
