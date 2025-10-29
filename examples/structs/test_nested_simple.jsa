@@ -1,0 +1,12 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+struct container {
+    p: pos;
+}
+
+function test(c: ref container):u8 {
+    return c.p.x;
+}

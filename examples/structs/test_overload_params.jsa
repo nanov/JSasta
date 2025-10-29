@@ -1,0 +1,45 @@
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+struct Vector {
+    dx: i32;
+    dy: i32;
+}
+
+// Same function name, different parameter types - should generate different specializations
+function process(p: Point): void {
+    printf("Processing Point: %d, %d\n", p.x, p.y);
+}
+
+function process(v: Vector): void {
+    printf("Processing Vector: %d, %d\n", v.dx, v.dy);
+}
+
+// Same function name with ref vs non-ref - should be different specializations
+function modify(p: Point): void {
+    p.x = 100;
+    printf("modify(Point) - modified local copy: %d\n", p.x);
+}
+
+function modify(p: ref Point): void {
+    p.x = 200;
+    printf("modify(ref Point) - modified original: %d\n", p.x);
+}
+
+function test(): void {
+    var pt: Point = {x: 10, y: 20};
+    var vec: Vector = {dx: 5, dy: 15};
+
+    process(pt);   // Should call process(Point)
+    process(vec);  // Should call process(Vector)
+
+    printf("Before modify(Point): pt.x=%d\n", pt.x);
+    modify(pt);    // Should call modify(Point) - copy semantics
+    printf("After modify(Point): pt.x=%d\n", pt.x);
+
+    printf("Before modify(ref Point): pt.x=%d\n", pt.x);
+    modify(pt);    // Wait, this is ambiguous! Both modify(Point) and modify(ref Point) could match
+    printf("After modify(ref Point): pt.x=%d\n", pt.x);
+}

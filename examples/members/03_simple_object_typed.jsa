@@ -1,0 +1,10 @@
+external printf(string, ...): void;
+
+struct counter_t {
+	i: i32;
+}
+
+var o: counter_t;
+
+printf("%d\n", o.i++); // 1;
+printf("%d\n", o.i); // 2

@@ -1,0 +1,12 @@
+external printf(string, ...): void;
+
+struct counter_t {
+	i: i32;
+}
+
+var o: counter_t;
+o.i += 1;
+var b = o; // value-semantics, copy
+
+printf("%d\n", ++o.i); // 2
+printf("%d\n", b.i); // 1

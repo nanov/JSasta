@@ -1,0 +1,16 @@
+external printf(string, ...): void;
+
+var arr: i32[5];
+var ref_arr = ref arr;
+
+// Test assignment through ref
+ref_arr[0] = 100;
+ref_arr[2] = 200;
+
+// Verify through original array
+printf("arr[0]: %d\n", arr[0]);
+printf("arr[2]: %d\n", arr[2]);
+
+// Verify through ref
+printf("ref_arr[0]: %d\n", ref_arr[0]);
+printf("ref_arr[2]: %d\n", ref_arr[2]);

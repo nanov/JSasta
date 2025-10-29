@@ -1,0 +1,15 @@
+external printf(string, ...): void;
+
+
+struct counter_t {
+	i: i32;
+	inc (self: ref counter_t):void {
+	 self.i++;
+	}
+	calculate (a: i32, b:i32):i32 {
+		return a+b;
+	}
+}
+
+
+printf("%d\n", counter_t.calculate(1, 1)); // 2

@@ -1,0 +1,12 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+const p1: Point;
+p1.x = 10;
+
+// This should give an error suggesting to use ref
+var p2 = p1;

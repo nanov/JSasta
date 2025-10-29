@@ -1,0 +1,15 @@
+external printf(string, ...): void;
+
+
+struct counter_t {
+	i: i32;
+}
+
+function inc(o: ref counter_t):void { // gets a refeence mutates
+	o.i++;
+}
+
+var o: counter_t;
+inc(o);
+
+printf("%d\n", o.i) // 1

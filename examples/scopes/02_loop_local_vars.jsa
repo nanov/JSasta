@@ -1,0 +1,7 @@
+const WIDTH = 100;
+
+for (let i = 0; i < WIDTH; i++) {
+	var cell = i == WIDTH - 1 ? 1 : 0;
+	printf(cell == 1 ? "*" : "·");
+}
+printf("%s/n");

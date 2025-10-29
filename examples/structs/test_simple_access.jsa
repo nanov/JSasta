@@ -1,0 +1,9 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+function test():u8 {
+    var p = pos { x: 5, y: 10 };
+    return p.x;
+}

@@ -1,0 +1,8 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+function test():void {
+    var p = pos { x: 5, y: 10 };
+}

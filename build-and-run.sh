@@ -9,6 +9,6 @@ output_ll=${filename%.*}.ll
 make -B
 mkdir -p compiled
 cd compiled
-../build/jsastac $script $output_ll
+../build/jsastac -v $script $output_ll
 clang -Wno-override-module -O3 -o ${output} ${output_ll}
 ./$output

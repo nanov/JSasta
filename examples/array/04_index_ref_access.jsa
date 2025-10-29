@@ -1,0 +1,7 @@
+external printf(string, ...): void;
+
+var b:i32[2];
+var c = ref b;
+
+// Test reading from zero-initialized array
+printf("%d\n", b[1]); // 0

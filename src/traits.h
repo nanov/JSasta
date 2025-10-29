@@ -116,6 +116,9 @@ extern Trait* Trait_AddAssign;
 extern Trait* Trait_SubAssign;
 extern Trait* Trait_MulAssign;
 extern Trait* Trait_DivAssign;
+extern Trait* Trait_Index;
+extern Trait* Trait_RefIndex;
+extern Trait* Trait_Length;
 
 // === Core Trait Registry Functions ===
 
@@ -257,5 +260,19 @@ void traits_init_builtins(TraitRegistry* registry, TypeContext* type_ctx);
 
 // Register all built-in type implementations
 void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ctx);
+
+// === On-Demand Trait Implementation for Builtins ===
+
+// Ensure Index<Idx> is implemented for builtin indexable types (arrays, strings, etc.)
+// Implements on-demand for generic builtin types that can't be registered upfront
+// For arrays: implements Index<i32> -> ElementType
+// User-defined types must implement Index explicitly
+void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx);
+
+// Ensure RefIndex<Idx> is implemented for builtin indexable types (arrays, strings, etc.)
+void trait_ensure_ref_index_impl(TypeInfo* type, TypeContext* type_ctx);
+
+// Ensure Length is implemented for builtin types with length (arrays, strings, etc.)
+void trait_ensure_length_impl(TypeInfo* type, TypeContext* type_ctx);
 
 #endif // JSASTA_TRAITS_H

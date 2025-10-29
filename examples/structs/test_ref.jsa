@@ -1,0 +1,22 @@
+external printf(string, ...):void;
+
+struct termios {
+	c_iflag: u64;
+	c_oflag: u64;
+	c_cflag: u64;
+	c_lflag: u64;
+	cc_cc1: u8[20];
+	c_ispeed: u64;
+	c_ospeed: u64;
+}
+
+const a: termios;
+a.c_cflag = 0u64;
+a.c_lflag = 5u64;
+
+// Test ref type - b should be a reference to a
+var b: ref termios = a;
+b.c_lflag = 16u64;
+
+// This should print 16 since b is a reference to a
+printf("a.c_lflag = %d (should be 16)\n", a.c_lflag);

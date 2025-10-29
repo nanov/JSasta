@@ -1,0 +1,7 @@
+struct Buffer {
+    data: int[256];
+    size: int;
+    capacity: int;
+}
+
+var buf: Buffer;

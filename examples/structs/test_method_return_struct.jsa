@@ -1,0 +1,13 @@
+struct pos {
+    x: u8;
+    y: u8;
+}
+
+struct game_object {
+    position: pos;
+    health: u8;
+
+    get_position function(self: ref game_object):pos {
+        return self.position;
+    }
+}

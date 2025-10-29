@@ -1,0 +1,8 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+function test(p: ref pos):u8 {
+    return p.x;
+}

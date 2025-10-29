@@ -67,7 +67,7 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     // Disabled - rework to actually check types
     // // Type analysis (validate types)
     // type_analyze(ast, symbols);
-    symbol_table_free(symbols);
+    // Note: Don't free symbols here - it's now stored in ast->symbol_table and will be freed with AST
 
     log_verbose("Type checking complete");
 

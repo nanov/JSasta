@@ -19,6 +19,7 @@ typedef enum {
     TOKEN_FUNCTION,
     TOKEN_EXTERNAL,
     TOKEN_STRUCT,
+    TOKEN_REF,
     TOKEN_RETURN,
     TOKEN_BREAK,
     TOKEN_CONTINUE,
@@ -105,6 +106,7 @@ typedef enum {
     AST_BINARY_OP,
     AST_UNARY_OP,
     AST_CALL,
+    AST_METHOD_CALL,    // Method call: obj.method(...) or Type.method(...)
     AST_IDENTIFIER,
     AST_NUMBER,
     AST_STRING,
@@ -126,6 +128,8 @@ typedef enum {
 typedef struct TypeInfo TypeInfo;
 typedef struct FunctionSpecialization FunctionSpecialization;
 typedef struct ASTNode ASTNode;
+typedef struct SymbolTable SymbolTable;
+typedef struct SymbolEntry SymbolEntry;
 
 // Type kind for categorizing types
 typedef enum {
@@ -133,6 +137,7 @@ typedef enum {
     TYPE_KIND_OBJECT,       // User-defined object types
     TYPE_KIND_ARRAY,        // Array types
     TYPE_KIND_FUNCTION,     // Function types
+    TYPE_KIND_REF,          // Reference types (pointers with mutable flag)
     TYPE_KIND_ALIAS,        // Type alias (e.g., usize -> u64)
     TYPE_KIND_UNKNOWN       // Unknown/unresolved types
 } TypeKind;
@@ -175,6 +180,12 @@ struct TypeInfo {
             ASTNode* original_body;              // Original AST body (for cloning during specialization)
             ASTNode* func_decl_node;             // Function declaration node (for function variables)
         } function;
+
+        // For TYPE_KIND_REF: reference/pointer type
+        struct {
+            TypeInfo* target_type;   // Type being referenced
+            bool is_mutable;         // True if reference is mutable (default)
+        } ref;
 
         // For TYPE_KIND_ALIAS: points to the actual type
         struct {
@@ -253,6 +264,7 @@ struct ASTNode {
     ASTNodeType type;
     TypeInfo* type_info;           // Unified type representation
     TypeContext* type_ctx;         // For AST_PROGRAM, stores types and specializations
+    SymbolTable* symbol_table;     // For AST_PROGRAM and AST_BLOCK, stores the scope's symbol table
 
     // Source location information
     SourceLocation loc;
@@ -268,6 +280,8 @@ struct ASTNode {
             ASTNode* init;
             bool is_const;
             TypeInfo* type_hint;  // Optional type annotation (NULL if not specified, supports objects)
+            int array_size;       // For array declarations (e.g., i32[10]), 0 if not an array
+            SymbolEntry* symbol_entry;  // Pointer to the symbol table entry for this variable (set during type inference)
         } var_decl;
 
         struct {
@@ -285,7 +299,10 @@ struct ASTNode {
             char** property_names;        // Property names
             TypeInfo** property_types;    // Property types
             ASTNode** default_values;     // Default literal values (NULL if no default)
+            int* property_array_sizes;    // Array size for each property (0 if not array)
             int property_count;
+            ASTNode** methods;            // Method function declarations (AST_FUNC_DECL nodes)
+            int method_count;
         } struct_decl;
 
         struct {
@@ -337,6 +354,14 @@ struct ASTNode {
         } call;
 
         struct {
+            ASTNode* object;        // The object or type (identifier) being called on
+            char* method_name;      // The method name
+            ASTNode** args;         // Method arguments
+            int arg_count;
+            bool is_static;         // true if Type.method(), false if obj.method()
+        } method_call;
+
+        struct {
             char* name;
         } identifier;
 
@@ -355,17 +380,21 @@ struct ASTNode {
         struct {
             char* name;
             ASTNode* value;
+            SymbolEntry* symbol_entry;  // Pointer to the symbol table entry for the variable being assigned
         } assignment;
 
         struct {
-            char* name;
-            char* op;      // "+=", "-=", "*=", "/="
+            char* name;           // For simple identifier (can be NULL)
+            ASTNode* target;      // For member/index access (can be NULL)
+            char* op;             // "+=", "-=", "*=", "/="
             ASTNode* value;
         } compound_assignment;
 
         struct {
             ASTNode* object;
             char* property;
+            SymbolEntry* symbol_entry;  // Symbol entry if object is identifier (resolved during type inference)
+            int property_index;         // Index of property in struct (-1 if not applicable, resolved during type inference)
         } member_access;
 
         struct {
@@ -383,6 +412,8 @@ struct ASTNode {
         struct {
             ASTNode* object;
             ASTNode* index;
+            struct TraitImpl* trait_impl;  // Index trait implementation (resolved during type inference)
+            SymbolEntry* symbol_entry;     // Symbol entry if object is identifier (resolved during type inference)
         } index_access;
 
         struct {
@@ -394,16 +425,20 @@ struct ASTNode {
             ASTNode* object;
             ASTNode* index;
             ASTNode* value;
+            struct TraitImpl* trait_impl;  // RefIndex trait implementation (resolved during type inference)
+            SymbolEntry* symbol_entry;     // Symbol entry if object is identifier (resolved during type inference)
         } index_assignment;
 
         struct {
-            char* op;      // "++" or "--"
-            char* name;    // variable name
+            char* op;           // "++" or "--"
+            char* name;         // variable name (can be NULL)
+            ASTNode* target;    // For member/index access (can be NULL)
         } prefix_op;
 
         struct {
-            char* op;      // "++" or "--"
-            char* name;    // variable name
+            char* op;           // "++" or "--"
+            char* name;         // variable name (can be NULL)
+            ASTNode* target;    // For member/index access (can be NULL)
         } postfix_op;
 
         struct {
@@ -454,6 +489,7 @@ typedef struct SymbolEntry {
     ASTNode* node;
     LLVMTypeRef llvm_type;  // For objects, stores the struct type
     TypeInfo* type_info;     // For objects and complex types, stores metadata
+    int array_size;          // For arrays, stores the size (0 if not an array)
     struct SymbolEntry* next;
 } SymbolEntry;
 
@@ -619,6 +655,19 @@ static inline bool type_info_is_object(TypeInfo* type_info) {
 static inline bool type_info_is_array(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_ARRAY;
+}
+
+static inline bool type_info_is_ref(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
+    return type_info && type_info->kind == TYPE_KIND_REF;
+}
+
+// Get the underlying type from a ref type (like type_info_resolve_alias)
+static inline TypeInfo* type_info_get_ref_target(TypeInfo* type_info) {
+    if (type_info && type_info->kind == TYPE_KIND_REF) {
+        return type_info->data.ref.target_type;
+    }
+    return type_info;
 }
 
 static inline bool type_info_is_function(TypeInfo* type_info) {

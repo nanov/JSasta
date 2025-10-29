@@ -1,0 +1,9 @@
+external printf(string, ...):void;
+
+function p(a:i32): void {
+	const la = 2;
+	printf("%d\n", a*la);
+}
+
+
+p(2); // 4

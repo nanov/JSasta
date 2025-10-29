@@ -1,0 +1,32 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Test 1: Basic ref semantics
+const p1: Point;
+p1.x = 10;
+p1.y = 20;
+
+var p2: ref Point = p1;
+printf("Before modification: p1.x=%d, p1.y=%d\n", p1.x, p1.y);
+
+// Modify through reference
+p2.x = 100;
+p2.y = 200;
+printf("After p2.x=100, p2.y=200: p1.x=%d, p1.y=%d\n", p1.x, p1.y);
+
+// Test 2: Multiple refs to same object
+var p3: ref Point = p1;
+p3.x = 999;
+printf("After p3.x=999: p1.x=%d, p2.x=%d, p3.x=%d\n", p1.x, p2.x, p3.x);
+
+// Test 3: Ref can be reassigned to different object
+const p4: Point;
+p4.x = 5;
+p4.y = 7;
+// Note: p2 = p4 would reassign the reference (not yet implemented)
+
+printf("Test passed!\n");

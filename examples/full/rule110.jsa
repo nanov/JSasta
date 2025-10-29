@@ -1,4 +1,6 @@
-var WIDTH = 150;
+external printf(string, ...): void;
+
+var WIDTH = 100;
 var GENERATIONS = 60;
 
 const ANSI_RESET = "\e[0m";
@@ -11,17 +13,17 @@ function applyRule110(left, center, right) {
 	return res & 1;
 }
 
-console.log("Rule 110 Cellular Automaton");
-console.log("Width: " + WIDTH);
-console.log("Generations: " + GENERATIONS);
-console.log("=", WIDTH);
-console.log();
+printf("Rule 110 Cellular Automaton\n");
+printf("Width: \n" + WIDTH);
+printf("Generations: \n" + GENERATIONS);
+printf("=\n", WIDTH);
 
 let prevLeft = 0;
 let prevCenter = 0;
 let prevRight = 0;
 
-let currentRow = Array(WIDTH);
+let currentRow: i32[150];
+let nextRow: i32[150];
 var wasHit = true;
 
 for (let i = 0; i < WIDTH; i++) {
@@ -30,19 +32,22 @@ for (let i = 0; i < WIDTH; i++) {
 	printf(cell == 1 ? ANSI_RESET : ANSI_BLACK);
 	printf(cell == 1 ? "*" : "·");
 }
-console.log(ANSI_RESET);
+printf("%s\n", ANSI_RESET);
+var cr = ref currentRow;
+var nr = ref nextRow;
 
 for (let gen = 1; gen < GENERATIONS; gen++) {
-	var nextRow = Array(WIDTH);
 	for (let i = 0; i < WIDTH; i++) {
-		var left = i == 0 ? 0 : currentRow[i - 1];
-		var center = currentRow[i];
-		var right = i == WIDTH - 1 ? 0 : currentRow[i + 1];
+		var left = i == 0 ? 0 : cr[i - 1];
+		var center = cr[i];
+		var right = i == WIDTH - 1 ? 0 : cr[i + 1];
 		var nextCell = applyRule110(left, center, right);
-		nextRow[i] = nextCell;
+		nr[i] = nextCell;
 		printf(nextCell == 1 ? ANSI_RESET : ANSI_BLACK);
 		printf(nextCell == 1 ? "*" : "·");
 	}
-	currentRow = nextRow;
-	console.log(ANSI_RESET);
+	var tr = cr;
+	cr = nr;
+	nr = tr;
+	printf("%s\n", ANSI_RESET);
 }

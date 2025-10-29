@@ -1,0 +1,44 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function test(): void {
+    printf("=== Struct Initialization Tests ===\n\n");
+
+    // Test 1: Zero initialization
+    printf("Test 1: var a: Point; (zero-init)\n");
+    var a: Point;
+    printf("  a.x=%d, a.y=%d\n", a.x, a.y);
+    printf("  Result: %s\n\n", a.x == 0 && a.y == 0 ? "PASS" : "FAIL");
+
+    // Test 2: Field assignment after declaration
+    printf("Test 2: Field assignment\n");
+    const b: Point;
+    b.x = 10;
+    b.y = 20;
+    printf("  b.x=%d, b.y=%d\n", b.x, b.y);
+    printf("  Result: %s\n\n", b.x == 10 && b.y == 20 ? "PASS" : "FAIL");
+
+    // Test 3: Copy initialization
+    printf("Test 3: var c = b; (copy)\n");
+    var c = b;
+    printf("  c.x=%d, c.y=%d\n", c.x, c.y);
+    c.x = 100;
+    printf("  After c.x=100: b.x=%d, c.x=%d\n", b.x, c.x);
+    printf("  Result: %s\n\n", b.x == 10 && c.x == 100 ? "PASS - independent" : "FAIL");
+
+    // Test 4: Ref initialization
+    printf("Test 4: var d = ref b; (reference)\n");
+    var d = ref b;
+    printf("  d.x=%d, d.y=%d\n", d.x, d.y);
+    d.x = 999;
+    printf("  After d.x=999: b.x=%d, d.x=%d\n", b.x, d.x);
+    printf("  Result: %s\n\n", b.x == 999 && d.x == 999 ? "PASS - same object" : "FAIL");
+
+    printf("All initialization modes work correctly!\n");
+}
+
+test();

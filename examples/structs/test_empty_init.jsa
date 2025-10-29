@@ -1,0 +1,18 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function test(): void {
+    // Test 1: Empty struct initialization
+    var a: Point;
+    printf("a.x=%d, a.y=%d (should be 0, 0)\n", a.x, a.y);
+
+    // Test 2: Empty ref initialization
+    var b: ref Point;
+    printf("b is a ref to: ?\n");
+}
+
+test();

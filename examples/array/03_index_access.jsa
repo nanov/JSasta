@@ -1,0 +1,12 @@
+external printf(string, ...): void;
+
+struct container_t {
+    arr: i32[12];
+}
+
+var c: container_t;
+var b:i32[2];
+
+// Test reading from zero-initialized array
+printf("%d\n", c.arr[0]); // 0
+printf("%d\n", b[1]); // 0

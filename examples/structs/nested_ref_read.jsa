@@ -1,0 +1,12 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+struct game_state {
+    cursour: pos;
+}
+
+function test(self: ref game_state):u8 {
+    return self.cursour.x;
+}

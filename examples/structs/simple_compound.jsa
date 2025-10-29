@@ -1,0 +1,7 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+var p: pos;
+p.x += 1;

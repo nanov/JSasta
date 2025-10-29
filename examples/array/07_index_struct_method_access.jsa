@@ -1,0 +1,12 @@
+external printf(string, ...): void;
+
+struct container_t {
+    arr: i32[12];
+    print(self: ref container_t):void {
+	    printf("%d\n", self.arr[0]); // 0
+    }
+}
+
+var c: container_t;
+
+c.print();

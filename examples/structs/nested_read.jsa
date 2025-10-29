@@ -1,0 +1,11 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+struct game_state {
+    cursour: pos;
+}
+
+var a: game_state;
+var t = a.cursour.x;

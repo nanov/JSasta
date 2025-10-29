@@ -1,0 +1,71 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+struct game_state {
+    cursour: pos;
+
+    // Test 1: Postfix in struct method with ref self
+    inc_postfix function(self: ref game_state):u8 {
+        return self.cursour.x++;
+    }
+
+    // Test 2: Prefix in struct method with ref self
+    inc_prefix function(self: ref game_state):u8 {
+        return ++self.cursour.y;
+    }
+
+    // Test 3: Decrement postfix
+    dec_postfix function(self: ref game_state):u8 {
+        return self.cursour.x--;
+    }
+
+    // Test 4: Decrement prefix
+    dec_prefix function(self: ref game_state):u8 {
+        return --self.cursour.y;
+    }
+}
+
+// Test 5: Regular function with ref parameter
+function test_ref_postfix(p: ref pos):u8 {
+    return p.x++;
+}
+
+// Test 6: Regular function with ref parameter - prefix
+function test_ref_prefix(p: ref pos):u8 {
+    return ++p.y;
+}
+
+// Test 7: Regular function with ref parameter - nested access
+function test_ref_nested(g: ref game_state):u8 {
+    g.cursour.x++;
+    return ++g.cursour.y;
+}
+
+// Test 8: Non-ref global variable
+var global_pos: pos;
+
+function test_global_postfix():u8 {
+    return global_pos.x++;
+}
+
+function test_global_prefix():u8 {
+    return ++global_pos.y;
+}
+
+// Test 9: Local variable (non-ref)
+function test_local():u8 {
+    var local_pos: pos;
+    local_pos.x = 5;
+    local_pos.x++;
+    return ++local_pos.x;
+}
+
+// Test 10: Array element access with increment
+var positions: pos[3];
+
+function test_array_element():u8 {
+    positions[0].x++;
+    return ++positions[1].y;
+}

@@ -167,6 +167,7 @@ TypeInfo* type_context_register_type(TypeContext* ctx, TypeInfo* type) {
     // Create new entry
     TypeEntry* entry = (TypeEntry*)malloc(sizeof(TypeEntry));
     entry->type = type;
+    entry->llvm_type = NULL;  // Initialize to NULL
     entry->next = NULL;
 
     // Assign type ID
@@ -471,13 +472,27 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
     FunctionSpecialization* spec = (FunctionSpecialization*)calloc(1, sizeof(FunctionSpecialization));
     
     // Generate specialized name using type names
+    // Sanitize type names to be valid LLVM identifiers (replace < > with _ )
     char name[256];
     int offset = snprintf(name, 256, "%s", func_type->type_name);
     for (int i = 0; i < param_count; i++) {
         const char* type_name = param_type_info[i] && param_type_info[i]->type_name 
             ? param_type_info[i]->type_name 
             : "unknown";
-        offset += snprintf(name + offset, 256 - offset, "_%s", type_name);
+        
+        // Sanitize type name: replace < and > with underscores for valid LLVM identifiers
+        char sanitized[128];
+        int j = 0;
+        for (int k = 0; type_name[k] && j < 127; k++) {
+            if (type_name[k] == '<' || type_name[k] == '>') {
+                sanitized[j++] = '_';
+            } else {
+                sanitized[j++] = type_name[k];
+            }
+        }
+        sanitized[j] = '\0';
+        
+        offset += snprintf(name + offset, 256 - offset, "_%s", sanitized);
     }
     spec->specialized_name = strdup(name);
     

@@ -1,0 +1,29 @@
+external printf(string, ...): void;
+
+struct Container {
+    arr: i32[10];
+    value: i32;
+}
+
+var c: Container;
+var b:i32[10];
+
+// Test assignment to array field through member access
+c.arr[0] = 50;
+c.arr[3] = 60;
+c.arr[9] = 70;
+
+b[0] = 80;
+b[3] = 90;
+b[9] = 100;
+// Test reading back
+printf("c.arr[0]: %d\n", c.arr[0]);
+printf("c.arr[3]: %d\n", c.arr[3]);
+printf("c.arr[9]: %d\n", c.arr[9]);
+
+printf("b[0]: %d\n", b[0]);
+printf("b[3]: %d\n", b[3]);
+printf("b[9]: %d\n", b[9]);
+// Test with regular field
+c.value = 42;
+printf("c.value: %d\n", c.value);

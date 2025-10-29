@@ -1,0 +1,169 @@
+// Comprehensive test for member access in all contexts
+// Tests: global/function/method, value/ref params, nested/non-nested, primitives/structs
+
+struct pos {
+    x: u8;
+    y: u8;
+}
+
+struct container {
+    p: pos;
+    value: u8;
+}
+
+// ========== FUNCTION WITH VALUE PARAMETER ==========
+
+// Test 1: Value param - non-nested primitive
+function test_value_param_primitive(p: pos):u8 {
+    return p.x;
+}
+
+// Test 2: Value param - nested primitive (struct has embedded struct)
+function test_value_param_nested(c: container):u8 {
+    return c.p.x;
+}
+
+// Test 3: Value param - non-nested struct field
+function test_value_param_struct(c: container):pos {
+    return c.p;
+}
+
+// ========== FUNCTION WITH REF PARAMETER ==========
+
+// Test 4: Ref param - non-nested primitive
+function test_ref_param_primitive(p: ref pos):u8 {
+    return p.x;
+}
+
+// Test 5: Ref param - nested primitive
+function test_ref_param_nested(c: ref container):u8 {
+    return c.p.x;
+}
+
+// Test 6: Ref param - non-nested struct field
+function test_ref_param_struct(c: ref container):pos {
+    return c.p;
+}
+
+// ========== INCREMENT/DECREMENT WITH VALUE PARAMS ==========
+
+// Test 7: Value param - increment non-nested
+function test_value_increment(p: pos):void {
+    p.x++;
+}
+
+// Test 8: Value param - increment nested
+function test_value_nested_increment(c: container):void {
+    c.p.x++;
+}
+
+// Test 9: Value param - decrement non-nested
+function test_value_decrement(p: pos):void {
+    p.x--;
+}
+
+// Test 10: Value param - decrement nested
+function test_value_nested_decrement(c: container):void {
+    c.p.x--;
+}
+
+// ========== INCREMENT/DECREMENT WITH REF PARAMS ==========
+
+// Test 11: Ref param - increment non-nested
+function test_ref_increment(p: ref pos):void {
+    p.x++;
+}
+
+// Test 12: Ref param - increment nested
+function test_ref_nested_increment(c: ref container):void {
+    c.p.x++;
+}
+
+// Test 13: Ref param - decrement non-nested
+function test_ref_decrement(p: ref pos):void {
+    p.x--;
+}
+
+// Test 14: Ref param - decrement nested
+function test_ref_nested_decrement(c: ref container):void {
+    c.p.x--;
+}
+
+// Test 15: Ref param - prefix increment nested
+function test_ref_prefix_increment(c: ref container):void {
+    ++c.p.x;
+}
+
+// Test 16: Ref param - postfix on nested
+function test_ref_postfix(c: ref container):u8 {
+    return c.p.x++;
+}
+
+// ========== STRUCT METHODS ==========
+
+struct game_object {
+    position: pos;
+    velocity: pos;
+    health: u8;
+
+    // Test 17: Method - non-nested primitive
+    get_health function(self: ref game_object):u8 {
+        return self.health;
+    }
+
+    // Test 18: Method - nested primitive
+    get_x function(self: ref game_object):u8 {
+        return self.position.x;
+    }
+
+    // Test 19: Method - non-nested struct
+    get_position function(self: ref game_object):pos {
+        return self.position;
+    }
+
+    // Test 20: Method - increment non-nested
+    heal function(self: ref game_object):void {
+        self.health++;
+    }
+
+    // Test 21: Method - increment nested
+    move_right function(self: ref game_object):void {
+        self.position.x++;
+    }
+
+    // Test 22: Method - decrement nested
+    move_left function(self: ref game_object):void {
+        self.position.x--;
+    }
+
+    // Test 23: Method - complex nested operations
+    update function(self: ref game_object):void {
+        self.position.x++;
+        self.position.y--;
+        self.velocity.x++;
+        if (self.health > 0)
+            self.health--;
+    }
+}
+
+// ========== ASSIGNMENT ==========
+
+// Test 24: Ref param - assign to non-nested
+function test_ref_assign_primitive(p: ref pos):void {
+    p.x = 42;
+}
+
+// Test 25: Ref param - assign to nested
+function test_ref_assign_nested(c: ref container):void {
+    c.p.x = 99;
+}
+
+// Test 26: Value param - assign to non-nested
+function test_value_assign_primitive(p: pos):void {
+    p.x = 55;
+}
+
+// Test 27: Value param - assign to nested
+function test_value_assign_nested(c: container):void {
+    c.p.x = 88;
+}

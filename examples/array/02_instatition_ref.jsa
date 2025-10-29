@@ -1,0 +1,8 @@
+external printf(string, ...): void;
+
+var a: i32[12];
+var b = ref a;
+
+a[0] = 1;
+
+printf("%d\n", b[0]); // 1;

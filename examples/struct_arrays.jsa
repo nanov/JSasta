@@ -1,0 +1,7 @@
+struct foo {
+    b: int[32];
+    c: int;
+    d: double[10];
+}
+
+var f: foo;

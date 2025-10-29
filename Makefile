@@ -1,8 +1,8 @@
 COMPILER_NAME = jsastac
 
 CC = cc
-CFLAGS = -Wall -Wextra -g -Isrc $(shell llvm-config --cflags)
-LDFLAGS = $(shell llvm-config --ldflags --libs core)
+CFLAGS = -Wall -Wextra -g -fsanitize=address -Isrc $(shell llvm-config --cflags)
+LDFLAGS = $(shell llvm-config --ldflags --libs core) -fsanitize=address
 LDLIBS = $(shell llvm-config --system-libs)
 
 # Directories

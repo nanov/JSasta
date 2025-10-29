@@ -1,0 +1,14 @@
+struct pos {
+    x: u8;
+    y: u8;
+}
+
+struct container {
+    p: pos;
+    value: u8;
+}
+
+// Test: Ref param - return embedded struct
+function test_ref_param_struct(c: ref container):pos {
+    return c.p;
+}

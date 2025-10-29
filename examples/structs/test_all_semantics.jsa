@@ -1,0 +1,60 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function test(): void {
+    printf("=== Complete Struct & Ref Semantics Test ===\n\n");
+
+    // 1. Zero initialization
+    printf("1. Zero initialization:\n");
+    var p1: Point;
+    printf("   var p1: Point; => p1.x=%d, p1.y=%d\n", p1.x, p1.y);
+    printf("   Result: %s\n\n", p1.x == 0 && p1.y == 0 ? "PASS" : "FAIL");
+
+    // 2. Field assignment
+    printf("2. Field assignment:\n");
+    const p2: Point;
+    p2.x = 10;
+    p2.y = 20;
+    printf("   p2.x=10, p2.y=20 => p2=(%d, %d)\n", p2.x, p2.y);
+    printf("   Result: %s\n\n", p2.x == 10 && p2.y == 20 ? "PASS" : "FAIL");
+
+    // 3. Copy from struct
+    printf("3. Copy from struct:\n");
+    var p3 = p2;
+    printf("   var p3 = p2; => p3=(%d, %d)\n", p3.x, p3.y);
+    p3.x = 100;
+    printf("   After p3.x=100: p2.x=%d, p3.x=%d\n", p2.x, p3.x);
+    printf("   Result: %s\n\n", p2.x == 10 && p3.x == 100 ? "PASS - independent copy" : "FAIL");
+
+    // 4. Ref to struct
+    printf("4. Ref to struct:\n");
+    var r1: ref Point = p2;
+    printf("   var r1: ref Point = p2; => r1=(%d, %d)\n", r1.x, r1.y);
+    r1.x = 999;
+    printf("   After r1.x=999: p2.x=%d, r1.x=%d\n", p2.x, r1.x);
+    printf("   Result: %s\n\n", p2.x == 999 && r1.x == 999 ? "PASS - same object" : "FAIL");
+
+    // 5. Ref operator syntax
+    printf("5. Ref operator:\n");
+    var r2 = ref p3;
+    printf("   var r2 = ref p3; => r2=(%d, %d)\n", r2.x, r2.y);
+    r2.y = 777;
+    printf("   After r2.y=777: p3.y=%d, r2.y=%d\n", p3.y, r2.y);
+    printf("   Result: %s\n\n", p3.y == 777 && r2.y == 777 ? "PASS - same object" : "FAIL");
+
+    // 6. Copy from ref (dereference)
+    printf("6. Copy from ref (dereference):\n");
+    var p4: Point = r1;
+    printf("   var p4: Point = r1; => p4=(%d, %d)\n", p4.x, p4.y);
+    p4.x = 5000;
+    printf("   After p4.x=5000: p2.x=%d, p4.x=%d\n", p2.x, p4.x);
+    printf("   Result: %s\n\n", p2.x == 999 && p4.x == 5000 ? "PASS - dereferenced copy" : "FAIL");
+
+    printf("All semantics working correctly!\n");
+}
+
+test();

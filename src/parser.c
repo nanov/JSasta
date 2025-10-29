@@ -45,6 +45,13 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
 
     parser_advance(parser);  // consume ':'
 
+    // Check if it's a reference type (starts with 'ref')
+    bool is_ref = false;
+    if (parser_match(parser, TOKEN_REF)) {
+        is_ref = true;
+        parser_advance(parser);  // consume 'ref'
+    }
+
     // Check if it's an object type (starts with '{')
     if (parser_match(parser, TOKEN_LBRACE)) {
         parser_advance(parser);  // consume '{'
@@ -175,6 +182,24 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
 
     parser_advance(parser);  // consume type name
 
+    // Check for array syntax [size] - but don't consume it here
+    // The caller (parse_struct_declaration) will handle the array size
+    // We just return the element type
+    
+    // If this is a ref type, wrap it
+    if (is_ref) {
+        TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, NULL);
+        ref_type->data.ref.target_type = type_info;
+        ref_type->data.ref.is_mutable = true;  // Default to mutable
+        
+        // Generate type name like "ref<termios>"
+        char type_name[256];
+        snprintf(type_name, sizeof(type_name), "ref<%s>", type_info->type_name ? type_info->type_name : "?");
+        ref_type->type_name = strdup(type_name);
+        
+        return ref_type;
+    }
+    
     // Return type info (primitive or struct)
     return type_info;
 }
@@ -393,26 +418,36 @@ static ASTNode* parse_call(Parser* parser) {
 
         // Postfix ++ and --
         if (parser_match(parser, TOKEN_PLUSPLUS) || parser_match(parser, TOKEN_MINUSMINUS)) {
-            // Only allow postfix on identifiers
-            if (node->type != AST_IDENTIFIER) {
+            // Allow postfix on identifiers, member access, and index access
+            if (node->type == AST_IDENTIFIER) {
+                ASTNode* postfix = AST_NODE(parser, AST_POSTFIX_OP);
+                postfix->postfix_op.op = strdup(parser->current_token->value);
+                postfix->postfix_op.name = strdup(node->identifier.name);
+                postfix->postfix_op.target = NULL;
+                parser_advance(parser);
+
+                // Free the identifier node since we've copied its name
+                ast_free(node);
+                node = postfix;
+                continue;
+            } else if (node->type == AST_MEMBER_ACCESS || node->type == AST_INDEX_ACCESS) {
+                ASTNode* postfix = AST_NODE(parser, AST_POSTFIX_OP);
+                postfix->postfix_op.op = strdup(parser->current_token->value);
+                postfix->postfix_op.name = NULL;
+                postfix->postfix_op.target = node;  // Transfer ownership
+                parser_advance(parser);
+
+                node = postfix;
+                continue;
+            } else {
                 SourceLocation loc = {
                     .filename = parser->filename,
                     .line = parser->current_token->line,
                     .column = parser->current_token->column
                 };
-                log_error_at(&loc, "Postfix operator can only be applied to identifiers");
+                log_error_at(&loc, "Postfix operator can only be applied to identifiers or member access");
                 return node;
             }
-
-            ASTNode* postfix = AST_NODE(parser, AST_POSTFIX_OP);
-            postfix->postfix_op.op = strdup(parser->current_token->value);
-            postfix->postfix_op.name = strdup(node->identifier.name);
-            parser_advance(parser);
-
-            // Free the identifier node since we've copied its name
-            ast_free(node);
-            node = postfix;
-            continue;
         }
         if (parser_match(parser, TOKEN_LBRACKET)) {
             // Index access: arr[0], str[2]
@@ -445,28 +480,61 @@ static ASTNode* parse_call(Parser* parser) {
             node = member;
 
         } else if (parser_match(parser, TOKEN_LPAREN)) {
-            ASTNode* call = AST_NODE(parser, AST_CALL);
-            call->call.callee = node;
-            call->call.args = NULL;
-            call->call.arg_count = 0;
+            // Check if this is a method call (callee is member access)
+            if (node->type == AST_MEMBER_ACCESS) {
+                // Convert member access + call into method call
+                ASTNode* method_call = AST_NODE(parser, AST_METHOD_CALL);
+                method_call->method_call.object = node->member_access.object;
+                method_call->method_call.method_name = node->member_access.property;
+                method_call->method_call.args = NULL;
+                method_call->method_call.arg_count = 0;
+                method_call->method_call.is_static = false; // Will be determined in type inference
+                
+                // Free the member access node (but not its children, we reused them)
+                free(node);
+                
+                parser_advance(parser); // consume '('
 
-            parser_advance(parser);
+                if (!parser_match(parser, TOKEN_RPAREN)) {
+                    int capacity = 4;
+                    method_call->method_call.args = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
 
-            if (!parser_match(parser, TOKEN_RPAREN)) {
-                int capacity = 4;
-                call->call.args = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+                    do {
+                        if (method_call->method_call.arg_count >= capacity) {
+                            capacity *= 2;
+                            method_call->method_call.args = (ASTNode**)realloc(method_call->method_call.args, sizeof(ASTNode*) * capacity);
+                        }
+                        method_call->method_call.args[method_call->method_call.arg_count++] = parse_expression(parser);
+                    } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+                }
 
-                do {
-                    if (call->call.arg_count >= capacity) {
-                        capacity *= 2;
-                        call->call.args = (ASTNode**)realloc(call->call.args, sizeof(ASTNode*) * capacity);
-                    }
-                    call->call.args[call->call.arg_count++] = parse_expression(parser);
-                } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+                parser_expect(parser, TOKEN_RPAREN);
+                node = method_call;
+            } else {
+                // Regular function call
+                ASTNode* call = AST_NODE(parser, AST_CALL);
+                call->call.callee = node;
+                call->call.args = NULL;
+                call->call.arg_count = 0;
+
+                parser_advance(parser);
+
+                if (!parser_match(parser, TOKEN_RPAREN)) {
+                    int capacity = 4;
+                    call->call.args = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+
+                    do {
+                        if (call->call.arg_count >= capacity) {
+                            capacity *= 2;
+                            call->call.args = (ASTNode**)realloc(call->call.args, sizeof(ASTNode*) * capacity);
+                        }
+                        call->call.args[call->call.arg_count++] = parse_expression(parser);
+                    } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+                }
+
+                parser_expect(parser, TOKEN_RPAREN);
+                node = call;
             }
-
-            parser_expect(parser, TOKEN_RPAREN);
-            node = call;
         }
     }
 
@@ -476,27 +544,79 @@ static ASTNode* parse_call(Parser* parser) {
 static ASTNode* parse_unary(Parser* parser) {
     // Prefix ++ and --
     if (parser_match(parser, TOKEN_PLUSPLUS) || parser_match(parser, TOKEN_MINUSMINUS)) {
-        ASTNode* node = AST_NODE(parser, AST_PREFIX_OP);
-        node->prefix_op.op = strdup(parser->current_token->value);
+        ASTNode* prefix = AST_NODE(parser, AST_PREFIX_OP);
+        prefix->prefix_op.op = strdup(parser->current_token->value);
         parser_advance(parser);
 
-        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        // Parse the target (identifier, member access, or index access)
+        // We parse as primary and then check if we need member/index access
+        ASTNode* target = parse_primary(parser);
+        if (!target) {
             SourceLocation loc = {
                 .filename = parser->filename,
                 .line = parser->current_token->line,
                 .column = parser->current_token->column
             };
-            log_error_at(&loc, "Expected identifier after %s", node->prefix_op.op);
+            log_error_at(&loc, "Expected identifier or expression after %s", prefix->prefix_op.op);
             return NULL;
         }
 
-        node->prefix_op.name = strdup(parser->current_token->value);
-        parser_advance(parser);
-        return node;
+        // Now check for member access or index access
+        while (parser_match(parser, TOKEN_DOT) || parser_match(parser, TOKEN_LBRACKET)) {
+            if (parser_match(parser, TOKEN_DOT)) {
+                // Member access
+                parser_advance(parser);
+                if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                    SourceLocation loc = {
+                        .filename = parser->filename,
+                        .line = parser->current_token->line,
+                        .column = parser->current_token->column
+                    };
+                    log_error_at(&loc, "Expected property name after '.'");
+                    return NULL;
+                }
+
+                ASTNode* member = AST_NODE(parser, AST_MEMBER_ACCESS);
+                member->member_access.object = target;
+                member->member_access.property = strdup(parser->current_token->value);
+                parser_advance(parser);
+                target = member;
+            } else if (parser_match(parser, TOKEN_LBRACKET)) {
+                // Index access
+                parser_advance(parser);
+                ASTNode* index = AST_NODE(parser, AST_INDEX_ACCESS);
+                index->index_access.object = target;
+                index->index_access.index = parse_expression(parser);
+
+                if (!parser_match(parser, TOKEN_RBRACKET)) {
+                    SourceLocation loc = {
+                        .filename = parser->filename,
+                        .line = parser->current_token->line,
+                        .column = parser->current_token->column
+                    };
+                    log_error_at(&loc, "Expected ']' after index expression");
+                    return NULL;
+                }
+                parser_advance(parser);
+                target = index;
+            }
+        }
+
+        // Now set the target appropriately
+        if (target->type == AST_IDENTIFIER) {
+            prefix->prefix_op.name = strdup(target->identifier.name);
+            prefix->prefix_op.target = NULL;
+            ast_free(target);
+        } else {
+            prefix->prefix_op.name = NULL;
+            prefix->prefix_op.target = target;
+        }
+
+        return prefix;
     }
 
-    // Other unary operators
-    if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT)) {
+    // Other unary operators (including ref)
+    if (parser_match(parser, TOKEN_MINUS) || parser_match(parser, TOKEN_NOT) || parser_match(parser, TOKEN_REF)) {
         ASTNode* node = AST_NODE(parser, AST_UNARY_OP);
         node->unary_op.op = strdup(parser->current_token->value);
         parser_advance(parser);
@@ -688,8 +808,18 @@ static ASTNode* parse_assignment(Parser* parser) {
         if (node->type == AST_IDENTIFIER) {
             ASTNode* compound = AST_NODE(parser, AST_COMPOUND_ASSIGNMENT);
             compound->compound_assignment.name = strdup(node->identifier.name);
+            compound->compound_assignment.target = NULL;
             compound->compound_assignment.op = strdup(parser->current_token->value);
             ast_free(node);
+
+            parser_advance(parser);
+            compound->compound_assignment.value = parse_assignment(parser);
+            return compound;
+        } else if (node->type == AST_MEMBER_ACCESS || node->type == AST_INDEX_ACCESS) {
+            ASTNode* compound = AST_NODE(parser, AST_COMPOUND_ASSIGNMENT);
+            compound->compound_assignment.name = NULL;
+            compound->compound_assignment.target = node;  // Transfer ownership
+            compound->compound_assignment.op = strdup(parser->current_token->value);
 
             parser_advance(parser);
             compound->compound_assignment.value = parse_assignment(parser);
@@ -700,7 +830,7 @@ static ASTNode* parse_assignment(Parser* parser) {
                 .line = parser->current_token->line,
                 .column = parser->current_token->column
             };
-            log_error_at(&loc, "Compound assignment requires identifier on left side");
+            log_error_at(&loc, "Compound assignment requires identifier or member access on left side");
             return node;
         }
     }
@@ -817,10 +947,48 @@ static ASTNode* parse_var_declaration(Parser* parser) {
     ASTNode* node = AST_NODE(parser, AST_VAR_DECL);
     node->var_decl.is_const = is_const;
     node->var_decl.name = strdup(parser->current_token->value);
+    node->var_decl.array_size = 0;  // Default: not an array
     parser_advance(parser); // consume identifier
 
     // Parse optional type annotation (e.g., var x: int = 5)
     node->var_decl.type_hint = parse_type_annotation(parser);
+
+    // Check for array size syntax: [size]
+    if (parser_match(parser, TOKEN_LBRACKET)) {
+        parser_advance(parser);  // consume '['
+        
+        if (!parser_match(parser, TOKEN_NUMBER)) {
+            log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
+                        "Expected array size (number) after '['");
+            ast_free(node);
+            return NULL;
+        }
+        
+        node->var_decl.array_size = atoi(parser->current_token->value);
+        parser_advance(parser);  // consume number
+        
+        if (!parser_match(parser, TOKEN_RBRACKET)) {
+            log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
+                        "Expected ']' after array size");
+            ast_free(node);
+            return NULL;
+        }
+        parser_advance(parser);  // consume ']'
+        
+        // Convert type_hint to array type
+        if (node->var_decl.type_hint) {
+            TypeInfo* array_type = type_info_create(TYPE_KIND_ARRAY, NULL);
+            array_type->data.array.element_type = node->var_decl.type_hint;
+            
+            // Generate type name like "i32[]"
+            char type_name[256];
+            const char* elem_name = node->var_decl.type_hint->type_name ? node->var_decl.type_hint->type_name : "?";
+            snprintf(type_name, sizeof(type_name), "%s[]", elem_name);
+            array_type->type_name = strdup(type_name);
+            
+            node->var_decl.type_hint = array_type;
+        }
+    }
 
     if (parser_match(parser, TOKEN_ASSIGN)) {
         parser_advance(parser);
@@ -1023,12 +1191,34 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
     
     parser_expect(parser, TOKEN_LBRACE);
     
-    // Parse properties
+    // Register struct type EARLY so methods can reference it
+    // We'll register with empty properties first, then update after parsing
+    if (parser->type_ctx) {
+        TypeInfo* struct_type = type_context_create_struct_type(
+            parser->type_ctx,
+            node->struct_decl.name,
+            NULL,  // No properties yet
+            NULL,
+            0,
+            NULL
+        );
+        
+        if (struct_type) {
+            log_verbose("Pre-registered struct type during parsing: %s", node->struct_decl.name);
+        }
+    }
+    
+    // Parse properties and methods
     int capacity = 4;
     node->struct_decl.property_names = (char**)malloc(sizeof(char*) * capacity);
     node->struct_decl.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
     node->struct_decl.default_values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+    node->struct_decl.property_array_sizes = (int*)malloc(sizeof(int) * capacity);
     node->struct_decl.property_count = 0;
+    
+    int method_capacity = 4;
+    node->struct_decl.methods = (ASTNode**)malloc(sizeof(ASTNode*) * method_capacity);
+    node->struct_decl.method_count = 0;
     
     while (!parser_match(parser, TOKEN_RBRACE) && !parser_match(parser, TOKEN_EOF)) {
         if (node->struct_decl.property_count >= capacity) {
@@ -1036,23 +1226,124 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             node->struct_decl.property_names = (char**)realloc(node->struct_decl.property_names, sizeof(char*) * capacity);
             node->struct_decl.property_types = (TypeInfo**)realloc(node->struct_decl.property_types, sizeof(TypeInfo*) * capacity);
             node->struct_decl.default_values = (ASTNode**)realloc(node->struct_decl.default_values, sizeof(ASTNode*) * capacity);
+            node->struct_decl.property_array_sizes = (int*)realloc(node->struct_decl.property_array_sizes, sizeof(int) * capacity);
         }
         
-        // Parse property name
+        // Parse property name or method name
         if (parser->current_token->type != TOKEN_IDENTIFIER) {
             SourceLocation loc = {
                 .filename = parser->filename,
                 .line = parser->current_token->line,
                 .column = parser->current_token->column
             };
-            log_error_at(&loc, "Expected property name in struct declaration");
+            log_error_at(&loc, "Expected property or method name in struct declaration");
             return node;
         }
         
-        char* prop_name = strdup(parser->current_token->value);
+        char* member_name = strdup(parser->current_token->value);
         parser_advance(parser);
         
-        // Parse type annotation (required) - parse_type_annotation checks for and consumes the colon
+        // Check if this is a method (next token is '(') or a property (next token is ':')
+        if (parser_match(parser, TOKEN_LPAREN)) {
+            // This is a method declaration
+            if (node->struct_decl.method_count >= method_capacity) {
+                method_capacity *= 2;
+                node->struct_decl.methods = (ASTNode**)realloc(node->struct_decl.methods, sizeof(ASTNode*) * method_capacity);
+            }
+            
+            // Parse the function declaration (params, return type, body)
+            // No need to consume 'function' keyword anymore - directly at '('
+            
+            ASTNode* method = AST_NODE(parser, AST_FUNCTION_DECL);
+            method->func_decl.name = strdup(member_name);
+            method->func_decl.is_variadic = false;
+            
+            // Parse parameters
+            parser_expect(parser, TOKEN_LPAREN);
+            
+            int param_capacity = 4;
+            method->func_decl.params = (char**)malloc(sizeof(char*) * param_capacity);
+            method->func_decl.param_type_hints = (TypeInfo**)malloc(sizeof(TypeInfo*) * param_capacity);
+            method->func_decl.param_count = 0;
+            
+            while (!parser_match(parser, TOKEN_RPAREN) && !parser_match(parser, TOKEN_EOF)) {
+                if (method->func_decl.param_count >= param_capacity) {
+                    param_capacity *= 2;
+                    method->func_decl.params = (char**)realloc(method->func_decl.params, sizeof(char*) * param_capacity);
+                    method->func_decl.param_type_hints = (TypeInfo**)realloc(method->func_decl.param_type_hints, sizeof(TypeInfo*) * param_capacity);
+                }
+                
+                // Check for variadic (...)
+                if (parser_match(parser, TOKEN_ELLIPSIS)) {
+                    method->func_decl.is_variadic = true;
+                    parser_advance(parser);
+                    break;
+                }
+                
+                // Parse parameter name
+                if (parser->current_token->type != TOKEN_IDENTIFIER) {
+                    SourceLocation loc = {
+                        .filename = parser->filename,
+                        .line = parser->current_token->line,
+                        .column = parser->current_token->column
+                    };
+                    log_error_at(&loc, "Expected parameter name");
+                    free(member_name);
+                    return node;
+                }
+                
+                char* param_name = strdup(parser->current_token->value);
+                parser_advance(parser);
+                
+                // Parse type annotation (required for methods)
+                TypeInfo* param_type = parse_type_annotation(parser);
+                if (!param_type) {
+                    SourceLocation loc = {
+                        .filename = parser->filename,
+                        .line = parser->current_token->line,
+                        .column = parser->current_token->column
+                    };
+                    log_error_at(&loc, "Method parameter '%s' must have a type annotation", param_name);
+                    free(param_name);
+                    free(member_name);
+                    return node;
+                }
+                
+                method->func_decl.params[method->func_decl.param_count] = param_name;
+                method->func_decl.param_type_hints[method->func_decl.param_count] = param_type;
+                method->func_decl.param_count++;
+                
+                if (parser_match(parser, TOKEN_COMMA)) {
+                    parser_advance(parser);
+                }
+            }
+            
+            parser_expect(parser, TOKEN_RPAREN);
+            
+            // Parse return type annotation (required for methods)
+            method->func_decl.return_type_hint = parse_type_annotation(parser);
+            if (!method->func_decl.return_type_hint) {
+                SourceLocation loc = {
+                    .filename = parser->filename,
+                    .line = parser->current_token->line,
+                    .column = parser->current_token->column
+                };
+                log_error_at(&loc, "Method '%s' must have a return type annotation", member_name);
+                free(member_name);
+                return node;
+            }
+            
+            // Parse method body
+            method->func_decl.body = parse_block(parser);
+            
+            node->struct_decl.methods[node->struct_decl.method_count] = method;
+            node->struct_decl.method_count++;
+            
+            free(member_name);
+            continue; // Continue to next member
+        }
+        
+        // This is a property - parse type annotation (required)
         TypeInfo* prop_type = parse_type_annotation(parser);
         if (!prop_type) {
             SourceLocation loc = {
@@ -1060,8 +1351,77 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
                 .line = parser->current_token->line,
                 .column = parser->current_token->column
             };
-            log_error_at(&loc, "Struct property '%s' must have a type annotation", prop_name);
-            free(prop_name);
+            log_error_at(&loc, "Struct property '%s' must have a type annotation", member_name);
+            free(member_name);
+            return node;
+        }
+        
+        // Check for array syntax [size]
+        int array_size = 0;
+        if (parser_match(parser, TOKEN_LBRACKET)) {
+            parser_advance(parser); // consume '['
+            
+            // Parse array size (must be a number)
+            if (!parser_match(parser, TOKEN_NUMBER)) {
+                SourceLocation loc = {
+                    .filename = parser->filename,
+                    .line = parser->current_token->line,
+                    .column = parser->current_token->column
+                };
+                log_error_at(&loc, "Array fields in structs must have explicit size (e.g., arr: i32[12])");
+                free(member_name);
+                return node;
+            }
+            
+            array_size = (int)atoi(parser->current_token->value);
+            if (array_size <= 0) {
+                SourceLocation loc = {
+                    .filename = parser->filename,
+                    .line = parser->current_token->line,
+                    .column = parser->current_token->column
+                };
+                log_error_at(&loc, "Array size must be positive");
+                free(member_name);
+                return node;
+            }
+            
+            parser_advance(parser); // consume number
+            
+            if (!parser_match(parser, TOKEN_RBRACKET)) {
+                SourceLocation loc = {
+                    .filename = parser->filename,
+                    .line = parser->current_token->line,
+                    .column = parser->current_token->column
+                };
+                log_error_at(&loc, "Expected ']' after array size");
+                free(member_name);
+                return node;
+            }
+            parser_advance(parser); // consume ']'
+            
+            // If array size is specified, wrap the type in an array type
+            TypeInfo* array_type = type_info_create(TYPE_KIND_ARRAY, NULL);
+            array_type->data.array.element_type = prop_type;
+            
+            // Generate type name like "i32[]" (generic - size is in property_array_sizes)
+            char type_name[256];
+            const char* elem_name = prop_type->type_name ? prop_type->type_name : "?";
+            snprintf(type_name, sizeof(type_name), "%s[]", elem_name);
+            array_type->type_name = strdup(type_name);
+            
+            prop_type = array_type;
+        }
+        
+        // If prop_type is already an array type (from parse_type_annotation returning array)
+        // but we don't have array_size, that means it's like "arr: i32[]" which we don't support
+        if (array_size == 0 && type_info_is_array(prop_type)) {
+            SourceLocation loc = {
+                .filename = parser->filename,
+                .line = parser->current_token->line,
+                .column = parser->current_token->column
+            };
+            log_error_at(&loc, "Array fields in structs must have explicit size (e.g., arr: i32[12]). Generic array types i32[] are not supported yet.");
+            free(member_name);
             return node;
         }
         
@@ -1084,7 +1444,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
                     .column = parser->current_token->column
                 };
                 log_error_at(&loc, "Default values must be literals (number, string, true, or false)");
-                free(prop_name);
+                free(member_name);
                 return node;
             }
             
@@ -1092,30 +1452,34 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             // Type inference will handle the actual validation
         }
         
-        node->struct_decl.property_names[node->struct_decl.property_count] = prop_name;
+        node->struct_decl.property_names[node->struct_decl.property_count] = member_name;
         node->struct_decl.property_types[node->struct_decl.property_count] = prop_type;
         node->struct_decl.default_values[node->struct_decl.property_count] = default_value;
+        node->struct_decl.property_array_sizes[node->struct_decl.property_count] = array_size;
         node->struct_decl.property_count++;
         
-        // Expect semicolon after property
-        parser_expect(parser, TOKEN_SEMICOLON);
+        // Expect comma or semicolon after property
+        if (parser_match(parser, TOKEN_COMMA)) {
+            parser_advance(parser);
+        } else {
+            parser_expect(parser, TOKEN_SEMICOLON);
+        }
     }
     
     parser_expect(parser, TOKEN_RBRACE);
     
-    // Register struct type immediately so it can be used in later declarations
+    // Update struct type with properties (it was pre-registered before parsing members)
     if (parser->type_ctx) {
-        TypeInfo* struct_type = type_context_create_struct_type(
-            parser->type_ctx,
-            node->struct_decl.name,
-            node->struct_decl.property_names,
-            node->struct_decl.property_types,
-            node->struct_decl.property_count,
-            node  // Pass the struct declaration node for default values
-        );
-        
-        if (struct_type) {
-            log_verbose("Registered struct type during parsing: %s", node->struct_decl.name);
+        TypeInfo* struct_type = type_context_find_struct_type(parser->type_ctx, node->struct_decl.name);
+        if (struct_type && struct_type->data.object.property_count == 0) {
+            // Update the properties
+            struct_type->data.object.property_names = node->struct_decl.property_names;
+            struct_type->data.object.property_types = node->struct_decl.property_types;
+            struct_type->data.object.property_count = node->struct_decl.property_count;
+            struct_type->data.object.struct_decl_node = node;
+            
+            log_verbose("Updated struct type with properties: %s (%d properties)", 
+                       node->struct_decl.name, node->struct_decl.property_count);
         }
     }
     

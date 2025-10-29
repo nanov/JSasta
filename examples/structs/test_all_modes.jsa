@@ -1,0 +1,54 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Test 1: Global copy
+const g1: Point;
+g1.x = 10;
+g1.y = 20;
+var g2 = g1;
+
+printf("=== Test 1: Global Copy ===\n");
+printf("Before: g1.x=%d, g2.x=%d\n", g1.x, g2.x);
+g2.x = 100;
+printf("After g2.x=100: g1.x=%d, g2.x=%d\n", g1.x, g2.x);
+printf("Result: %s\n\n", g1.x == 10 ? "PASS - independent copies" : "FAIL");
+
+// Test 2: Local copy
+function test_local_copy(): void {
+    printf("=== Test 2: Local Copy ===\n");
+    const p1: Point;
+    p1.x = 5;
+    p1.y = 7;
+
+    var p2 = p1;
+    printf("Before: p1.x=%d, p2.x=%d\n", p1.x, p2.x);
+    p2.x = 50;
+    printf("After p2.x=50: p1.x=%d, p2.x=%d\n", p1.x, p2.x);
+    printf("Result: %s\n\n", p1.x == 5 ? "PASS - independent copies" : "FAIL");
+}
+
+// Test 3: Ref semantics
+function test_ref(): void {
+    printf("=== Test 3: Ref Semantics ===\n");
+    const p3: Point;
+    p3.x = 99;
+    p3.y = 88;
+
+    var p4 = ref p3;
+    printf("Before: p3.x=%d, p4.x=%d\n", p3.x, p4.x);
+    p4.x = 999;
+    printf("After p4.x=999: p3.x=%d, p4.x=%d\n", p3.x, p4.x);
+    printf("Result: %s\n\n", p3.x == 999 ? "PASS - same object" : "FAIL");
+}
+
+test_local_copy();
+test_ref();
+
+printf("Summary:\n");
+printf("- Global copy: var g = a (copy)\n");
+printf("- Local copy: var l = a (copy)\n");
+printf("- Reference: var r = ref a (reference)\n");

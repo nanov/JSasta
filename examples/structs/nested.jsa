@@ -1,0 +1,14 @@
+struct pos {
+	x : u8;
+	y: u8;
+}
+
+struct game_state {
+	cells: i8[100];
+	states: i8[100];
+	cursour: pos;
+	move_up function(self: ref game_state):void {
+		if (self.cursour.x > 0)
+			self.cursour.x--;
+	}
+}

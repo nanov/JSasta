@@ -1,0 +1,37 @@
+external printf(string, ...): void;
+
+struct Inner {
+    data: i32[20];
+    count: i32;
+}
+
+struct Outer {
+    inner: Inner;
+    items: i32[15];
+}
+
+// Test 1: Direct array length
+var direct: i32[5];
+printf("Test 1 - Direct array length: %d\n", direct.length);
+
+// Test 2: Struct member array (single level)
+var outer: Outer;
+printf("Test 2 - outer.items length: %d\n", outer.items.length);
+
+// Test 3: Nested struct member array (two levels)
+printf("Test 3 - outer.inner.data length: %d\n", outer.inner.data.length);
+
+// Test 4: Use nested length in expression
+var total: i32 = outer.items.length + outer.inner.data.length;
+printf("Test 4 - Sum of nested lengths: %d\n", total);
+
+// Test 5: Use nested length in loop
+printf("Test 5 - Iterating with nested length: ");
+var i: i32 = 0;
+while (i < outer.inner.data.length) {
+    if (i < 5) {
+        printf("%d ", i);
+    }
+    i = i + 1;
+}
+printf("(total: %d iterations)\n", i);

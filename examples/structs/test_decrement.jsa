@@ -1,0 +1,17 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+struct game_state {
+    cursour: pos;
+
+    move_up function(self: ref game_state):void {
+        if (self.cursour.x > 0)
+            self.cursour.x--;
+    }
+
+    move_down function(self: ref game_state):void {
+        --self.cursour.y;
+    }
+}

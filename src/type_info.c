@@ -223,6 +223,9 @@ static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx
             // Recursively clone property types, but primitives will return themselves
             clone->data.object.property_types[i] = type_info_clone_internal(type_info->data.object.property_types[i], ctx);
         }
+    } else if (type_info->kind == TYPE_KIND_REF && type_info->data.ref.target_type) {
+        clone->data.ref.target_type = type_info_clone_internal(type_info->data.ref.target_type, ctx);
+        clone->data.ref.is_mutable = type_info->data.ref.is_mutable;
     }
 
     return clone;

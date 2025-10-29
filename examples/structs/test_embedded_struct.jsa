@@ -1,0 +1,15 @@
+struct pos {
+    x : u8;
+    y: u8;
+}
+
+struct container {
+    p: pos;
+}
+
+var c: container;
+
+function test():u8 {
+    c.p.x = 5;
+    return c.p.y;
+}

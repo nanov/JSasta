@@ -26,22 +26,22 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTab
 static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
 // Helper: Infer type from binary operation using trait system
-static TypeInfo* infer_binary_result_type(const char* op, TypeInfo* left, TypeInfo* right) {
-    log_verbose("      infer_binary_result_type: %s op=%s %s",
+static TypeInfo* infer_binary_result_type(SourceLocation* node, const char* op, TypeInfo* left, TypeInfo* right) {
+    log_verbose_at(node, "      infer_binary_result_type: %s op=%s %s",
                 left ? left->type_name : "NULL", op, right ? right->type_name : "NULL");
-    
+
     // Special handling for logical operators (not implemented as traits yet)
     if (strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
         return Type_Bool;
     }
-    
+
     // Special handling for string concatenation (will be implemented as trait later)
     if (strcmp(op, "+") == 0) {
         if (left == Type_String || right == Type_String) {
             return Type_String;
         }
     }
-    
+
     // Use trait system to determine output type
     Trait* trait = operator_to_trait(op);
     if (trait && left && right) {
@@ -51,9 +51,9 @@ static TypeInfo* infer_binary_result_type(const char* op, TypeInfo* left, TypeIn
             return output;
         }
     }
-    
+
     // Fallback to unknown if no trait implementation found
-    log_verbose("      No trait implementation found for %s %s %s", 
+    log_verbose("      No trait implementation found for %s %s %s",
                 left ? left->type_name : "NULL", op, right ? right->type_name : "NULL");
     return Type_Unknown;
 }
@@ -88,12 +88,24 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         case AST_BINARY_OP: {
             TypeInfo*  left = infer_expr_type_simple(node->binary_op.left, scope);
             TypeInfo*  right = infer_expr_type_simple(node->binary_op.right, scope);
-            return infer_binary_result_type(node->binary_op.op, left, right);
+            return infer_binary_result_type(&node->loc, node->binary_op.op, left, right);
         }
         case AST_UNARY_OP: {
             TypeInfo* operand_type = infer_expr_type_simple(node->unary_op.operand, scope);
             if (strcmp(node->unary_op.op, "!") == 0) {
                 return Type_Bool;
+            } else if (strcmp(node->unary_op.op, "ref") == 0) {
+                // ref operator creates a reference type
+                TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, NULL);
+                ref_type->data.ref.target_type = operand_type;
+                ref_type->data.ref.is_mutable = true;
+
+                char type_name[256];
+                snprintf(type_name, sizeof(type_name), "ref<%s>",
+                        operand_type && operand_type->type_name ? operand_type->type_name : "?");
+                ref_type->type_name = strdup(type_name);
+
+                return ref_type;
             }
             return operand_type;
         }
@@ -127,9 +139,13 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         }
         case AST_INDEX_ACCESS: {
             TypeInfo* obj_type = infer_expr_type_simple(node->index_access.object, scope);
+            
+            // Unwrap ref types to get the actual target type
+            TypeInfo* target_type = type_info_get_ref_target(obj_type);
+            
             // String indexing returns u8 (byte value)
-            if (obj_type == Type_String) return Type_U8;
-            if (type_info_is_array(obj_type)) return obj_type->data.array.element_type;
+            if (target_type == Type_String) return Type_U8;
+            if (type_info_is_array(target_type)) return target_type->data.array.element_type;
             return Type_Unknown;
         }
         case AST_OBJECT_LITERAL:
@@ -137,14 +153,28 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         case AST_MEMBER_ACCESS: {
             // Try to infer the property type using TypeInfo
             ASTNode* obj = node->member_access.object;
+            TypeInfo* obj_type_info = NULL;
+
             if (obj->type == AST_IDENTIFIER) {
                 SymbolEntry* entry = symbol_table_lookup(scope, obj->identifier.name);
-                if (entry && entry->type_info) {
-                    // Use TypeInfo to find the property type
-                    int prop_index = type_info_find_property(entry->type_info, node->member_access.property);
-                    if (prop_index >= 0) {
-                        return entry->type_info->data.object.property_types[prop_index];
-                    }
+                if (entry) {
+                    obj_type_info = entry->type_info;
+                }
+            } else if (obj->type == AST_MEMBER_ACCESS || obj->type == AST_INDEX_ACCESS) {
+                // Nested member/index access - recursively get the type
+                obj_type_info = infer_expr_type_simple(obj, scope);
+            }
+
+            // Unwrap ref types to get the actual object type
+            if (obj_type_info && type_info_is_ref(obj_type_info)) {
+                obj_type_info = type_info_get_ref_target(obj_type_info);
+            }
+
+            if (obj_type_info && type_info_is_object(obj_type_info)) {
+                // Use TypeInfo to find the property type
+                int prop_index = type_info_find_property(obj_type_info, node->member_access.property);
+                if (prop_index >= 0) {
+                    return obj_type_info->data.object.property_types[prop_index];
                 }
             }
             return Type_Unknown;
@@ -244,11 +274,11 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
                 if (default_values[i]) {
                     // Infer the literal's type
                     infer_literal_types(default_values[i], symbols, NULL);
-                    
+
                     // Check if default value type matches property type
                     TypeInfo* default_type = default_values[i]->type_info;
                     TypeInfo* prop_type = property_types[i];
-                    
+
                     if (default_type != prop_type) {
                         // Allow int -> double promotion
                         if (!(prop_type == Type_Double && default_type == Type_Int)) {
@@ -277,13 +307,29 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
                     );
 
                     if (struct_type) {
-                        log_verbose("Registered struct type during type inference: %s with %d properties", 
+                        log_verbose("Registered struct type during type inference: %s with %d properties",
                                    struct_name, property_count);
                     }
                 } else {
                     log_verbose("Struct type already registered: %s", struct_name);
                 }
             }
+
+            // Process methods: create global functions with mangled names
+            for (int i = 0; i < node->struct_decl.method_count; i++) {
+                ASTNode* method = node->struct_decl.methods[i];
+
+                // Create mangled name: struct_name.method_name
+                char* mangled_name = (char*)malloc(strlen(struct_name) + strlen(method->func_decl.name) + 2);
+                sprintf(mangled_name, "%s.%s", struct_name, method->func_decl.name);
+
+                // Update the method's name to the mangled name
+                free(method->func_decl.name);
+                method->func_decl.name = mangled_name;
+
+                log_verbose("Registered method as global function: %s", mangled_name);
+            }
+
             break;
         }
 
@@ -361,8 +407,8 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                                                   node->func_decl.params[i],
                                                   param_type_hints[i], NULL, false);
                             }
-                            infer_literal_types(cloned_body, temp_symbols, NULL);
-                            symbol_table_free(temp_symbols);
+                            infer_literal_types(cloned_body, temp_symbols, type_ctx);
+                            // Note: Don't free temp_symbols - it's the parent of cloned_body's symbol_table
 
                             spec->specialized_body = cloned_body;
                         } else {
@@ -384,6 +430,16 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             break;
         }
 
+        case AST_STRUCT_DECL: {
+            // Process methods as global functions
+            for (int i = 0; i < node->struct_decl.method_count; i++) {
+                ASTNode* method = node->struct_decl.methods[i];
+                // Process each method as a regular function
+                collect_function_signatures(method, symbols, type_ctx);
+            }
+            break;
+        }
+
         default:
             break;
     }
@@ -395,11 +451,21 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
     switch (node->type) {
         case AST_PROGRAM:
-        case AST_BLOCK:
+            // AST_PROGRAM uses the passed-in symbols (top-level scope)
             for (int i = 0; i < node->program.count; i++) {
                 infer_literal_types(node->program.statements[i], symbols, type_ctx);
             }
             break;
+
+        case AST_BLOCK: {
+            // AST_BLOCK creates a new scope with the current scope as parent
+            SymbolTable* block_symbols = symbol_table_create(symbols);
+            node->symbol_table = block_symbols;
+            for (int i = 0; i < node->block.count; i++) {
+                infer_literal_types(node->block.statements[i], block_symbols, type_ctx);
+            }
+            break;
+        }
 
         case AST_NUMBER:
             // Already set by parser
@@ -415,13 +481,13 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_VAR_DECL:
             if (node->var_decl.init) {
-                // Special case: if we have a struct type hint and object literal, 
+                // Special case: if we have a struct type hint and object literal,
                 // skip normal type inference to avoid creating anonymous types
-                bool is_struct_literal = (node->var_decl.type_hint && 
+                bool is_struct_literal = (node->var_decl.type_hint &&
                                          type_info_is_object(node->var_decl.type_hint) &&
                                          node->var_decl.type_hint->data.object.struct_decl_node &&
                                          node->var_decl.init->type == AST_OBJECT_LITERAL);
-                
+
                 if (!is_struct_literal) {
                     infer_literal_types(node->var_decl.init, symbols, type_ctx);
                 }
@@ -449,7 +515,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
                         TypeInfo* declared_info = node->var_decl.type_hint;
                         ASTNode* obj_literal = node->var_decl.init;
-                        
+
                         // If this is a struct, we need to infer types for the property values
                         // with contextual typing from the expected struct field types
                         if (is_struct_literal) {
@@ -457,14 +523,14 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                 // Find the expected type for this property
                                 const char* prop_key = obj_literal->object_literal.keys[i];
                                 TypeInfo* expected_prop_type = NULL;
-                                
+
                                 for (int j = 0; j < declared_info->data.object.property_count; j++) {
                                     if (strcmp(declared_info->data.object.property_names[j], prop_key) == 0) {
                                         expected_prop_type = declared_info->data.object.property_types[j];
                                         break;
                                     }
                                 }
-                                
+
                                 // Apply contextual typing to literals
                                 ASTNode* value = obj_literal->object_literal.values[i];
                                 if (value->type == AST_NUMBER && expected_prop_type && type_info_is_integer(expected_prop_type)) {
@@ -475,24 +541,24 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                 }
                             }
                         }
-                        
+
                         // Check if this is a struct type with default values
                         ASTNode* struct_decl = declared_info->data.object.struct_decl_node;
-                        
+
                         // Build a map of provided properties
                         bool* provided = (bool*)calloc(declared_info->data.object.property_count, sizeof(bool));
-                        
+
                         // Validate provided properties and mark them
                         for (int i = 0; i < obj_literal->object_literal.count; i++) {
                             const char* provided_key = obj_literal->object_literal.keys[i];
                             bool found = false;
-                            
+
                             // Find this property in the struct definition
                             for (int j = 0; j < declared_info->data.object.property_count; j++) {
                                 if (strcmp(declared_info->data.object.property_names[j], provided_key) == 0) {
                                     found = true;
                                     provided[j] = true;
-                                    
+
                                     // Validate type
                                     TypeInfo* expected_type = declared_info->data.object.property_types[j];
                                     TypeInfo* actual_type = obj_literal->object_literal.values[i]->type_info;
@@ -501,14 +567,14 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                         // 1. int -> double promotion
                                         // 2. any integer type -> any other integer type (will be handled by LLVM cast)
                                         bool allow_conversion = false;
-                                        
+
                                         if (expected_type == Type_Double && actual_type == Type_Int) {
                                             allow_conversion = true;
                                         } else if (type_info_is_integer(expected_type) && type_info_is_integer(actual_type)) {
                                             // Allow any integer to integer conversion (i32 -> u8, i32 -> u64, etc.)
                                             allow_conversion = true;
                                         }
-                                        
+
                                         if (!allow_conversion) {
                                             log_error_at(&node->loc,
                                                 "Property '%s' type mismatch: expected %s but got %s",
@@ -520,22 +586,22 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                     break;
                                 }
                             }
-                            
+
                             if (!found) {
                                 log_error_at(&node->loc,
                                     "Unknown property '%s' in struct '%s'",
                                     provided_key, declared_info->type_name);
                             }
                         }
-                        
+
                         // Rebuild the object literal with properties in the correct struct order
                         if (struct_decl && struct_decl->type == AST_STRUCT_DECL) {
                             char** new_keys = (char**)malloc(sizeof(char*) * declared_info->data.object.property_count);
                             ASTNode** new_values = (ASTNode**)malloc(sizeof(ASTNode*) * declared_info->data.object.property_count);
-                            
+
                             for (int i = 0; i < declared_info->data.object.property_count; i++) {
                                 new_keys[i] = strdup(declared_info->data.object.property_names[i]);
-                                
+
                                 if (provided[i]) {
                                     // Find this property in the original object literal
                                     for (int j = 0; j < obj_literal->object_literal.count; j++) {
@@ -561,22 +627,22 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                     }
                                 }
                             }
-                            
+
                             // Free old arrays (but not the values we're keeping)
                             for (int i = 0; i < obj_literal->object_literal.count; i++) {
                                 free(obj_literal->object_literal.keys[i]);
                             }
                             free(obj_literal->object_literal.keys);
                             free(obj_literal->object_literal.values);
-                            
+
                             // Replace with new ordered arrays
                             obj_literal->object_literal.keys = new_keys;
                             obj_literal->object_literal.values = new_values;
                             obj_literal->object_literal.count = declared_info->data.object.property_count;
                         }
-                        
+
                         free(provided);
-                        
+
                         // For structs, use the struct type directly instead of creating anonymous type
                         if (struct_decl && struct_decl->type == AST_STRUCT_DECL) {
                             obj_literal->type_info = declared_info;
@@ -614,11 +680,19 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 // Store TypeInfo in symbol table
                 SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
                 if (entry) {
-                    if (node->var_decl.type_hint && type_info_is_object(node->var_decl.type_hint)) {
-                        // Use the declared type info
+                    // Store pointer to symbol entry in the AST node for fast access
+                    node->var_decl.symbol_entry = entry;
+
+                    if (node->var_decl.type_hint && (type_info_is_object(node->var_decl.type_hint) || type_info_is_ref(node->var_decl.type_hint))) {
+                        // Use the declared type info (for both objects and refs)
                         entry->type_info = type_info_clone(node->var_decl.type_hint);
-                        log_verbose("Variable '%s' assigned declared object type with %d properties",
-                                   node->var_decl.name, entry->type_info->data.object.property_count);
+                        if (type_info_is_ref(node->var_decl.type_hint)) {
+                            log_verbose("Variable '%s' assigned declared ref type '%s'",
+                                       node->var_decl.name, entry->type_info->type_name);
+                        } else {
+                            log_verbose("Variable '%s' assigned declared object type with %d properties",
+                                       node->var_decl.name, entry->type_info->data.object.property_count);
+                        }
                     } else if (node->var_decl.init->type == AST_OBJECT_LITERAL && node->var_decl.init->type_info) {
                         // Use inferred type info from literal
                         entry->type_info = type_info_clone(node->var_decl.init->type_info);
@@ -628,14 +702,23 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 }
             } else if (node->var_decl.type_hint) {
                 // Variable declared with type but no initialization
-                // REMOVED: get_node_value_type(node) = node->var_decl.type_hint->base_type;
+                node->type_info = node->var_decl.type_hint;
+
                 symbol_table_insert_var_declaration(symbols, node->var_decl.name, node->type_info, node->var_decl.is_const, node);
 
                 // Store TypeInfo for objects
                 if (type_info_is_object(node->var_decl.type_hint)) {
                     SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
                     if (entry) {
+                        // Store pointer to symbol entry in the AST node for fast access
+                        node->var_decl.symbol_entry = entry;
                         entry->type_info = type_info_clone(node->var_decl.type_hint);
+                    }
+                } else {
+                    // Still store the symbol entry pointer even for non-objects
+                    SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
+                    if (entry) {
+                        node->var_decl.symbol_entry = entry;
                     }
                 }
             }
@@ -645,7 +728,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             infer_literal_types(node->binary_op.left, symbols, type_ctx);
             infer_literal_types(node->binary_op.right, symbols, type_ctx);
             // Binary op type inferred from operands
-            node->type_info = infer_binary_result_type(node->binary_op.op,
+            node->type_info = infer_binary_result_type(&node->loc, node->binary_op.op,
                                                        node->binary_op.left->type_info,
                                                        node->binary_op.right->type_info);
             break;
@@ -654,6 +737,20 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             infer_literal_types(node->unary_op.operand, symbols, type_ctx);
             if (strcmp(node->unary_op.op, "!") == 0) {
                 node->type_info = Type_Bool;
+            } else if (strcmp(node->unary_op.op, "ref") == 0) {
+                // ref operator creates a reference type
+                TypeInfo* operand_type = node->unary_op.operand->type_info;
+                TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, NULL);
+                ref_type->data.ref.target_type = operand_type;
+                ref_type->data.ref.is_mutable = true;  // Default to mutable
+
+                // Generate type name like "ref<termios>"
+                char type_name[256];
+                snprintf(type_name, sizeof(type_name), "ref<%s>",
+                        operand_type && operand_type->type_name ? operand_type->type_name : "?");
+                ref_type->type_name = strdup(type_name);
+
+                node->type_info = ref_type;
             } else {
                 node->type_info = node->unary_op.operand->type_info;
             }
@@ -672,22 +769,54 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 }
             }
             break;
+
+        case AST_METHOD_CALL:
+            // Determine if this is a static or instance method first
+            // Static: object is an identifier that refers to a type name
+            // Instance: object is a variable/expression
+            if (node->method_call.object->type == AST_IDENTIFIER) {
+                const char* name = node->method_call.object->identifier.name;
+                // Check if it's a type name (struct)
+                TypeInfo* type = type_context_find_struct_type(type_ctx, name);
+                if (type) {
+                    node->method_call.is_static = true;
+                    // Store the type in the object node for easy access in codegen
+                    node->method_call.object->type_info = type;
+                } else {
+                    node->method_call.is_static = false;
+                    // Infer type for the object - it's a variable
+                    infer_literal_types(node->method_call.object, symbols, type_ctx);
+                }
+            } else {
+                node->method_call.is_static = false;
+                // Infer type for the object - it's an expression
+                infer_literal_types(node->method_call.object, symbols, type_ctx);
+            }
+
+            // Infer types for arguments
+            for (int i = 0; i < node->method_call.arg_count; i++) {
+                infer_literal_types(node->method_call.args[i], symbols, type_ctx);
+            }
+            break;
+
         case AST_ASSIGNMENT:
             infer_literal_types(node->assignment.value, symbols, type_ctx);
             node->type_info = node->assignment.value->type_info;
+            // Store pointer to the symbol entry for fast access in codegen
+            node->assignment.symbol_entry = symbol_table_lookup(symbols, node->assignment.name);
             break;
 
         case AST_MEMBER_ASSIGNMENT: {
             // Infer types for object
             infer_literal_types(node->member_assignment.object, symbols, type_ctx);
-            
+
             // Apply contextual typing to the value if it's a literal
             ASTNode* obj = node->member_assignment.object;
             TypeInfo* expected_prop_type = NULL;
-            
+
             if (obj->type == AST_IDENTIFIER) {
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
-                
+
                 // Check if it's a struct with type hint
                 if (entry && entry->node && entry->node->type == AST_VAR_DECL) {
                     TypeInfo* var_type = entry->node->var_decl.type_hint;
@@ -700,7 +829,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     }
                 }
             }
-            
+
             // Apply contextual typing to number literals
             if (node->member_assignment.value->type == AST_NUMBER && expected_prop_type && type_info_is_integer(expected_prop_type)) {
                 node->member_assignment.value->type_info = expected_prop_type;
@@ -727,7 +856,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                 if (type_info_is_integer(prop_type) && type_info_is_integer(assigned_type)) {
                                     allow_conversion = true;
                                 }
-                                
+
                                 if (!allow_conversion) {
                                     log_error_at(&node->loc,
                                         "Type mismatch: cannot assign %s to property '%s' of type %s",
@@ -771,12 +900,17 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             }
             break;
 
-        case AST_FOR:
-            if (node->for_stmt.init) infer_literal_types(node->for_stmt.init, symbols, type_ctx);
-            if (node->for_stmt.condition) infer_literal_types(node->for_stmt.condition, symbols, type_ctx);
-            if (node->for_stmt.update) infer_literal_types(node->for_stmt.update, symbols, type_ctx);
-            infer_literal_types(node->for_stmt.body, symbols, type_ctx);
+        case AST_FOR: {
+            // For loops create their own scope for variables declared in init
+            SymbolTable* for_scope = symbol_table_create(symbols);
+            node->symbol_table = for_scope;
+
+            if (node->for_stmt.init) infer_literal_types(node->for_stmt.init, for_scope, type_ctx);
+            if (node->for_stmt.condition) infer_literal_types(node->for_stmt.condition, for_scope, type_ctx);
+            if (node->for_stmt.update) infer_literal_types(node->for_stmt.update, for_scope, type_ctx);
+            infer_literal_types(node->for_stmt.body, for_scope, type_ctx);
             break;
+        }
 
         case AST_WHILE:
             infer_literal_types(node->while_stmt.condition, symbols, type_ctx);
@@ -797,15 +931,11 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_PREFIX_OP:
         case AST_POSTFIX_OP: {
-            // ++i or i++ should have the same type as the variable
-            const char* var_name = (node->type == AST_PREFIX_OP) ?
-                                   node->prefix_op.name : node->postfix_op.name;
-            SymbolEntry* entry = symbol_table_lookup(symbols, var_name);
-            if (entry) {
-                // REMOVED: get_node_value_type(node) = entry->type;
-            } else {
-                // Variable not yet defined - will be caught later
-                // REMOVED: get_node_value_type(node) = TYPE_INT; // Default to int for now
+            // Infer type of the target (if it's a member/index access)
+            ASTNode* target = (node->type == AST_PREFIX_OP) ?
+                              node->prefix_op.target : node->postfix_op.target;
+            if (target) {
+                infer_literal_types(target, symbols, type_ctx);
             }
             break;
         }
@@ -813,15 +943,10 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_COMPOUND_ASSIGNMENT:
             // Infer type of the value expression
             infer_literal_types(node->compound_assignment.value, symbols, type_ctx);
-            // Result type should match the variable's type
-            {
-                SymbolEntry* entry = symbol_table_lookup(symbols, node->compound_assignment.name);
-                if (entry) {
-                    // REMOVED: get_node_value_type(node) = entry->type;
-                } else {
-                    // Variable not defined - will be caught later
-                    // REMOVED: get_node_value_type(node) = get_node_value_type(node->compound_assignment.value);
-                }
+
+            // Infer type of the target (if it's a member/index access)
+            if (node->compound_assignment.target) {
+                infer_literal_types(node->compound_assignment.target, symbols, type_ctx);
             }
             break;
 
@@ -855,30 +980,93 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             }
             break;
 
-        case AST_INDEX_ACCESS:
+        case AST_INDEX_ACCESS: {
             infer_literal_types(node->index_access.object, symbols, type_ctx);
             infer_literal_types(node->index_access.index, symbols, type_ctx);
-            // Determine result type based on object type
-            if (node->index_access.object->type_info == Type_String) {
-                node->type_info = Type_U8;  // String indexing returns u8
-            } else if (node->index_access.object->type_info == Type_Array_Int) {
-                node->type_info = Type_Int;
-            } else if (node->index_access.object->type_info == Type_Array_Double) {
-                node->type_info = Type_Double;
-            } else if (node->index_access.object->type_info == Type_Array_String) {
-                node->type_info = Type_String;
-            } else if (node->index_access.object->type_info == Type_Array_Bool) {
-                node->type_info = Type_Bool;
-            }
-            break;
 
-        case AST_INDEX_ASSIGNMENT:
+            TypeInfo* object_type = node->index_access.object->type_info;
+            TypeInfo* index_type = node->index_access.index->type_info;
+
+            // If object is an identifier, store its symbol entry for codegen
+            if (node->index_access.object->type == AST_IDENTIFIER) {
+                node->index_access.symbol_entry = symbol_table_lookup(symbols,
+                    node->index_access.object->identifier.name);
+            } else {
+                node->index_access.symbol_entry = NULL;
+            }
+
+            // If object is a ref type, look through to the target type for indexing
+            TypeInfo* index_target_type = type_info_get_ref_target(object_type);
+
+            // For builtin indexable types (arrays), auto-implement Index trait
+            trait_ensure_index_impl(index_target_type, type_ctx);
+
+            // Look up Index<IndexType> trait implementation on the target type
+            TypeInfo* type_param_bindings[] = { index_type };
+            TraitImpl* trait_impl = trait_find_impl(Trait_Index, index_target_type,
+                                                    type_param_bindings, 1);
+
+            if (!trait_impl) {
+                log_error_at(&node->loc, "Type '%s' does not implement Index<%s>",
+                            index_target_type->type_name ? index_target_type->type_name : "?",
+                            index_type->type_name ? index_type->type_name : "?");
+                node->type_info = Type_Unknown;
+                node->index_access.trait_impl = NULL;
+                break;
+            }
+
+            // Store the trait implementation for codegen
+            node->index_access.trait_impl = trait_impl;
+
+            // Get the output type from the trait (use target type, not ref wrapper)
+            TypeInfo* output_type = trait_get_assoc_type(Trait_Index, index_target_type,
+                                                         type_param_bindings, 1, "Output");
+            node->type_info = output_type ? output_type : Type_Unknown;
+            break;
+        }
+
+        case AST_INDEX_ASSIGNMENT: {
             infer_literal_types(node->index_assignment.object, symbols, type_ctx);
             infer_literal_types(node->index_assignment.index, symbols, type_ctx);
             infer_literal_types(node->index_assignment.value, symbols, type_ctx);
+
+            TypeInfo* object_type = node->index_assignment.object->type_info;
+            TypeInfo* index_type = node->index_assignment.index->type_info;
+
+            // If object is an identifier, store its symbol entry for codegen
+            if (node->index_assignment.object->type == AST_IDENTIFIER) {
+                node->index_assignment.symbol_entry = symbol_table_lookup(symbols,
+                    node->index_assignment.object->identifier.name);
+            } else {
+                node->index_assignment.symbol_entry = NULL;
+            }
+
+            // If object is a ref type, look through to the target type for indexing
+            TypeInfo* index_target_type = type_info_get_ref_target(object_type);
+
+            // For builtin indexable types (arrays), auto-implement RefIndex trait
+            trait_ensure_ref_index_impl(index_target_type, type_ctx);
+
+            // Look up RefIndex<IndexType> trait implementation on the target type
+            TypeInfo* type_param_bindings[] = { index_type };
+            TraitImpl* trait_impl = trait_find_impl(Trait_RefIndex, index_target_type,
+                                                    type_param_bindings, 1);
+
+            if (!trait_impl) {
+                log_error_at(&node->loc, "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
+                            index_target_type->type_name ? index_target_type->type_name : "?",
+                            index_type->type_name ? index_type->type_name : "?");
+                node->index_assignment.trait_impl = NULL;
+                break;
+            }
+
+            // Store the trait implementation for codegen
+            node->index_assignment.trait_impl = trait_impl;
+
             // Assignment returns the assigned value's type
-            // REMOVED: get_node_value_type(node) = node->index_assignment.get_node_value_type(value);
+            node->type_info = node->index_assignment.value->type_info;
             break;
+        }
 
         case AST_OBJECT_LITERAL: {
             // Infer types of all property values first
@@ -906,18 +1094,56 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_MEMBER_ACCESS: {
             infer_literal_types(node->member_access.object, symbols, type_ctx);
 
-            // Try to infer the type from the object literal
+            // Try to infer the type from the object
             ASTNode* obj = node->member_access.object;
+            TypeInfo* obj_type_info = NULL;
+
             if (obj->type == AST_IDENTIFIER) {
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
-                if (entry && entry->type_info) {
-                    // Use TypeInfo to find the property type
-                    int prop_index = type_info_find_property(entry->type_info, node->member_access.property);
-                    if (prop_index >= 0) {
-                        node->type_info = entry->type_info->data.object.property_types[prop_index];
-                        break;
-                    }
+                if (entry) {
+                    obj_type_info = entry->type_info;
+                    // Store symbol entry for codegen optimization
+                    node->member_access.symbol_entry = entry;
                 }
+            } else {
+                node->member_access.symbol_entry = NULL;
+                if (obj->type == AST_MEMBER_ACCESS || obj->type == AST_INDEX_ACCESS) {
+                    // Nested member/index access - the object node should have type_info set
+                    obj_type_info = obj->type_info;
+                }
+            }
+
+            // Unwrap ref types to get the actual object type
+            TypeInfo* target_type_info = type_info_get_ref_target(obj_type_info);
+
+            // Check for trait-based properties (like "length")
+            if (strcmp(node->member_access.property, "length") == 0) {
+                // Ensure Length trait is implemented
+                trait_ensure_length_impl(target_type_info, type_ctx);
+
+                // Look up Length trait implementation
+                TraitImpl* trait_impl = trait_find_impl(Trait_Length, target_type_info, NULL, 0);
+                if (trait_impl) {
+                    // Get the output type from the trait
+                    TypeInfo* output_type = trait_get_assoc_type(Trait_Length, target_type_info, NULL, 0, "Output");
+                    node->type_info = output_type ? output_type : Type_Unknown;
+                    break;
+                }
+            }
+
+            if (target_type_info && type_info_is_object(target_type_info)) {
+                // Use TypeInfo to find the property type
+                int prop_index = type_info_find_property(target_type_info, node->member_access.property);
+                if (prop_index >= 0) {
+                    // Store property index for codegen optimization
+                    node->member_access.property_index = prop_index;
+                    node->type_info = target_type_info->data.object.property_types[prop_index];
+                    break;
+                } else {
+                    node->member_access.property_index = -1;
+                }
+            } else {
+                node->member_access.property_index = -1;
             }
 
             // Couldn't determine type
@@ -939,6 +1165,7 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
     ASTNode* cloned_body = ast_clone(original_func_node->func_decl.body);
 
     SymbolTable* temp_symbols = symbol_table_create(symbols);
+
     // Insert parameters with their concrete types AND TypeInfo for objects
     for (int i = 0; i < spec->param_count; i++) {
         symbol_table_insert(temp_symbols, original_func_node->func_decl.params[i], spec->param_type_info[i], NULL, false);
@@ -953,7 +1180,7 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
             }
         }
     }
-    infer_literal_types(cloned_body, temp_symbols, NULL);  // NULL type_ctx - objects inside functions won't create new types
+    infer_literal_types(cloned_body, temp_symbols, ctx);  // Pass type_ctx so we can look up struct types for static method calls
     iterative_specialization_discovery(cloned_body, temp_symbols, ctx);
 
     // Infer return type from function body
@@ -981,7 +1208,8 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
         spec->return_type_info = inferred_return;
     }
 
-    free(temp_symbols);
+    // Note: Don't free temp_symbols - it's the parent of the body's symbol_table
+    // and will be freed when the AST is freed
 
     spec->specialized_body = cloned_body;
 
@@ -994,12 +1222,23 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
     if (!node) return;
 
     switch (node->type) {
-        case AST_PROGRAM:
-        case AST_BLOCK:
+        case AST_PROGRAM: {
+            // Use the program's own symbol table if it was created
+            SymbolTable* prog_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->program.count; i++) {
-                analyze_call_sites(node->program.statements[i], symbols, ctx);
+                analyze_call_sites(node->program.statements[i], prog_symbols, ctx);
             }
             break;
+        }
+
+        case AST_BLOCK: {
+            // Use the block's own symbol table if it was created
+            SymbolTable* block_symbols = node->symbol_table ? node->symbol_table : symbols;
+            for (int i = 0; i < node->block.count; i++) {
+                analyze_call_sites(node->block.statements[i], block_symbols, ctx);
+            }
+            break;
+        }
 
         case AST_CALL: {
             // First analyze arguments
@@ -1088,11 +1327,52 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
 
                         	// Now create the body with TypeInfo available
                         	specialization_create_body(spec, func_decl, arg_types, symbols, ctx);
+                        	
+                        	// Set the call node's return type from the specialization
+                        	if (spec->return_type_info) {
+                        	    node->type_info = spec->return_type_info;
+                        	}
                         }
                     }
 
                     free(arg_types);
                 }
+            }
+            break;
+        }
+
+        case AST_METHOD_CALL: {
+            // Analyze object and arguments
+            analyze_call_sites(node->method_call.object, symbols, ctx);
+            infer_with_specializations(node->method_call.object, symbols, ctx);
+
+            for (int i = 0; i < node->method_call.arg_count; i++) {
+                analyze_call_sites(node->method_call.args[i], symbols, ctx);
+                infer_with_specializations(node->method_call.args[i], symbols, ctx);
+            }
+
+            // Build the mangled function name: StructName.method_name
+            char mangled_name[256];
+            if (node->method_call.is_static) {
+                // Static method: Type.method
+                const char* type_name = node->method_call.object->identifier.name;
+                snprintf(mangled_name, sizeof(mangled_name), "%s.%s", type_name, node->method_call.method_name);
+            } else {
+                // Instance method: need to determine the type from the object
+                TypeInfo* obj_type = node->method_call.object->type_info;
+                if (obj_type && type_info_is_object(obj_type)) {
+                    snprintf(mangled_name, sizeof(mangled_name), "%s.%s", obj_type->type_name, node->method_call.method_name);
+                } else {
+                    log_error_at(&node->loc, "Cannot call method on non-object type");
+                    break;
+                }
+            }
+
+            // Methods are fully typed, so they should already have a specialization
+            // Just verify the method exists
+            SymbolEntry* entry = symbol_table_lookup(symbols, mangled_name);
+            if (!entry) {
+                log_error_at(&node->loc, "Method '%s' not found", mangled_name);
             }
             break;
         }
@@ -1114,6 +1394,9 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
 
         case AST_COMPOUND_ASSIGNMENT:
             analyze_call_sites(node->compound_assignment.value, symbols, ctx);
+            if (node->compound_assignment.target) {
+                analyze_call_sites(node->compound_assignment.target, symbols, ctx);
+            }
             break;
 
         case AST_TERNARY:
@@ -1156,12 +1439,15 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             }
             break;
 
-        case AST_FOR:
-            if (node->for_stmt.init) analyze_call_sites(node->for_stmt.init, symbols, ctx);
-            if (node->for_stmt.condition) analyze_call_sites(node->for_stmt.condition, symbols, ctx);
-            if (node->for_stmt.update) analyze_call_sites(node->for_stmt.update, symbols, ctx);
-            analyze_call_sites(node->for_stmt.body, symbols, ctx);
+        case AST_FOR: {
+            // Use the for loop's own symbol table if it was created
+            SymbolTable* for_symbols = node->symbol_table ? node->symbol_table : symbols;
+            if (node->for_stmt.init) analyze_call_sites(node->for_stmt.init, for_symbols, ctx);
+            if (node->for_stmt.condition) analyze_call_sites(node->for_stmt.condition, for_symbols, ctx);
+            if (node->for_stmt.update) analyze_call_sites(node->for_stmt.update, for_symbols, ctx);
+            analyze_call_sites(node->for_stmt.body, for_symbols, ctx);
             break;
+        }
 
         case AST_WHILE:
             analyze_call_sites(node->while_stmt.condition, symbols, ctx);
@@ -1203,12 +1489,23 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeCont
     if (!node) return;
 
     switch (node->type) {
-        case AST_PROGRAM:
-        case AST_BLOCK:
+        case AST_PROGRAM: {
+            // Use the program's own symbol table if it was created
+            SymbolTable* prog_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->program.count; i++) {
-                create_specializations(node->program.statements[i], symbols, ctx);
+                create_specializations(node->program.statements[i], prog_symbols, ctx);
             }
             break;
+        }
+
+        case AST_BLOCK: {
+            // Use the block's own symbol table if it was created
+            SymbolTable* block_symbols = node->symbol_table ? node->symbol_table : symbols;
+            for (int i = 0; i < node->block.count; i++) {
+                create_specializations(node->block.statements[i], block_symbols, ctx);
+            }
+            break;
+        }
 
         case AST_FUNCTION_DECL: {
             // Check if this function has any specializations
@@ -1252,12 +1549,23 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
     if (!node) return;
 
     switch (node->type) {
-        case AST_PROGRAM:
-        case AST_BLOCK:
+        case AST_PROGRAM: {
+            // Use the program's own symbol table if it was created
+            SymbolTable* prog_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->program.count; i++) {
-                infer_with_specializations(node->program.statements[i], symbols, ctx);
+                infer_with_specializations(node->program.statements[i], prog_symbols, ctx);
             }
             break;
+        }
+
+        case AST_BLOCK: {
+            // Use the block's own symbol table if it was created
+            SymbolTable* block_symbols = node->symbol_table ? node->symbol_table : symbols;
+            for (int i = 0; i < node->block.count; i++) {
+                infer_with_specializations(node->block.statements[i], block_symbols, ctx);
+            }
+            break;
+        }
 
         case AST_NUMBER:
         case AST_STRING:
@@ -1278,7 +1586,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             infer_with_specializations(node->binary_op.left, symbols, ctx);
             infer_with_specializations(node->binary_op.right, symbols, ctx);
             // Binary op type inferred from operands
-            node->type_info = infer_binary_result_type(node->binary_op.op,
+            node->type_info = infer_binary_result_type(&node->loc,
+            																				   node->binary_op.op,
                                                        node->binary_op.left->type_info,
                                                        node->binary_op.right->type_info);
             break;
@@ -1287,6 +1596,20 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             infer_with_specializations(node->unary_op.operand, symbols, ctx);
             if (strcmp(node->unary_op.op, "!") == 0) {
                 node->type_info = Type_Bool;
+            } else if (strcmp(node->unary_op.op, "ref") == 0) {
+                // ref operator creates a reference type
+                TypeInfo* operand_type = node->unary_op.operand->type_info;
+                TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, NULL);
+                ref_type->data.ref.target_type = operand_type;
+                ref_type->data.ref.is_mutable = true;  // Default to mutable
+
+                // Generate type name like "ref<termios>"
+                char type_name[256];
+                snprintf(type_name, sizeof(type_name), "ref<%s>",
+                        operand_type && operand_type->type_name ? operand_type->type_name : "?");
+                ref_type->type_name = strdup(type_name);
+
+                node->type_info = ref_type;
             } else {
                 node->type_info = node->unary_op.operand->type_info;
             }
@@ -1296,7 +1619,17 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             if (node->var_decl.init) {
                 infer_with_specializations(node->var_decl.init, symbols, ctx);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->var_decl.init);
-                node->type_info = node->var_decl.init->type_info;
+                // Only set type_info from init if there's no explicit type hint
+                // Otherwise, keep the declared type that was set in infer_literal_types
+                if (!node->var_decl.type_hint) {
+                    node->type_info = node->var_decl.init->type_info;
+                    
+                    // Update the symbol table entry with the refined type
+                    SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
+                    if (entry) {
+                        entry->type_info = node->type_info;
+                    }
+                }
 
                 // Special case: if assigning a function, copy the node reference
                 if (node->var_decl.init->type == AST_IDENTIFIER && type_info_is_function_ctx(node->type_info)) {
@@ -1308,12 +1641,20 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     }
                 }
             }
-            symbol_table_insert(symbols, node->var_decl.name, node->type_info, NULL, node->var_decl.is_const);
+            // Don't insert again - the symbol was already created in infer_literal_types
+            // Just make sure the symbol_entry pointer is set
+            if (!node->var_decl.symbol_entry) {
+                node->var_decl.symbol_entry = symbol_table_lookup(symbols, node->var_decl.name);
+            }
             break;
 
         case AST_ASSIGNMENT:
             infer_with_specializations(node->assignment.value, symbols, ctx);
             node->type_info = node->assignment.value->type_info;
+            // Store pointer to the symbol entry for fast access in codegen
+            if (!node->assignment.symbol_entry) {
+                node->assignment.symbol_entry = symbol_table_lookup(symbols, node->assignment.name);
+            }
             break;
 
         case AST_TERNARY:
@@ -1356,30 +1697,93 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             }
             break;
 
-        case AST_INDEX_ACCESS:
+        case AST_INDEX_ACCESS: {
             infer_with_specializations(node->index_access.object, symbols, ctx);
             infer_with_specializations(node->index_access.index, symbols, ctx);
-            // Determine result type based on object type
-            if (node->index_access.object->type_info == Type_String) {
-                node->type_info = Type_U8;  // String indexing returns u8
-            } else if (node->index_access.object->type_info == Type_Array_Int) {
-                node->type_info = Type_Int;
-            } else if (node->index_access.object->type_info == Type_Array_Double) {
-                node->type_info = Type_Double;
-            } else if (node->index_access.object->type_info == Type_Array_String) {
-                node->type_info = Type_String;
-            } else if (node->index_access.object->type_info == Type_Array_Bool) {
-                node->type_info = Type_Bool;
-            }
-            break;
 
-        case AST_INDEX_ASSIGNMENT:
+            TypeInfo* object_type = node->index_access.object->type_info;
+            TypeInfo* index_type = node->index_access.index->type_info;
+
+            // If object is an identifier, store its symbol entry for codegen
+            if (node->index_access.object->type == AST_IDENTIFIER) {
+                node->index_access.symbol_entry = symbol_table_lookup(symbols,
+                    node->index_access.object->identifier.name);
+            } else {
+                node->index_access.symbol_entry = NULL;
+            }
+
+            // If object is a ref type, look through to the target type for indexing
+            TypeInfo* index_target_type = type_info_get_ref_target(object_type);
+
+            // For builtin indexable types (arrays), auto-implement Index trait
+            trait_ensure_index_impl(index_target_type, ctx);
+
+            // Look up Index<IndexType> trait implementation on the target type
+            TypeInfo* type_param_bindings[] = { index_type };
+            TraitImpl* trait_impl = trait_find_impl(Trait_Index, index_target_type,
+                                                    type_param_bindings, 1);
+
+            if (!trait_impl) {
+                log_error_at(&node->loc, "Type '%s' does not implement Index<%s>",
+                            index_target_type->type_name ? index_target_type->type_name : "?",
+                            index_type->type_name ? index_type->type_name : "?");
+                node->type_info = Type_Unknown;
+                node->index_access.trait_impl = NULL;
+                break;
+            }
+
+            // Store the trait implementation for codegen
+            node->index_access.trait_impl = trait_impl;
+
+            // Get the output type from the trait (use target type, not ref wrapper)
+            TypeInfo* output_type = trait_get_assoc_type(Trait_Index, index_target_type,
+                                                         type_param_bindings, 1, "Output");
+            node->type_info = output_type ? output_type : Type_Unknown;
+            break;
+        }
+
+        case AST_INDEX_ASSIGNMENT: {
             infer_with_specializations(node->index_assignment.object, symbols, ctx);
             infer_with_specializations(node->index_assignment.index, symbols, ctx);
             infer_with_specializations(node->index_assignment.value, symbols, ctx);
+
+            TypeInfo* object_type = node->index_assignment.object->type_info;
+            TypeInfo* index_type = node->index_assignment.index->type_info;
+
+            // If object is an identifier, store its symbol entry for codegen
+            if (node->index_assignment.object->type == AST_IDENTIFIER) {
+                node->index_assignment.symbol_entry = symbol_table_lookup(symbols,
+                    node->index_assignment.object->identifier.name);
+            } else {
+                node->index_assignment.symbol_entry = NULL;
+            }
+
+            // If object is a ref type, look through to the target type for indexing
+            TypeInfo* index_target_type = type_info_get_ref_target(object_type);
+
+            // For builtin indexable types (arrays), auto-implement RefIndex trait
+            trait_ensure_ref_index_impl(index_target_type, ctx);
+
+            // Look up RefIndex<IndexType> trait implementation on the target type
+            TypeInfo* type_param_bindings[] = { index_type };
+            TraitImpl* trait_impl = trait_find_impl(Trait_RefIndex, index_target_type,
+                                                    type_param_bindings, 1);
+
+            if (!trait_impl) {
+                log_error_at(&node->loc, "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
+                            index_target_type->type_name ? index_target_type->type_name : "?",
+                            index_type->type_name ? index_type->type_name : "?");
+                node->index_assignment.trait_impl = NULL;
+                break;
+            }
+
+            // Store the trait implementation for codegen
+            node->index_assignment.trait_impl = trait_impl;
+
             // Assignment returns the assigned value's type
-            // REMOVED: get_node_value_type(node) = node->index_assignment.get_node_value_type(value);
+            node->type_info = node->index_assignment.value->type_info;
             break;
+        }
 
         case AST_CALL: {
             // Infer argument types
@@ -1443,6 +1847,88 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             break;
         }
 
+        case AST_METHOD_CALL: {
+            // Infer types for object and arguments
+            infer_with_specializations(node->method_call.object, symbols, ctx);
+            for (int i = 0; i < node->method_call.arg_count; i++) {
+                infer_with_specializations(node->method_call.args[i], symbols, ctx);
+            }
+
+            // Build the mangled function name: StructName.method_name
+            char mangled_name[256];
+            if (node->method_call.is_static) {
+                // Static method: Type.method
+                const char* type_name = node->method_call.object->identifier.name;
+                snprintf(mangled_name, sizeof(mangled_name), "%s.%s", type_name, node->method_call.method_name);
+            } else {
+                // Instance method: need to determine the type from the object
+                TypeInfo* obj_type = node->method_call.object->type_info;
+                if (obj_type && type_info_is_object(obj_type)) {
+                    snprintf(mangled_name, sizeof(mangled_name), "%s.%s", obj_type->type_name, node->method_call.method_name);
+                } else {
+                    log_error_at(&node->loc, "Cannot call method on non-object type");
+                    node->type_info = Type_Unknown;
+                    break;
+                }
+            }
+
+            // Look up the method specialization
+            // For instance methods, we need to include the object type as first argument
+            int total_args = node->method_call.arg_count;
+            if (!node->method_call.is_static) {
+                total_args++; // Add implicit self parameter
+            }
+
+            TypeInfo** arg_types = malloc(sizeof(TypeInfo*) * total_args);
+
+            if (!node->method_call.is_static) {
+                // For instance methods, lookup by explicit args only
+                // The method's first parameter (self) will be injected during codegen
+                for (int i = 0; i < node->method_call.arg_count; i++) {
+                    arg_types[i] = node->method_call.args[i]->type_info;
+                }
+
+                // For instance methods, get the first parameter type from the method signature
+                TypeInfo* obj_type = node->method_call.object->type_info;
+                if (obj_type && type_info_is_object(obj_type)) {
+                    // Look up the method's function type to get its first parameter
+                    TypeInfo* method_func_type = type_context_find_function_type(ctx, mangled_name);
+                    if (method_func_type && method_func_type->data.function.specializations) {
+                        // Get the first specialization (methods are fully typed so they have exactly one)
+                        FunctionSpecialization* spec = method_func_type->data.function.specializations;
+                        if (spec && spec->param_type_info && spec->param_count > 0) {
+                            // Use the actual first parameter type from the method signature
+                            TypeInfo* first_param = spec->param_type_info[0];
+
+                            // Shift explicit args and prepend the first param type
+                            for (int i = node->method_call.arg_count - 1; i >= 0; i--) {
+                                arg_types[i + 1] = arg_types[i];
+                            }
+                            arg_types[0] = first_param;
+                        }
+                    }
+                }
+            } else {
+                // Static methods don't have implicit self
+                for (int i = 0; i < node->method_call.arg_count; i++) {
+                    arg_types[i] = node->method_call.args[i]->type_info;
+                }
+            }
+
+            FunctionSpecialization* spec = specialization_context_find_by_type_info(
+                ctx, mangled_name, arg_types, total_args);
+
+            if (spec) {
+                node->type_info = spec->return_type_info;
+            } else {
+                log_error_at(&node->loc, "Method '%s' not found or type mismatch", mangled_name);
+                node->type_info = Type_Unknown;
+            }
+
+            free(arg_types);
+            break;
+        }
+
         case AST_IF:
             infer_with_specializations(node->if_stmt.condition, symbols, ctx);
             infer_with_specializations(node->if_stmt.then_branch, symbols, ctx);
@@ -1451,12 +1937,15 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             }
             break;
 
-        case AST_FOR:
-            if (node->for_stmt.init) infer_with_specializations(node->for_stmt.init, symbols, ctx);
-            if (node->for_stmt.condition) infer_with_specializations(node->for_stmt.condition, symbols, ctx);
-            if (node->for_stmt.update) infer_with_specializations(node->for_stmt.update, symbols, ctx);
-            infer_with_specializations(node->for_stmt.body, symbols, ctx);
+        case AST_FOR: {
+            // Use the for loop's own symbol table if it was created
+            SymbolTable* for_symbols = node->symbol_table ? node->symbol_table : symbols;
+            if (node->for_stmt.init) infer_with_specializations(node->for_stmt.init, for_symbols, ctx);
+            if (node->for_stmt.condition) infer_with_specializations(node->for_stmt.condition, for_symbols, ctx);
+            if (node->for_stmt.update) infer_with_specializations(node->for_stmt.update, for_symbols, ctx);
+            infer_with_specializations(node->for_stmt.body, for_symbols, ctx);
             break;
+        }
 
         case AST_WHILE:
             infer_with_specializations(node->while_stmt.condition, symbols, ctx);
@@ -1477,29 +1966,22 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
         case AST_PREFIX_OP:
         case AST_POSTFIX_OP: {
-            // ++i or i++ should have the same type as the variable
-            const char* var_name = (node->type == AST_PREFIX_OP) ?
-                                   node->prefix_op.name : node->postfix_op.name;
-            SymbolEntry* entry = symbol_table_lookup(symbols, var_name);
-            if (entry) {
-                // REMOVED: get_node_value_type(node) = entry->type;
+            // Infer type of the target (if it's a member/index access)
+            ASTNode* target = (node->type == AST_PREFIX_OP) ?
+                              node->prefix_op.target : node->postfix_op.target;
+            if (target) {
+                infer_with_specializations(target, symbols, ctx);
             }
-            // Type already set in infer_literal_types if variable is undefined
             break;
         }
 
         case AST_COMPOUND_ASSIGNMENT:
             // Infer type of the value expression
             infer_with_specializations(node->compound_assignment.value, symbols, ctx);
-            // Result type should match the variable's type
-            {
-                SymbolEntry* entry = symbol_table_lookup(symbols, node->compound_assignment.name);
-                if (entry) {
-                    // REMOVED: get_node_value_type(node) = entry->type;
-                } else {
-                    // Variable not defined
-                    // REMOVED: get_node_value_type(node) = get_node_value_type(node->compound_assignment.value);
-                }
+
+            // Infer type of the target (if it's a member/index access)
+            if (node->compound_assignment.target) {
+                infer_with_specializations(node->compound_assignment.target, symbols, ctx);
             }
             break;
 
@@ -1520,16 +2002,54 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
             // Try to infer the type from TypeInfo
             ASTNode* obj = node->member_access.object;
+            TypeInfo* obj_type_info = NULL;
+
             if (obj->type == AST_IDENTIFIER) {
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
-                if (entry && entry->type_info) {
-                    // Use TypeInfo to find the property type
-                    int prop_index = type_info_find_property(entry->type_info, node->member_access.property);
-                    if (prop_index >= 0) {
-                        node->type_info = entry->type_info->data.object.property_types[prop_index];
-                        break;
-                    }
+                if (entry) {
+                    obj_type_info = entry->type_info;
+                    // Store symbol entry for codegen optimization
+                    node->member_access.symbol_entry = entry;
                 }
+            } else {
+                node->member_access.symbol_entry = NULL;
+                if (obj->type == AST_MEMBER_ACCESS || obj->type == AST_INDEX_ACCESS) {
+                    // Nested member/index access - the object node should have type_info set
+                    obj_type_info = obj->type_info;
+                }
+            }
+
+            // Unwrap ref types to get the actual object type
+            TypeInfo* target_type_info = type_info_get_ref_target(obj_type_info);
+
+            // Check for trait-based properties (like "length")
+            if (strcmp(node->member_access.property, "length") == 0) {
+                // Ensure Length trait is implemented
+                trait_ensure_length_impl(target_type_info, ctx);
+
+                // Look up Length trait implementation
+                TraitImpl* trait_impl = trait_find_impl(Trait_Length, target_type_info, NULL, 0);
+                if (trait_impl) {
+                    // Get the output type from the trait
+                    TypeInfo* output_type = trait_get_assoc_type(Trait_Length, target_type_info, NULL, 0, "Output");
+                    node->type_info = output_type ? output_type : Type_Unknown;
+                    break;
+                }
+            }
+
+            if (target_type_info && type_info_is_object(target_type_info)) {
+                // Use TypeInfo to find the property type
+                int prop_index = type_info_find_property(target_type_info, node->member_access.property);
+                if (prop_index >= 0) {
+                    // Store property index for codegen optimization
+                    node->member_access.property_index = prop_index;
+                    node->type_info = target_type_info->data.object.property_types[prop_index];
+                    break;
+                } else {
+                    node->member_access.property_index = -1;
+                }
+            } else {
+                node->member_access.property_index = -1;
             }
 
             // Couldn't determine type
@@ -1601,7 +2121,7 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
             if (stmt->type == AST_VAR_DECL) {
                 // Add variable to symbol table with unknown type initially
                 // Type will be refined in Pass 2
-                symbol_table_insert_var_declaration(symbols, stmt->var_decl.name, 
+                symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
                                                     Type_Unknown, stmt->var_decl.is_const, stmt);
                 log_verbose_indent(2, "Registered global variable: %s", stmt->var_decl.name);
             }
@@ -1624,6 +2144,9 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
 
     // Store type context for codegen (contains both types and specializations)
     ast->type_ctx = type_ctx;
+
+    // Store symbol table in AST for use in codegen
+    ast->symbol_table = symbols;
 
     log_verbose("Type inference complete");
 }

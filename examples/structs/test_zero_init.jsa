@@ -1,0 +1,20 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function test(): void {
+    // Test: Empty struct initialization should be zero
+    var a: Point;
+    printf("a.x=%d, a.y=%d (should be 0, 0)\n", a.x, a.y);
+
+    if (a.x == 0 && a.y == 0) {
+        printf("SUCCESS: Struct is zero-initialized!\n");
+    } else {
+        printf("FAILED: Expected zeros\n");
+    }
+}
+
+test();

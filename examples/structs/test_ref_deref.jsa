@@ -1,0 +1,30 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function test(): void {
+    const p1: Point;
+    p1.x = 10;
+    p1.y = 20;
+
+    var r: ref Point = p1;  // r is a reference to p1
+
+    // This should dereference r and copy to p2
+    var p2: Point = r;
+
+    printf("Before: p1.x=%d, r.x=%d, p2.x=%d\n", p1.x, r.x, p2.x);
+
+    p2.x = 100;  // Modify the copy
+    printf("After p2.x=100: p1.x=%d, r.x=%d, p2.x=%d\n", p1.x, r.x, p2.x);
+
+    if (p1.x == 10 && p2.x == 100) {
+        printf("SUCCESS: p2 is a copy (dereferenced from ref)\n");
+    } else {
+        printf("FAILED: Expected p1.x=10, p2.x=100\n");
+    }
+}
+
+test();

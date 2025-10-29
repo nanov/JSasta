@@ -1,0 +1,40 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Test 1: Struct parameter (should copy)
+function modify_copy(p: Point): void {
+    p.x = 999;
+    printf("  Inside modify_copy: p.x=%d\n", p.x);
+}
+
+// Test 2: Ref parameter (should reference)
+function modify_ref(p: ref Point): void {
+    p.x = 777;
+    printf("  Inside modify_ref: p.x=%d\n", p.x);
+}
+
+function test(): void {
+    printf("=== Function Parameter Semantics ===\n\n");
+
+    const p1: Point;
+    p1.x = 10;
+    p1.y = 20;
+
+    printf("Test 1: Struct parameter (copy)\n");
+    printf("  Before: p1.x=%d\n", p1.x);
+    modify_copy(p1);
+    printf("  After: p1.x=%d\n", p1.x);
+    printf("  Result: %s\n\n", p1.x == 10 ? "PASS - not modified" : "FAIL");
+
+    printf("Test 2: Ref parameter (reference)\n");
+    printf("  Before: p1.x=%d\n", p1.x);
+    modify_ref(p1);
+    printf("  After: p1.x=%d\n", p1.x);
+    printf("  Result: %s\n\n", p1.x == 777 ? "PASS - modified" : "FAIL");
+}
+
+test();

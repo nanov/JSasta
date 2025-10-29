@@ -1,0 +1,45 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Test 1: Copy semantics - var a = b (should copy)
+const p1: Point;
+p1.x = 10;
+p1.y = 20;
+
+var p2 = p1;  // This should COPY
+printf("Test 1 - Copy semantics:\n");
+printf("  Before: p1.x=%d, p2.x=%d\n", p1.x, p2.x);
+
+p2.x = 100;  // Modify the copy
+printf("  After p2.x=100: p1.x=%d, p2.x=%d\n", p1.x, p2.x);
+printf("  Expected: p1.x=10, p2.x=100 (independent copies)\n\n");
+
+// Test 2: Ref semantics - var a: ref Type = b (should reference)
+const p3: Point;
+p3.x = 5;
+p3.y = 7;
+
+var p4: ref Point = p3;  // This should REFERENCE
+printf("Test 2 - Ref semantics (syntax 1):\n");
+printf("  Before: p3.x=%d, p4.x=%d\n", p3.x, p4.x);
+
+p4.x = 50;  // Modify through reference
+printf("  After p4.x=50: p3.x=%d, p4.x=%d\n", p3.x, p4.x);
+printf("  Expected: p3.x=50, p4.x=50 (same object)\n\n");
+
+// Test 3: Ref semantics - var a = ref b (should reference)
+const p5: Point;
+p5.x = 99;
+p5.y = 88;
+
+var p6 = ref p5;  // This should REFERENCE
+printf("Test 3 - Ref semantics (syntax 2):\n");
+printf("  Before: p5.x=%d, p6.x=%d\n", p5.x, p6.x);
+
+p6.y = 77;  // Modify through reference
+printf("  After p6.y=77: p5.y=%d, p6.y=%d\n", p5.y, p6.y);
+printf("  Expected: p5.y=77, p6.y=77 (same object)\n");

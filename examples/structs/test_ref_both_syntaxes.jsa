@@ -1,0 +1,28 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Test syntax 1: var a: ref Type = b
+const p1: Point;
+p1.x = 10;
+p1.y = 20;
+
+var p2: ref Point = p1;
+printf("Syntax 1 - Before: p1.x=%d, p1.y=%d\n", p1.x, p1.y);
+p2.x = 100;
+printf("Syntax 1 - After p2.x=100: p1.x=%d\n", p1.x);
+
+// Test syntax 2: var a = ref b
+const p3: Point;
+p3.x = 5;
+p3.y = 7;
+
+var p4 = ref p3;
+printf("Syntax 2 - Before: p3.x=%d, p3.y=%d\n", p3.x, p3.y);
+p4.y = 77;
+printf("Syntax 2 - After p4.y=77: p3.y=%d\n", p3.y);
+
+printf("Both syntaxes work!\n");

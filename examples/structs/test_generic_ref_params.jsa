@@ -1,0 +1,22 @@
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Generic function - parameters not typed, return type specified
+function process(p) {
+    printf("p.x = %d\n", p.x);
+}
+
+function test(): void {
+    var pt1: Point = {x: 10, y: 20};
+    var pt2: ref Point = pt1;
+
+    // Call with struct - should create specialization process_Point
+    process(pt1);
+
+    // Call with ref - should create specialization process_ref_Point
+    process(pt2);
+}
+
+test();

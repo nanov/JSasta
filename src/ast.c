@@ -67,6 +67,13 @@ void ast_free(ASTNode* node) {
             if (node->struct_decl.default_values) {
                 free(node->struct_decl.default_values);
             }
+            // Free methods
+            for (int i = 0; i < node->struct_decl.method_count; i++) {
+                ast_free(node->struct_decl.methods[i]);
+            }
+            if (node->struct_decl.methods) {
+                free(node->struct_decl.methods);
+            }
             break;
 
         case AST_RETURN:
@@ -108,12 +115,22 @@ void ast_free(ASTNode* node) {
 
         case AST_PREFIX_OP:
             free(node->prefix_op.op);
-            free(node->prefix_op.name);
+            if (node->prefix_op.name) {
+                free(node->prefix_op.name);
+            }
+            if (node->prefix_op.target) {
+                ast_free(node->prefix_op.target);
+            }
             break;
 
         case AST_POSTFIX_OP:
             free(node->postfix_op.op);
-            free(node->postfix_op.name);
+            if (node->postfix_op.name) {
+                free(node->postfix_op.name);
+            }
+            if (node->postfix_op.target) {
+                ast_free(node->postfix_op.target);
+            }
             break;
 
         case AST_CALL:
@@ -122,6 +139,15 @@ void ast_free(ASTNode* node) {
                 ast_free(node->call.args[i]);
             }
             free(node->call.args);
+            break;
+
+        case AST_METHOD_CALL:
+            ast_free(node->method_call.object);
+            free(node->method_call.method_name);
+            for (int i = 0; i < node->method_call.arg_count; i++) {
+                ast_free(node->method_call.args[i]);
+            }
+            free(node->method_call.args);
             break;
 
         case AST_IDENTIFIER:
@@ -138,7 +164,12 @@ void ast_free(ASTNode* node) {
             break;
 
         case AST_COMPOUND_ASSIGNMENT:
-            free(node->compound_assignment.name);
+            if (node->compound_assignment.name) {
+                free(node->compound_assignment.name);
+            }
+            if (node->compound_assignment.target) {
+                ast_free(node->compound_assignment.target);
+            }
             free(node->compound_assignment.op);
             ast_free(node->compound_assignment.value);
             break;
@@ -192,7 +223,38 @@ void ast_free(ASTNode* node) {
             break;
     }
 
+    // Free symbol table if present (for AST_PROGRAM and AST_BLOCK)
+    if (node->symbol_table) {
+        symbol_table_free(node->symbol_table);
+    }
+
     free(node);
+}
+
+// Helper to clone a symbol table (clones entries but not parent - parent will be set later)
+static SymbolTable* symbol_table_clone(SymbolTable* table) {
+    if (!table) return NULL;
+    
+    // Create new table with NULL parent (will be set up properly later)
+    SymbolTable* clone = symbol_table_create(NULL);
+    
+    // Clone all entries
+    SymbolEntry* current = table->head;
+    while (current) {
+        SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
+        entry->name = strdup(current->name);
+        entry->type_info = current->type_info; // Reference, not cloned
+        entry->is_const = current->is_const;
+        entry->value = current->value;
+        entry->node = current->node;
+        entry->llvm_type = current->llvm_type;
+        entry->array_size = current->array_size;
+        entry->next = clone->head;
+        clone->head = entry;
+        current = current->next;
+    }
+    
+    return clone;
 }
 
 ASTNode* ast_clone(ASTNode* node) {
@@ -202,6 +264,7 @@ ASTNode* ast_clone(ASTNode* node) {
     clone->type = node->type;
     clone->type_info = node->type_info ? type_info_clone(node->type_info) : NULL;
     clone->type_ctx = NULL; // Don't clone type context
+    clone->symbol_table = symbol_table_clone(node->symbol_table); // Clone symbol table
 
     switch (node->type) {
         case AST_PROGRAM:
@@ -219,6 +282,8 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->var_decl.is_const = node->var_decl.is_const;
             // Copy type hint reference (don't clone - it's managed by TypeContext)
             clone->var_decl.type_hint = node->var_decl.type_hint;
+            // Don't copy symbol_entry - it will be set during type inference on the cloned AST
+            clone->var_decl.symbol_entry = NULL;
             break;
 
         case AST_FUNCTION_DECL:
@@ -273,10 +338,26 @@ ASTNode* ast_clone(ASTNode* node) {
             } else {
                 clone->struct_decl.default_values = NULL;
             }
+            
+            // Clone methods
+            clone->struct_decl.method_count = node->struct_decl.method_count;
+            if (node->struct_decl.methods && node->struct_decl.method_count > 0) {
+                clone->struct_decl.methods = (ASTNode**)malloc(sizeof(ASTNode*) * node->struct_decl.method_count);
+                for (int i = 0; i < node->struct_decl.method_count; i++) {
+                    clone->struct_decl.methods[i] = ast_clone(node->struct_decl.methods[i]);
+                }
+            } else {
+                clone->struct_decl.methods = NULL;
+            }
             break;
 
         case AST_RETURN:
             clone->return_stmt.value = ast_clone(node->return_stmt.value);
+            break;
+
+        case AST_BREAK:
+        case AST_CONTINUE:
+            // No fields to clone for break/continue
             break;
 
         case AST_IF:
@@ -314,12 +395,14 @@ ASTNode* ast_clone(ASTNode* node) {
 
         case AST_PREFIX_OP:
             clone->prefix_op.op = strdup(node->prefix_op.op);
-            clone->prefix_op.name = strdup(node->prefix_op.name);
+            clone->prefix_op.name = node->prefix_op.name ? strdup(node->prefix_op.name) : NULL;
+            clone->prefix_op.target = node->prefix_op.target ? ast_clone(node->prefix_op.target) : NULL;
             break;
 
         case AST_POSTFIX_OP:
             clone->postfix_op.op = strdup(node->postfix_op.op);
-            clone->postfix_op.name = strdup(node->postfix_op.name);
+            clone->postfix_op.name = node->postfix_op.name ? strdup(node->postfix_op.name) : NULL;
+            clone->postfix_op.target = node->postfix_op.target ? ast_clone(node->postfix_op.target) : NULL;
             break;
 
         case AST_CALL:
@@ -328,6 +411,21 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->call.args = (ASTNode**)malloc(sizeof(ASTNode*) * node->call.arg_count);
             for (int i = 0; i < node->call.arg_count; i++) {
                 clone->call.args[i] = ast_clone(node->call.args[i]);
+            }
+            break;
+
+        case AST_METHOD_CALL:
+            clone->method_call.object = ast_clone(node->method_call.object);
+            clone->method_call.method_name = strdup(node->method_call.method_name);
+            clone->method_call.arg_count = node->method_call.arg_count;
+            clone->method_call.is_static = node->method_call.is_static;
+            if (node->method_call.arg_count > 0) {
+                clone->method_call.args = (ASTNode**)malloc(sizeof(ASTNode*) * node->method_call.arg_count);
+                for (int i = 0; i < node->method_call.arg_count; i++) {
+                    clone->method_call.args[i] = ast_clone(node->method_call.args[i]);
+                }
+            } else {
+                clone->method_call.args = NULL;
             }
             break;
 
@@ -350,10 +448,12 @@ ASTNode* ast_clone(ASTNode* node) {
         case AST_ASSIGNMENT:
             clone->assignment.name = strdup(node->assignment.name);
             clone->assignment.value = ast_clone(node->assignment.value);
+            clone->assignment.symbol_entry = NULL;  // Will be set during type inference
             break;
 
         case AST_COMPOUND_ASSIGNMENT:
-            clone->compound_assignment.name = strdup(node->compound_assignment.name);
+            clone->compound_assignment.name = node->compound_assignment.name ? strdup(node->compound_assignment.name) : NULL;
+            clone->compound_assignment.target = node->compound_assignment.target ? ast_clone(node->compound_assignment.target) : NULL;
             clone->compound_assignment.op = strdup(node->compound_assignment.op);
             clone->compound_assignment.value = ast_clone(node->compound_assignment.value);
             break;

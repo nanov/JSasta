@@ -1,0 +1,28 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function test(): void {
+    const p1: Point;
+    p1.x = 10;
+    p1.y = 20;
+
+    // Test: var p2 = ref p1;
+    var p2 = ref p1;
+
+    printf("p1.x=%d, p2.x=%d\n", p1.x, p2.x);
+
+    p2.x = 100;
+    printf("After p2.x=100: p1.x=%d, p2.x=%d\n", p1.x, p2.x);
+
+    if (p1.x == 100) {
+        printf("SUCCESS: p2 is a reference to p1\n");
+    } else {
+        printf("FAILED: p2 should be a reference\n");
+    }
+}
+
+test();

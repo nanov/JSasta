@@ -1,0 +1,20 @@
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+// Two functions with same name but different signatures
+function foo(p: Point): void {
+    printf("foo(Point) - copy\n");
+}
+
+function foo(p: ref Point): void {
+    printf("foo(ref Point) - reference\n");
+}
+
+function test(): void {
+    var pt: Point = {x: 10, y: 20};
+
+    // Which one gets called?
+    foo(pt);
+}

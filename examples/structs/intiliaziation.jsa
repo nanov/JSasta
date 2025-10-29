@@ -1,0 +1,19 @@
+external printf(string, ...):void;
+
+struct termios {
+	c_iflag: u64;
+	c_oflag: u64;
+	c_cflag: u64;
+	c_lflag: u64;
+	cc_cc1: u8[20];
+	c_ispeed: u64;
+	c_ospeed: u64;
+}
+
+const a: termios;
+a.c_cflag = 2u64;
+
+var b = a;
+b.c_lflag = 16u64;
+
+printf("%d\n", b.c_cflag);

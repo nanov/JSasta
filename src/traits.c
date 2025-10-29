@@ -23,6 +23,9 @@ Trait* Trait_AddAssign = NULL;
 Trait* Trait_SubAssign = NULL;
 Trait* Trait_MulAssign = NULL;
 Trait* Trait_DivAssign = NULL;
+Trait* Trait_Index = NULL;
+Trait* Trait_RefIndex = NULL;
+Trait* Trait_Length = NULL;
 
 // === Core Trait Registry Functions ===
 
@@ -610,4 +613,219 @@ void traits_init_builtins(TraitRegistry* registry, TypeContext* type_ctx) {
                                         div_assign_type_params, 1,
                                         NULL, 0,
                                         div_assign_method_names, div_assign_method_sigs, 1);
+    
+    // Index<Idx> { type Output; fn index(self, idx: Idx) -> Output }
+    TraitTypeParam index_type_params[] = {
+        { .name = "Idx", .default_type = NULL, .constraint = NULL }
+    };
+    TraitAssocType index_assoc_types[] = {
+        { .name = "Output", .constraint = NULL }
+    };
+    const char* index_method_names[] = { "index" };
+    TypeInfo* index_method_sigs[] = { NULL };
+    
+    Trait_Index = trait_define_full(registry, "Index",
+                                    index_type_params, 1,
+                                    index_assoc_types, 1,
+                                    index_method_names, index_method_sigs, 1);
+    
+    // RefIndex<Idx> { type Output; fn ref_index(self, idx: Idx) -> ref<Output> }
+    // Used for mutable indexing (assignment)
+    TraitTypeParam ref_index_type_params[] = {
+        { .name = "Idx", .default_type = NULL, .constraint = NULL }
+    };
+    TraitAssocType ref_index_assoc_types[] = {
+        { .name = "Output", .constraint = NULL }
+    };
+    const char* ref_index_method_names[] = { "ref_index" };
+    TypeInfo* ref_index_method_sigs[] = { NULL };
+    
+    Trait_RefIndex = trait_define_full(registry, "RefIndex",
+                                       ref_index_type_params, 1,
+                                       ref_index_assoc_types, 1,
+                                       ref_index_method_names, ref_index_method_sigs, 1);
+    
+    // Length { type Output; fn length(self) -> Output }
+    // Returns the length of a collection (arrays, strings, etc.)
+    // For arrays: Output = u32
+    TraitAssocType length_assoc_types[] = {
+        { .name = "Output", .constraint = NULL }
+    };
+    const char* length_method_names[] = { "length" };
+    TypeInfo* length_method_sigs[] = { NULL };
+    
+    Trait_Length = trait_define_full(registry, "Length",
+                                     NULL, 0,  // No type parameters
+                                     length_assoc_types, 1,
+                                     length_method_names, length_method_sigs, 1);
+}
+
+// === Array Index Intrinsic ===
+
+// Intrinsic codegen for array indexing: array[index] -> element
+// This intrinsic is special - it's not called directly with args
+// Instead, codegen handles it inline because it needs AST node context
+// to determine if the object is an identifier (for symbol lookup)
+// and whether it's a stack vs heap array
+//
+// For future intrinsics that can be fully self-contained, they should
+// be callable with just args[] and return a value.
+static LLVMValueRef intrinsic_array_index(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+    (void)gen;
+    (void)args;
+    (void)arg_count;
+    
+    // Not called - codegen handles array indexing inline
+    // This exists as a marker that array indexing is intrinsic
+    return NULL;
+}
+
+// === On-Demand Trait Implementation for Builtins ===
+
+void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx) {
+    if (!type || !Trait_Index) {
+        return; // Nothing to do
+    }
+    
+    // For arrays: implement Index<i32> -> ElementType
+    if (type->kind == TYPE_KIND_ARRAY) {
+        TypeInfo* idx_type = type_ctx->int_type;
+        TypeInfo* type_param_bindings[] = { idx_type };
+        
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_Index, type, type_param_bindings, 1);
+        if (existing) {
+            return;
+        }
+        
+        // Get element type as the output
+        TypeInfo* elem_type = type->data.array.element_type;
+        
+        // Create method implementation
+        MethodImpl method_impl = {
+            .method_name = "index",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .codegen = intrinsic_array_index,
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+        
+        // Implement Index<i32> for this array type with Output = ElementType
+        TypeInfo* assoc_type_bindings[] = { elem_type };
+        
+        trait_impl_full(Trait_Index, type,
+                       type_param_bindings, 1,
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+    
+    // TODO: For strings: implement Index<i32> -> u8
+    // TODO: For other builtin types that support indexing
+}
+
+// Intrinsic for array ref_index - returns a reference to the element
+// This is a placeholder that is never actually called - the codegen for
+// AST_INDEX_ASSIGNMENT handles the implementation inline because it needs
+// access to the AST node structure and symbol table information
+static LLVMValueRef intrinsic_array_ref_index(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+    (void)gen;
+    (void)args;
+    (void)arg_count;
+    
+    // Not called - codegen handles array index assignment inline
+    return NULL;
+}
+
+void trait_ensure_ref_index_impl(TypeInfo* type, TypeContext* type_ctx) {
+    if (!type || !Trait_RefIndex) {
+        return; // Nothing to do
+    }
+    
+    // For arrays: implement RefIndex<i32> -> ref<ElementType>
+    if (type->kind == TYPE_KIND_ARRAY) {
+        TypeInfo* idx_type = type_ctx->int_type;
+        TypeInfo* type_param_bindings[] = { idx_type };
+        
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_RefIndex, type, type_param_bindings, 1);
+        if (existing) {
+            return;
+        }
+        
+        // Get element type as the output
+        TypeInfo* elem_type = type->data.array.element_type;
+        
+        // Create method implementation
+        MethodImpl method_impl = {
+            .method_name = "ref_index",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .codegen = intrinsic_array_ref_index,
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+        
+        // Implement RefIndex<i32> for this array type with Output = ElementType
+        // Note: The actual return type is ref<ElementType>, but we store ElementType
+        // in the associated type and wrap it with ref when needed
+        TypeInfo* assoc_type_bindings[] = { elem_type };
+        
+        trait_impl_full(Trait_RefIndex, type,
+                       type_param_bindings, 1,
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+    
+    // TODO: For strings: implement RefIndex<i32> -> ref<u8>
+    // TODO: For other builtin types that support indexing
+}
+
+// Intrinsic for array length - returns the length of the array
+// This is a placeholder that is never actually called - the codegen for
+// member access to "length" handles the implementation inline
+static LLVMValueRef intrinsic_array_length(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+    (void)gen;
+    (void)args;
+    (void)arg_count;
+    
+    // Not called - codegen handles array length inline
+    return NULL;
+}
+
+void trait_ensure_length_impl(TypeInfo* type, TypeContext* type_ctx) {
+    if (!type || !Trait_Length) {
+        return; // Nothing to do
+    }
+    
+    // For arrays: implement Length with Output = u32
+    if (type->kind == TYPE_KIND_ARRAY) {
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_Length, type, NULL, 0);
+        if (existing) {
+            return;
+        }
+        
+        // Create method implementation
+        MethodImpl method_impl = {
+            .method_name = "length",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .codegen = intrinsic_array_length,
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+        
+        // Implement Length for this array type with Output = u32
+        TypeInfo* u32_type = type_ctx->u32_type;
+        TypeInfo* assoc_type_bindings[] = { u32_type };
+        
+        trait_impl_full(Trait_Length, type,
+                       NULL, 0,  // No type parameters
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+    
+    // TODO: For strings: implement Length with Output = u32
+    // TODO: For other builtin types with length
 }

@@ -1,0 +1,13 @@
+external printf(string, ...):void;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+const p1: Point;
+p1.x = 10;
+p1.y = 20;
+
+var p2 = p1;
+printf("p1.x=%d, p2.x=%d\n", p1.x, p2.x);
