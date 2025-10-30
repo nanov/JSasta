@@ -1,177 +1,379 @@
 {
-  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "name": "JSasta",
-  "patterns": [
-    { "include": "#comments" },
-    { "include": "#keywords" },
-    { "include": "#storage-types" },
-    { "include": "#type-annotations" },
-    { "include": "#strings" },
-    { "include": "#numbers" },
-    { "include": "#functions" },
-    { "include": "#objects" },
-    { "include": "#operators" },
-    { "include": "#variables" }
-  ],
-  "repository": {
-    "comments": {
-      "patterns": [
-        {
-          "name": "comment.line.double-slash.jsasta",
-          "match": "//.*$"
-        },
-        {
-          "name": "comment.block.jsasta",
-          "begin": "/\\*",
-          "end": "\\*/"
-        }
-      ]
-    },
-    "keywords": {
-      "patterns": [
-        {
-          "name": "keyword.control.jsasta",
-          "match": "\\b(if|else|while|for|return|break|continue)\\b"
-        },
-        {
-          "name": "keyword.other.jsasta",
-          "match": "\\b(function|var|let|const)\\b"
-        }
-      ]
-    },
-    "storage-types": {
-      "patterns": [
-        {
-          "name": "storage.type.jsasta",
-          "match": "\\b(int|double|string|bool|void)\\b"
-        }
-      ]
-    },
-    "type-annotations": {
-      "patterns": [
-        {
-          "name": "meta.type.annotation.jsasta",
-          "begin": ":\\s*\\{",
-          "end": "\\}",
-          "beginCaptures": {
-            "0": { "name": "punctuation.separator.type.jsasta" }
-          },
-          "endCaptures": {
-            "0": { "name": "punctuation.separator.type.jsasta" }
-          },
-          "patterns": [
-            {
-              "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_]*)",
-              "captures": {
-                "1": { "name": "variable.other.property.jsasta" },
-                "2": { "name": "punctuation.separator.type.jsasta" },
-                "3": { "name": "storage.type.jsasta" }
-              }
-            },
-            {
-              "name": "punctuation.separator.comma.jsasta",
-              "match": ","
-            }
-          ]
-        },
-        {
-          "name": "meta.type.annotation.jsasta",
-          "match": ":\\s*([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": { "name": "storage.type.jsasta" }
-          }
-        }
-      ]
-    },
-    "strings": {
-      "patterns": [
-        {
-          "name": "string.quoted.double.jsasta",
-          "begin": "\"",
-          "end": "\"",
-          "patterns": [
-            {
-              "name": "constant.character.escape.jsasta",
-              "match": "\\\\."
-            }
-          ]
-        },
-        {
-          "name": "string.quoted.single.jsasta",
-          "begin": "'",
-          "end": "'",
-          "patterns": [
-            {
-              "name": "constant.character.escape.jsasta",
-              "match": "\\\\."
-            }
-          ]
-        }
-      ]
-    },
-    "numbers": {
-      "patterns": [
-        {
-          "name": "constant.numeric.jsasta",
-          "match": "\\b([0-9]+\\.?[0-9]*|\\.[0-9]+)\\b"
-        }
-      ]
-    },
-    "functions": {
-      "patterns": [
-        {
-          "name": "meta.function.jsasta",
-          "match": "\\b(function)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": { "name": "storage.type.function.jsasta" },
-            "2": { "name": "entity.name.function.jsasta" }
-          }
-        },
-        {
-          "name": "meta.function-call.jsasta",
-          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
-          "captures": {
-            "1": { "name": "entity.name.function.jsasta" }
-          }
-        }
-      ]
-    },
-    "objects": {
-      "patterns": [
-        {
-          "name": "meta.object-literal.jsasta",
-          "begin": "\\{",
-          "end": "\\}",
-          "patterns": [
-            {
-              "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*:",
-              "captures": {
-                "1": { "name": "variable.other.property.jsasta" }
-              }
-            },
-            { "include": "#strings" },
-            { "include": "#numbers" },
-            { "include": "#keywords" }
-          ]
-        }
-      ]
-    },
-    "operators": {
-      "patterns": [
-        {
-          "name": "keyword.operator.jsasta",
-          "match": "(\\+|\\-|\\*|\\/|%|\\=\\=|\\!\\=|\\<|\\>|\\<\\=|\\>\\=|\\&\\&|\\|\\||\\!|\\=|\\+\\=|\\-\\=|\\*\\=|\\/\\=|\\+\\+|\\-\\-|\\.|\\[|\\])"
-        }
-      ]
-    },
-    "variables": {
-      "patterns": [
-        {
-          "name": "variable.other.jsasta",
-          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
-        }
-      ]
-    }
-  },
-  "scopeName": "source.jsasta"
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "JSasta",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#strings" },
+		{ "include": "#numbers" },
+		{ "include": "#constants" },
+		{ "include": "#keywords" },
+		{ "include": "#storage-modifiers" },
+		{ "include": "#storage-types" },
+		{ "include": "#struct-declaration" },
+		{ "include": "#function-declaration" },
+		{ "include": "#function-calls" },
+		{ "include": "#type-annotations" },
+		{ "include": "#operators" },
+		{ "include": "#punctuation" },
+		{ "include": "#variables" }
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.double-slash.jsasta",
+					"match": "//.*$"
+				},
+				{
+					"name": "comment.block.jsasta",
+					"begin": "/\\*",
+					"end": "\\*/",
+					"patterns": [
+						{
+							"name": "comment.block.jsasta",
+							"match": "."
+						}
+					]
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control.conditional.jsasta",
+					"match": "\\b(if|else)\\b"
+				},
+				{
+					"name": "keyword.control.loop.jsasta",
+					"match": "\\b(while|for)\\b"
+				},
+				{
+					"name": "keyword.control.flow.jsasta",
+					"match": "\\b(return|break|continue)\\b"
+				},
+				{
+					"name": "keyword.other.jsasta",
+					"match": "\\b(new)\\b"
+				}
+			]
+		},
+		"storage-modifiers": {
+			"patterns": [
+				{
+					"name": "storage.modifier.jsasta",
+					"match": "\\b(const|var|let|external|ref)\\b"
+				}
+			]
+		},
+		"storage-types": {
+			"patterns": [
+				{
+					"name": "storage.type.primitive.jsasta",
+					"match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|int|double|float|string|bool|void)\\b"
+				},
+				{
+					"name": "storage.type.struct.jsasta",
+					"match": "\\b(struct)\\b"
+				},
+				{
+					"name": "storage.type.function.jsasta",
+					"match": "\\b(function)\\b"
+				}
+			]
+		},
+		"struct-declaration": {
+			"patterns": [
+				{
+					"name": "meta.struct.jsasta",
+					"begin": "\\b(struct)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\{",
+					"end": "\\}",
+					"beginCaptures": {
+						"1": { "name": "storage.type.struct.jsasta" },
+						"2": { "name": "entity.name.type.struct.jsasta" }
+					},
+					"patterns": [
+						{ "include": "#comments" },
+						{ "include": "#function-declaration" },
+						{
+							"name": "meta.struct.property.primitive.jsasta",
+							"match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(i8|i16|i32|i64|u8|u16|u32|u64|int|double|float|string|bool|void)(\\[[^\\]]*\\])?",
+							"captures": {
+								"1": { "name": "variable.other.property.jsasta" },
+								"2": { "name": "storage.type.primitive.jsasta" },
+								"3": { "name": "meta.array.brackets.jsasta" }
+							}
+						},
+						{
+							"name": "meta.struct.property.jsasta",
+							"match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*([a-zA-Z_][a-zA-Z0-9_<>]*)(\\[[^\\]]*\\])?",
+							"captures": {
+								"1": { "name": "variable.other.property.jsasta" },
+								"2": { "name": "entity.name.type.jsasta" },
+								"3": { "name": "meta.array.brackets.jsasta" }
+							}
+						},
+						{ "include": "#punctuation" }
+					]
+				}
+			]
+		},
+		"function-declaration": {
+			"patterns": [
+				{
+					"name": "meta.function.declaration.jsasta",
+					"begin": "\\b(function|external)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+					"end": "\\)",
+					"beginCaptures": {
+						"1": { "name": "storage.type.function.jsasta" },
+						"2": { "name": "entity.name.function.jsasta" }
+					},
+					"patterns": [
+						{ "include": "#function-parameters" },
+						{ "include": "#punctuation" }
+					]
+				},
+				{
+					"name": "meta.method.declaration.jsasta",
+					"match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(\\()([^\\)]*)(\\))(?=\\s*(:|\\{))",
+					"captures": {
+						"1": { "name": "entity.name.function.method.jsasta" },
+						"2": { "name": "meta.brace.round.jsasta" },
+						"3": {
+							"patterns": [
+								{ "include": "#function-parameters" },
+								{ "include": "#punctuation" }
+							]
+						},
+						"4": { "name": "meta.brace.round.jsasta" }
+					}
+				}
+			]
+		},
+		"function-parameters": {
+			"patterns": [
+				{
+					"name": "meta.parameter.primitive.jsasta",
+					"match": "(ref)?\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(i8|i16|i32|i64|u8|u16|u32|u64|int|double|float|string|bool|void)(\\[[^\\]]*\\])?",
+					"captures": {
+						"1": { "name": "storage.modifier.jsasta" },
+						"2": { "name": "variable.parameter.jsasta" },
+						"3": { "name": "storage.type.primitive.jsasta" },
+						"4": { "name": "meta.array.brackets.jsasta" }
+					}
+				},
+				{
+					"name": "meta.parameter.jsasta",
+					"match": "(ref)?\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*([a-zA-Z_][a-zA-Z0-9_<>]*)(\\[[^\\]]*\\])?",
+					"captures": {
+						"1": { "name": "storage.modifier.jsasta" },
+						"2": { "name": "variable.parameter.jsasta" },
+						"3": { "name": "entity.name.type.jsasta" },
+						"4": { "name": "meta.array.brackets.jsasta" }
+					}
+				},
+				{
+					"name": "keyword.operator.variadic.jsasta",
+					"match": "\\.\\.\\."
+				}
+			]
+		},
+		"type-annotations": {
+			"patterns": [
+				{
+					"name": "meta.type.annotation.primitive.jsasta",
+					"match": ":\\s*(ref)?\\s*(i8|i16|i32|i64|u8|u16|u32|u64|int|double|float|string|bool|void)(\\[[^\\]]*\\])?",
+					"captures": {
+						"1": { "name": "storage.modifier.jsasta" },
+						"2": { "name": "storage.type.primitive.jsasta" },
+						"3": { "name": "meta.array.brackets.jsasta" }
+					}
+				},
+				{
+					"name": "meta.type.annotation.jsasta",
+					"match": ":\\s*(ref)?\\s*([a-zA-Z_][a-zA-Z0-9_]*)(\\<[a-zA-Z_][a-zA-Z0-9_]*\\>)?(\\[[^\\]]*\\])?",
+					"captures": {
+						"1": { "name": "storage.modifier.jsasta" },
+						"2": { "name": "entity.name.type.jsasta" },
+						"3": { "name": "meta.type.parameters.jsasta" },
+						"4": { "name": "meta.array.brackets.jsasta" }
+					}
+				}
+			]
+		},
+		"strings": {
+			"patterns": [
+				{
+					"name": "string.quoted.double.jsasta",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [
+						{
+							"name": "constant.character.escape.jsasta",
+							"match": "\\\\(n|t|r|\\\\|\"|'|0|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})"
+						},
+						{
+							"name": "invalid.illegal.unrecognized-escape.jsasta",
+							"match": "\\\\."
+						}
+					]
+				},
+				{
+					"name": "string.quoted.single.jsasta",
+					"begin": "'",
+					"end": "'",
+					"patterns": [
+						{
+							"name": "constant.character.escape.jsasta",
+							"match": "\\\\(n|t|r|\\\\|\"|'|0|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})"
+						},
+						{
+							"name": "invalid.illegal.unrecognized-escape.jsasta",
+							"match": "\\\\."
+						}
+					]
+				}
+			]
+		},
+		"numbers": {
+			"patterns": [
+				{
+					"name": "constant.numeric.hex.jsasta",
+					"match": "\\b0[xX][0-9a-fA-F]+(u8|u16|u32|u64|i8|i16|i32|i64)?\\b"
+				},
+				{
+					"name": "constant.numeric.binary.jsasta",
+					"match": "\\b0[bB][01]+(u8|u16|u32|u64|i8|i16|i32|i64)?\\b"
+				},
+				{
+					"name": "constant.numeric.octal.jsasta",
+					"match": "\\b0[oO][0-7]+(u8|u16|u32|u64|i8|i16|i32|i64)?\\b"
+				},
+				{
+					"name": "constant.numeric.float.jsasta",
+					"match": "\\b([0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+)\\b"
+				},
+				{
+					"name": "constant.numeric.integer.jsasta",
+					"match": "\\b[0-9]+(u8|u16|u32|u64|i8|i16|i32|i64)?\\b"
+				}
+			]
+		},
+		"constants": {
+			"patterns": [
+				{
+					"name": "constant.language.boolean.jsasta",
+					"match": "\\b(true|false)\\b"
+				},
+				{
+					"name": "constant.language.null.jsasta",
+					"match": "\\b(null|nullptr)\\b"
+				}
+			]
+		},
+		"function-calls": {
+			"patterns": [
+				{
+					"name": "meta.function-call.jsasta",
+					"begin": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(\\()",
+					"end": "\\)",
+					"beginCaptures": {
+						"1": { "name": "entity.name.function.jsasta" },
+						"2": { "name": "meta.brace.round.jsasta" }
+					},
+					"endCaptures": {
+						"0": { "name": "meta.brace.round.jsasta" }
+					},
+					"patterns": [
+						{ "include": "#comments" },
+						{ "include": "#strings" },
+						{ "include": "#numbers" },
+						{ "include": "#constants" },
+						{ "include": "#keywords" },
+						{ "include": "#storage-types" },
+						{ "include": "#function-calls" },
+						{ "include": "#operators" },
+						{ "include": "#punctuation" },
+						{ "include": "#variables" }
+					]
+				}
+			]
+		},
+		"operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator.comparison.jsasta",
+					"match": "(==|!=|<|>|<=|>=)"
+				},
+				{
+					"name": "keyword.operator.logical.jsasta",
+					"match": "(&&|\\|\\||!)"
+				},
+				{
+					"name": "keyword.operator.arithmetic.jsasta",
+					"match": "(\\+|-|\\*|/|%)"
+				},
+				{
+					"name": "keyword.operator.bitwise.jsasta",
+					"match": "(&|\\||\\^|~|<<|>>)"
+				},
+				{
+					"name": "keyword.operator.assignment.jsasta",
+					"match": "(=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=)"
+				},
+				{
+					"name": "keyword.operator.increment.jsasta",
+					"match": "(\\+\\+|--)"
+				},
+				{
+					"name": "keyword.operator.member.jsasta",
+					"match": "\\."
+				},
+				{
+					"name": "keyword.operator.arrow.jsasta",
+					"match": "->"
+				}
+			]
+		},
+		"punctuation": {
+			"patterns": [
+				{
+					"name": "punctuation.terminator.statement.jsasta",
+					"match": ";"
+				},
+				{
+					"name": "punctuation.separator.comma.jsasta",
+					"match": ","
+				},
+				{
+					"name": "punctuation.separator.colon.jsasta",
+					"match": ":"
+				},
+				{
+					"name": "meta.brace.round.jsasta",
+					"match": "[\\(\\)]"
+				},
+				{
+					"name": "meta.brace.square.jsasta",
+					"match": "[\\[\\]]"
+				},
+				{
+					"name": "meta.brace.curly.jsasta",
+					"match": "[\\{\\}]"
+				}
+			]
+		},
+		"variables": {
+			"patterns": [
+				{
+					"name": "variable.other.constant.jsasta",
+					"match": "\\b[A-Z][A-Z0-9_]*\\b"
+				},
+				{
+					"name": "variable.other.jsasta",
+					"match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+				}
+			]
+		}
+	},
+	"scopeName": "source.jsasta"
 }

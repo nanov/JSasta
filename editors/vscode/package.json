@@ -1,35 +1,35 @@
 {
-  "name": "jsasta-syntax",
-  "displayName": "JSasta Language Support",
-  "description": "Syntax highlighting for JSasta language",
-  "version": "1.0.0",
-  "engines": {
-    "vscode": "^1.60.0"
-  },
-  "categories": [
-    "Programming Languages"
-  ],
-  "contributes": {
-    "languages": [
-      {
-        "id": "jsasta",
-        "aliases": [
-          "JSasta",
-          "jsasta"
-        ],
-        "extensions": [
-          ".js",
-          ".jsasta"
-        ],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "jsasta",
-        "scopeName": "source.jsasta",
-        "path": "./jsasta.tmLanguage.json"
-      }
-    ]
-  }
+	"name": "jsasta-syntax",
+	"displayName": "JSasta Language Support",
+	"description": "Syntax highlighting for JSasta language",
+	"version": "1.0.0",
+	"engines": {
+		"vscode": "^1.60.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "jsasta",
+				"aliases": [
+					"JSasta",
+					"jsasta"
+				],
+				"extensions": [
+					".jsa",
+					".jsasta"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "jsasta",
+				"scopeName": "source.jsasta",
+				"path": "./jsasta.tmLanguage.json"
+			}
+		]
+	}
 }
