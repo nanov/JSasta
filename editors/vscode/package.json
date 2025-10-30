@@ -1,14 +1,19 @@
 {
-	"name": "jsasta-syntax",
+	"name": "jsasta-language",
 	"displayName": "JSasta Language Support",
-	"description": "Syntax highlighting for JSasta language",
+	"description": "Language support for JSasta including syntax highlighting and LSP features",
 	"version": "1.0.0",
+	"publisher": "jsasta",
 	"engines": {
 		"vscode": "^1.60.0"
 	},
 	"categories": [
 		"Programming Languages"
 	],
+	"activationEvents": [
+		"onLanguage:jsasta"
+	],
+	"main": "./extension.js",
 	"contributes": {
 		"languages": [
 			{
@@ -30,6 +35,33 @@
 				"scopeName": "source.jsasta",
 				"path": "./jsasta.tmLanguage.json"
 			}
-		]
+		],
+		"configuration": {
+			"title": "JSasta",
+			"properties": {
+				"jsasta.lsp.serverPath": {
+					"type": "string",
+					"default": "",
+					"description": "Custom path to jsastad LSP server executable. Leave empty to use PATH."
+				},
+				"jsasta.lsp.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"description": "Traces the communication between VS Code and the JSasta language server."
+				}
+			}
+		}
+	},
+	"dependencies": {
+		"vscode-languageclient": "^8.0.0"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.60.0",
+		"@types/node": "^18.0.0"
 	}
 }
