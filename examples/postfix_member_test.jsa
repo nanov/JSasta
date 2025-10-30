@@ -1,0 +1,34 @@
+external printf(format:string, ...):void;
+
+struct pos {
+    x: u8;
+    y: u8;
+}
+
+struct game {
+    cursour: pos;
+    move_up(self: ref game):void {
+        printf("Before: x=%d, y=%d\n", self.cursour.x, self.cursour.y);
+        if (self.cursour.y > 0) {
+            self.cursour.y--;
+        }
+        printf("After: x=%d, y=%d\n", self.cursour.x, self.cursour.y);
+    }
+    move_right(self: ref game):void {
+        printf("Before: x=%d, y=%d\n", self.cursour.x, self.cursour.y);
+        if (self.cursour.x < 10) {
+            self.cursour.x++;
+        }
+        printf("After: x=%d, y=%d\n", self.cursour.x, self.cursour.y);
+    }
+}
+
+var g: game;
+g.cursour.x = 5;
+g.cursour.y = 5;
+printf("Initial: x=%d, y=%d\n", g.cursour.x, g.cursour.y);
+
+g.move_up();
+g.move_right();
+
+printf("Final: x=%d, y=%d\n", g.cursour.x, g.cursour.y);

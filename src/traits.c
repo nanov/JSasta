@@ -720,7 +720,39 @@ void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx) {
                        &method_impl, 1);
     }
     
-    // TODO: For strings: implement Index<i32> -> u8
+    // For strings: implement Index<i32> -> u8
+    if (type == Type_String) {
+        TypeInfo* idx_type = type_ctx->int_type;
+        TypeInfo* type_param_bindings[] = { idx_type };
+        
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_Index, type, type_param_bindings, 1);
+        if (existing) {
+            return;
+        }
+        
+        // String indexing returns u8 (byte)
+        TypeInfo* output_type = type_ctx->u8_type;
+        
+        // Create method implementation
+        MethodImpl method_impl = {
+            .method_name = "index",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .codegen = intrinsic_array_index,  // We'll reuse the same placeholder
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+        
+        // Implement Index<i32> for string with Output = u8
+        TypeInfo* assoc_type_bindings[] = { output_type };
+        
+        trait_impl_full(Trait_Index, type,
+                       type_param_bindings, 1,
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+    
     // TODO: For other builtin types that support indexing
 }
 

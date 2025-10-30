@@ -59,6 +59,7 @@ void ast_free(ASTNode* node) {
             for (int i = 0; i < node->struct_decl.property_count; i++) {
                 free(node->struct_decl.property_names[i]);
                 ast_free(node->struct_decl.default_values[i]);
+                ast_free(node->struct_decl.property_array_size_exprs[i]);
             }
             free(node->struct_decl.property_names);
             // Note: property_types are references to TypeContext, don't free the TypeInfo objects
@@ -67,6 +68,12 @@ void ast_free(ASTNode* node) {
             }
             if (node->struct_decl.default_values) {
                 free(node->struct_decl.default_values);
+            }
+            if (node->struct_decl.property_array_sizes) {
+                free(node->struct_decl.property_array_sizes);
+            }
+            if (node->struct_decl.property_array_size_exprs) {
+                free(node->struct_decl.property_array_size_exprs);
             }
             // Free methods
             for (int i = 0; i < node->struct_decl.method_count; i++) {
@@ -340,6 +347,25 @@ ASTNode* ast_clone(ASTNode* node) {
                 }
             } else {
                 clone->struct_decl.default_values = NULL;
+            }
+            
+            // Copy array sizes
+            if (node->struct_decl.property_array_sizes) {
+                clone->struct_decl.property_array_sizes = (int*)malloc(sizeof(int) * node->struct_decl.property_count);
+                memcpy(clone->struct_decl.property_array_sizes, node->struct_decl.property_array_sizes, 
+                       sizeof(int) * node->struct_decl.property_count);
+            } else {
+                clone->struct_decl.property_array_sizes = NULL;
+            }
+            
+            // Clone array size expressions
+            if (node->struct_decl.property_array_size_exprs) {
+                clone->struct_decl.property_array_size_exprs = (ASTNode**)malloc(sizeof(ASTNode*) * node->struct_decl.property_count);
+                for (int i = 0; i < node->struct_decl.property_count; i++) {
+                    clone->struct_decl.property_array_size_exprs[i] = ast_clone(node->struct_decl.property_array_size_exprs[i]);
+                }
+            } else {
+                clone->struct_decl.property_array_size_exprs = NULL;
             }
             
             // Clone methods

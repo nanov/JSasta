@@ -1219,6 +1219,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
     node->struct_decl.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * capacity);
     node->struct_decl.default_values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
     node->struct_decl.property_array_sizes = (int*)malloc(sizeof(int) * capacity);
+    node->struct_decl.property_array_size_exprs = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
     node->struct_decl.property_count = 0;
     
     int method_capacity = 4;
@@ -1232,6 +1233,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             node->struct_decl.property_types = (TypeInfo**)realloc(node->struct_decl.property_types, sizeof(TypeInfo*) * capacity);
             node->struct_decl.default_values = (ASTNode**)realloc(node->struct_decl.default_values, sizeof(ASTNode*) * capacity);
             node->struct_decl.property_array_sizes = (int*)realloc(node->struct_decl.property_array_sizes, sizeof(int) * capacity);
+            node->struct_decl.property_array_size_exprs = (ASTNode**)realloc(node->struct_decl.property_array_size_exprs, sizeof(ASTNode*) * capacity);
         }
         
         // Parse property name or method name
@@ -1363,34 +1365,23 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         
         // Check for array syntax [size]
         int array_size = 0;
+        ASTNode* array_size_expr = NULL;
         if (parser_match(parser, TOKEN_LBRACKET)) {
             parser_advance(parser); // consume '['
             
-            // Parse array size (must be a number)
-            if (!parser_match(parser, TOKEN_NUMBER)) {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Array fields in structs must have explicit size (e.g., arr: i32[12])");
+            // Parse array size expression (number, identifier, or const expression)
+            array_size_expr = parse_ternary(parser);
+            
+            if (!array_size_expr) {
+                log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
+                            "Expected array size expression after '['");
                 free(member_name);
                 return node;
             }
             
-            array_size = (int)atoi(parser->current_token->value);
-            if (array_size <= 0) {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Array size must be positive");
-                free(member_name);
-                return node;
-            }
-            
-            parser_advance(parser); // consume number
+            // Store expression for evaluation during type inference
+            // array_size will be set to 0 and evaluated later
+            array_size = 0;
             
             if (!parser_match(parser, TOKEN_RBRACKET)) {
                 SourceLocation loc = {
@@ -1418,8 +1409,8 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         }
         
         // If prop_type is already an array type (from parse_type_annotation returning array)
-        // but we don't have array_size, that means it's like "arr: i32[]" which we don't support
-        if (array_size == 0 && type_info_is_array(prop_type)) {
+        // but we don't have array_size or array_size_expr, that means it's like "arr: i32[]" which we don't support
+        if (array_size == 0 && !array_size_expr && type_info_is_array(prop_type)) {
             SourceLocation loc = {
                 .filename = parser->filename,
                 .line = parser->current_token->line,
@@ -1461,6 +1452,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         node->struct_decl.property_types[node->struct_decl.property_count] = prop_type;
         node->struct_decl.default_values[node->struct_decl.property_count] = default_value;
         node->struct_decl.property_array_sizes[node->struct_decl.property_count] = array_size;
+        node->struct_decl.property_array_size_exprs[node->struct_decl.property_count] = array_size_expr;
         node->struct_decl.property_count++;
         
         // Expect comma or semicolon after property

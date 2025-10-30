@@ -16,6 +16,46 @@ static char* generate_type_name(void) {
     snprintf(name, 32, "Object_%d", type_name_counter++);
     return name;
 }
+
+// Result type for const expression evaluation (Rust-style)
+typedef enum {
+    EVAL_SUCCESS,        // Successfully evaluated
+    EVAL_WAITING,        // Dependencies not ready yet (e.g., undefined identifier that might be defined later)
+    EVAL_CYCLE,          // Circular dependency detected
+    EVAL_ERROR           // Real error (type mismatch, negative value, etc.)
+} EvalStatus;
+
+typedef struct {
+    EvalStatus status;
+    int value;           // Only valid if status == EVAL_SUCCESS
+    char* error_msg;     // Only set if status == EVAL_ERROR or EVAL_CYCLE
+    SourceLocation loc;  // Location of error
+} EvalResult;
+
+// Evaluation stack for cycle detection (like Rust's query stack)
+static ASTNode* eval_stack[100];
+static int eval_stack_depth = 0;
+
+// Helper functions to create EvalResult
+static EvalResult eval_success(int value) {
+    return (EvalResult){.status = EVAL_SUCCESS, .value = value, .error_msg = NULL};
+}
+
+static EvalResult eval_waiting(SourceLocation loc, const char* msg) {
+    char* error = strdup(msg);
+    return (EvalResult){.status = EVAL_WAITING, .value = 0, .error_msg = error, .loc = loc};
+}
+
+static EvalResult eval_cycle(SourceLocation loc, const char* msg) {
+    char* error = strdup(msg);
+    return (EvalResult){.status = EVAL_CYCLE, .value = 0, .error_msg = error, .loc = loc};
+}
+
+static EvalResult eval_error(SourceLocation loc, const char* msg) {
+    char* error = strdup(msg);
+    return (EvalResult){.status = EVAL_ERROR, .value = 0, .error_msg = error, .loc = loc};
+}
+
 // Forward declarations
 static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx);
 static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx);
@@ -25,135 +65,186 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTable* scope);
 static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
 
-// Helper: Evaluate a constant expression to an integer value
-// Returns -1 on error
-// The 'evaluating' set tracks nodes being evaluated to detect circular dependencies
-static int eval_const_expr_internal(ASTNode* expr, SymbolTable* symbols, ASTNode** evaluating, int eval_depth) {
+// Helper: Evaluate a constant expression to an integer value (Rust-style with EvalResult)
+// Uses the eval_stack for cycle detection
+static EvalResult eval_const_expr_internal(ASTNode* expr, SymbolTable* symbols) {
     if (!expr) {
-        log_error("NULL expression in const evaluation");
-        return -1;
+        SourceLocation dummy_loc = {.filename = "", .line = 0, .column = 0};
+        return eval_error(dummy_loc, "NULL expression in const evaluation");
     }
-    
-    // Prevent infinite recursion
-    if (eval_depth > 20) {
-        log_error_at(&expr->loc, "Const expression recursion too deep (possible circular dependency)");
-        return -1;
-    }
-    
-    // Check for circular dependency
-    for (int i = 0; i < eval_depth; i++) {
-        if (evaluating[i] == expr) {
-            log_error_at(&expr->loc, "Circular dependency detected in const expression");
-            return -1;
+
+    // Check for circular dependency using eval_stack
+    for (int i = 0; i < eval_stack_depth; i++) {
+        if (eval_stack[i] == expr) {
+            return eval_cycle(expr->loc, "Circular dependency detected in const expression");
         }
     }
-    
-    evaluating[eval_depth] = expr;
-    
+
+    // Prevent stack overflow
+    if (eval_stack_depth >= 100) {
+        return eval_error(expr->loc, "Const expression recursion too deep");
+    }
+
+    // Push to eval stack
+    eval_stack[eval_stack_depth++] = expr;
+
+    EvalResult result;
+
     switch (expr->type) {
         case AST_NUMBER: {
             // Check if it's an integer
             double value = expr->number.value;
             if (value != (int)value) {
-                log_error_at(&expr->loc, "Array size must be an integer, got %.2f", value);
-                return -1;
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Array size must be an integer, got %.2f", value);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
             int int_val = (int)value;
             if (int_val <= 0) {
-                log_error_at(&expr->loc, "Array size must be positive, got %d", int_val);
-                return -1;
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Array size must be positive, got %d", int_val);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
-            return int_val;
+            result = eval_success(int_val);
+            goto cleanup;
         }
-            
+
         case AST_IDENTIFIER: {
             // Look up const variable
             SymbolEntry* entry = symbol_table_lookup(symbols, expr->identifier.name);
             if (!entry) {
-                log_error_at(&expr->loc, "Undefined identifier '%s' in array size expression", expr->identifier.name);
-                return -1;
+                // This might be defined later - return WAITING
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined identifier '%s' in array size expression", expr->identifier.name);
+                result = eval_waiting(expr->loc, msg);
+                goto cleanup;
             }
             if (!entry->is_const) {
-                log_error_at(&expr->loc, "Variable '%s' is not declared as 'const' and cannot be used in array size expression", 
-                           expr->identifier.name);
-                log_error_at(&expr->loc, "  Hint: Change 'var %s' to 'const %s' if it's a compile-time constant", 
-                           expr->identifier.name, expr->identifier.name);
-                return -1;
+                char msg[512];
+                snprintf(msg, sizeof(msg),
+                    "Variable '%s' is not declared as 'const' and cannot be used in array size expression\n"
+                    "  Hint: Change 'var %s' to 'const %s' if it's a compile-time constant",
+                    expr->identifier.name, expr->identifier.name, expr->identifier.name);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
             if (!entry->node || entry->node->type != AST_VAR_DECL) {
-                log_error_at(&expr->loc, "Const '%s' is not a variable declaration", expr->identifier.name);
-                return -1;
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Const '%s' is not a variable declaration", expr->identifier.name);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
             if (!entry->node->var_decl.init) {
-                log_error_at(&expr->loc, "Const '%s' has no initializer and cannot be evaluated", expr->identifier.name);
-                return -1;
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Const '%s' has no initializer and cannot be evaluated", expr->identifier.name);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
             // Recursively evaluate the const's initializer
-            // (Type checking will happen when we evaluate the initializer)
-            return eval_const_expr_internal(entry->node->var_decl.init, symbols, evaluating, eval_depth + 1);
+            result = eval_const_expr_internal(entry->node->var_decl.init, symbols);
+            goto cleanup;
         }
-        
+
         case AST_BINARY_OP: {
-            int left = eval_const_expr_internal(expr->binary_op.left, symbols, evaluating, eval_depth + 1);
-            int right = eval_const_expr_internal(expr->binary_op.right, symbols, evaluating, eval_depth + 1);
-            if (left < 0 || right < 0) return -1;
-            
+            EvalResult left_result = eval_const_expr_internal(expr->binary_op.left, symbols);
+            if (left_result.status != EVAL_SUCCESS) {
+                result = left_result;
+                goto cleanup;
+            }
+
+            EvalResult right_result = eval_const_expr_internal(expr->binary_op.right, symbols);
+            if (right_result.status != EVAL_SUCCESS) {
+                result = right_result;
+                goto cleanup;
+            }
+
+            int left = left_result.value;
+            int right = right_result.value;
             const char* op = expr->binary_op.op;
-            int result;
+            int computed;
+
             if (strcmp(op, "+") == 0) {
-                result = left + right;
+                computed = left + right;
             } else if (strcmp(op, "-") == 0) {
-                result = left - right;
+                computed = left - right;
             } else if (strcmp(op, "*") == 0) {
-                result = left * right;
+                computed = left * right;
             } else if (strcmp(op, "/") == 0) {
                 if (right == 0) {
-                    log_error_at(&expr->loc, "Division by zero in array size expression");
-                    return -1;
+                    result = eval_error(expr->loc, "Division by zero in array size expression");
+                    goto cleanup;
                 }
-                result = left / right;
+                computed = left / right;
             } else if (strcmp(op, "%") == 0) {
                 if (right == 0) {
-                    log_error_at(&expr->loc, "Modulo by zero in array size expression");
-                    return -1;
+                    result = eval_error(expr->loc, "Modulo by zero in array size expression");
+                    goto cleanup;
                 }
-                result = left % right;
+                computed = left % right;
             } else {
-                log_error_at(&expr->loc, "Operator '%s' is not supported in array size expressions", op);
-                log_error_at(&expr->loc, "  Supported operators: + - * / %%");
-                return -1;
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Operator '%s' is not supported in array size expressions (supported: + - * / %%)", op);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
-            
-            if (result <= 0) {
-                log_error_at(&expr->loc, "Array size expression evaluates to %d, but must be positive", result);
-                return -1;
+
+            if (computed <= 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Array size expression evaluates to %d, but must be positive", computed);
+                result = eval_error(expr->loc, msg);
+                goto cleanup;
             }
-            return result;
+            result = eval_success(computed);
+            goto cleanup;
         }
-        
+
         case AST_STRING:
-            log_error_at(&expr->loc, "String literals cannot be used in array size expressions");
-            return -1;
-            
+            result = eval_error(expr->loc, "String literals cannot be used in array size expressions");
+            goto cleanup;
+
         case AST_BOOLEAN:
-            log_error_at(&expr->loc, "Boolean values cannot be used in array size expressions");
-            return -1;
-            
+            result = eval_error(expr->loc, "Boolean values cannot be used in array size expressions");
+            goto cleanup;
+
         case AST_CALL:
-            log_error_at(&expr->loc, "Function calls cannot be used in array size expressions");
-            log_error_at(&expr->loc, "  Array sizes must be compile-time constants");
-            return -1;
-        
+            result = eval_error(expr->loc, "Function calls cannot be used in array size expressions (must be compile-time constants)");
+            goto cleanup;
+
         default:
-            log_error_at(&expr->loc, "This expression cannot be used in array size (must be a const integer expression)");
-            return -1;
+            result = eval_error(expr->loc, "This expression cannot be used in array size (must be a const integer expression)");
+            goto cleanup;
     }
+
+cleanup:
+    // Pop from eval stack
+    eval_stack_depth--;
+    return result;
 }
 
-// Wrapper function for const expression evaluation
+// Wrapper function for const expression evaluation (backward compatible - logs errors)
 static int eval_const_expr(ASTNode* expr, SymbolTable* symbols) {
-    ASTNode* evaluating[20];  // Stack to track evaluation path
-    return eval_const_expr_internal(expr, symbols, evaluating, 0);
+    eval_stack_depth = 0;  // Reset stack
+    EvalResult result = eval_const_expr_internal(expr, symbols);
+
+    if (result.status == EVAL_SUCCESS) {
+        return result.value;
+    }
+
+    // Log error for backward compatibility
+    if (result.error_msg) {
+        log_error_at(&result.loc, "%s", result.error_msg);
+        free(result.error_msg);
+    }
+
+    return -1;  // Error indicator
+}
+
+// New wrapper that returns EvalResult (for Rust-style error handling)
+static EvalResult eval_const_expr_result(ASTNode* expr, SymbolTable* symbols) {
+    eval_stack_depth = 0;  // Reset stack
+    return eval_const_expr_internal(expr, symbols);
 }
 
 // Helper: Infer type from binary operation using trait system
@@ -270,10 +361,10 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         }
         case AST_INDEX_ACCESS: {
             TypeInfo* obj_type = infer_expr_type_simple(node->index_access.object, scope);
-            
+
             // Unwrap ref types to get the actual target type
             TypeInfo* target_type = type_info_get_ref_target(obj_type);
-            
+
             // String indexing returns u8 (byte value)
             if (target_type == Type_String) return Type_U8;
             if (type_info_is_array(target_type)) return target_type->data.array.element_type;
@@ -621,7 +712,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->var_decl.array_size = size;
                 }
             }
-            
+
             if (node->var_decl.init) {
                 // Special case: if we have a struct type hint and object literal,
                 // skip normal type inference to avoid creating anonymous types
@@ -803,6 +894,16 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 } else {
                     // No type hint - infer from initialization
                     node->type_info = node->var_decl.init->type_info;
+                    log_verbose("[VAR_DECL] %s: inferred type from init: %s",
+                               node->var_decl.name,
+                               node->type_info ? node->type_info->type_name : "NULL");
+                }
+
+                // If initializing with an array literal, set the array size from the literal
+                if (node->var_decl.init->type == AST_ARRAY_LITERAL && type_info_is_array(node->type_info)) {
+                    node->var_decl.array_size = node->var_decl.init->array_literal.count;
+                    log_verbose("[VAR_DECL] %s: array size set to %d from literal",
+                               node->var_decl.name, node->var_decl.array_size);
                 }
 
                 // Special case: if assigning a function identifier, copy the function's node reference
@@ -908,6 +1009,13 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 // no user function
                 if (!entry) {
                 	node->type_info = runtime_get_function_type(func_name);
+                } else {
+                    // For fully typed functions (including external), set return type from specialization
+                    if (entry->type_info && entry->type_info->data.function.is_fully_typed) {
+                        if (entry->type_info->data.function.specializations) {
+                            node->type_info = entry->type_info->data.function.specializations->return_type_info;
+                        }
+                    }
                 }
             }
             break;
@@ -933,11 +1041,31 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 node->method_call.is_static = false;
                 // Infer type for the object - it's an expression
                 infer_literal_types(node->method_call.object, symbols, type_ctx);
+                log_verbose("[METHOD_CALL infer_literal] object type after infer: %s",
+                           node->method_call.object->type_info ?
+                           node->method_call.object->type_info->type_name : "NULL");
             }
 
             // Infer types for arguments
             for (int i = 0; i < node->method_call.arg_count; i++) {
                 infer_literal_types(node->method_call.args[i], symbols, type_ctx);
+            }
+
+            // Look up the method to get its return type
+            if (node->method_call.object->type_info && type_info_is_object(node->method_call.object->type_info)) {
+                const char* type_name = node->method_call.object->type_info->type_name;
+                char mangled_name[256];
+                snprintf(mangled_name, sizeof(mangled_name), "%s.%s", type_name, node->method_call.method_name);
+
+                TypeInfo* method_type = type_context_find_function_type(type_ctx, mangled_name);
+                if (method_type && method_type->data.function.specializations) {
+                    // Get the return type from the specialization
+                    FunctionSpecialization* spec = method_type->data.function.specializations;
+                    node->type_info = spec->return_type_info;
+                    log_verbose("[METHOD_CALL infer_literal] %s -> return type: %s",
+                               mangled_name,
+                               node->type_info ? node->type_info->type_name : "NULL");
+                }
             }
             break;
 
@@ -1115,10 +1243,20 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             }
             // Determine array type from first element
             if (node->array_literal.count > 0) {
-                // Array type determined from first element
-                // Type inference handled by type_info
+                TypeInfo* elem_type = node->array_literal.elements[0]->type_info;
+                if (elem_type == Type_Int) {
+                    node->type_info = Type_Array_Int;
+                } else if (elem_type == Type_Double) {
+                    node->type_info = Type_Array_Double;
+                } else if (elem_type == Type_Bool) {
+                    node->type_info = Type_Array_Bool;
+                } else if (elem_type == Type_String) {
+                    node->type_info = Type_Array_String;
+                } else {
+                    node->type_info = Type_Array_Int; // Default
+                }
             } else {
-                // REMOVED: get_node_value_type(node) = TYPE_ARRAY_INT; // Empty array defaults to int
+                node->type_info = Type_Array_Int; // Empty array defaults to int
             }
             break;
 
@@ -1140,8 +1278,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // If object is a ref type, look through to the target type for indexing
             TypeInfo* index_target_type = type_info_get_ref_target(object_type);
 
-            // For builtin indexable types (arrays), auto-implement Index trait
+            // For builtin indexable types (arrays), auto-implement Index and RefIndex traits
             trait_ensure_index_impl(index_target_type, type_ctx);
+            trait_ensure_ref_index_impl(index_target_type, type_ctx);
 
             // Look up Index<IndexType> trait implementation on the target type
             TypeInfo* type_param_bindings[] = { index_type };
@@ -1403,6 +1542,10 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                     if (func_decl->type == AST_FUNCTION_DECL) {
                         // Skip fully typed functions (including external) - they already have a specialization
                         if (entry->type_info && entry->type_info->data.function.is_fully_typed) {
+                            // But we still need to set the call node's return type from the existing specialization
+                            if (entry->type_info->data.function.specializations) {
+                                node->type_info = entry->type_info->data.function.specializations->return_type_info;
+                            }
                             break;
                         }
 
@@ -1469,7 +1612,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
 
                         	// Now create the body with TypeInfo available
                         	specialization_create_body(spec, func_decl, arg_types, symbols, ctx);
-                        	
+
                         	// Set the call node's return type from the specialization
                         	if (spec->return_type_info) {
                         	    node->type_info = spec->return_type_info;
@@ -1765,7 +1908,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 // Otherwise, keep the declared type that was set in infer_literal_types
                 if (!node->var_decl.type_hint) {
                     node->type_info = node->var_decl.init->type_info;
-                    
+
                     // Update the symbol table entry with the refined type
                     SymbolEntry* entry = symbol_table_lookup(symbols, node->var_decl.name);
                     if (entry) {
@@ -1857,8 +2000,9 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // If object is a ref type, look through to the target type for indexing
             TypeInfo* index_target_type = type_info_get_ref_target(object_type);
 
-            // For builtin indexable types (arrays), auto-implement Index trait
+            // For builtin indexable types (arrays), auto-implement Index and RefIndex traits
             trait_ensure_index_impl(index_target_type, ctx);
+            trait_ensure_ref_index_impl(index_target_type, ctx);
 
             // Look up Index<IndexType> trait implementation on the target type
             TypeInfo* type_param_bindings[] = { index_type };
@@ -2057,12 +2201,21 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 }
             }
 
+            log_verbose("[METHOD_CALL] Looking up: %s with %d args", mangled_name, total_args);
+            for (int i = 0; i < total_args; i++) {
+                log_verbose("  arg[%d]: %s", i, arg_types[i] ? arg_types[i]->type_name : "NULL");
+            }
+
             FunctionSpecialization* spec = specialization_context_find_by_type_info(
                 ctx, mangled_name, arg_types, total_args);
 
             if (spec) {
                 node->type_info = spec->return_type_info;
+                log_verbose("[METHOD_CALL] %s -> return type: %s",
+                           mangled_name,
+                           spec->return_type_info ? spec->return_type_info->type_name : "NULL");
             } else {
+                log_verbose("[METHOD_CALL] %s -> NOT FOUND", mangled_name);
                 log_error_at(&node->loc, "Method '%s' not found or type mismatch", mangled_name);
                 node->type_info = Type_Unknown;
             }
@@ -2216,6 +2369,9 @@ static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols
 
     log_verbose_indent(2, "Iteration %d: %zu specializations before", iteration, spec_count_before);
 
+    // Re-infer literal types to pick up any new type information (e.g., external function return types)
+    infer_literal_types(ast, symbols, ctx);
+    
     // Pass 3: Analyze call sites to find needed specializations
     analyze_call_sites(ast, symbols, ctx);
     log_verbose_indent(2, "After analyze_call_sites: %zu specializations", ctx->specialization_count);
@@ -2245,30 +2401,136 @@ static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols
               max_iterations, ctx->specialization_count);
 }
 
+// Pass 0: Iteratively collect consts and structs (Rust-style with recursive evaluation)
+// This handles dependencies between consts and struct field array sizes
+static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx) {
+    if (!ast) return;
+    if (ast->type != AST_PROGRAM && ast->type != AST_BLOCK) return;
+
+    int max_iterations = 100;
+    int iteration = 0;
+    bool progress_made = true;
+
+    // Track which declarations we've successfully processed
+    bool* processed = (bool*)calloc(ast->program.count, sizeof(bool));
+
+    while (progress_made && iteration < max_iterations) {
+        progress_made = false;
+        iteration++;
+
+        for (int i = 0; i < ast->program.count; i++) {
+            if (processed[i]) continue;  // Already processed
+
+            ASTNode* stmt = ast->program.statements[i];
+
+            // Try to process const declarations
+            if (stmt->type == AST_VAR_DECL && stmt->var_decl.is_const) {
+                // Try to evaluate array size expression if present
+                if (stmt->var_decl.array_size_expr) {
+                    EvalResult result = eval_const_expr_result(stmt->var_decl.array_size_expr, symbols);
+
+                    if (result.status == EVAL_SUCCESS) {
+                        stmt->var_decl.array_size = result.value;
+                        // Continue to register the const
+                    } else if (result.status == EVAL_WAITING) {
+                        // Dependencies not ready, try again later
+                        if (result.error_msg) free(result.error_msg);
+                        continue;
+                    } else {
+                        // Real error - log it now
+                        if (result.error_msg) {
+                            log_error_at(&result.loc, "%s", result.error_msg);
+                            free(result.error_msg);
+                        }
+                        processed[i] = true;  // Mark as done (with error)
+                        continue;
+                    }
+                }
+
+                // Register the const in symbol table (even if no array size)
+                if (stmt->var_decl.init) {
+                    infer_literal_types(stmt->var_decl.init, symbols, type_ctx);
+                    symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
+                                                       stmt->var_decl.init->type_info,
+                                                       stmt->var_decl.is_const, stmt);
+                } else if (stmt->var_decl.type_hint) {
+                    symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
+                                                       stmt->var_decl.type_hint,
+                                                       stmt->var_decl.is_const, stmt);
+                }
+
+                log_verbose_indent(2, "Processed const: %s", stmt->var_decl.name);
+                processed[i] = true;
+                progress_made = true;
+            }
+            // Try to process struct declarations
+            else if (stmt->type == AST_STRUCT_DECL) {
+                // Try to evaluate all field array sizes
+                bool all_fields_resolved = true;
+
+                for (int j = 0; j < stmt->struct_decl.property_count; j++) {
+                    if (stmt->struct_decl.property_array_size_exprs[j]) {
+                        EvalResult result = eval_const_expr_result(stmt->struct_decl.property_array_size_exprs[j], symbols);
+
+                        if (result.status == EVAL_SUCCESS) {
+                            stmt->struct_decl.property_array_sizes[j] = result.value;
+                        } else if (result.status == EVAL_WAITING) {
+                            // Dependencies not ready
+                            if (result.error_msg) free(result.error_msg);
+                            all_fields_resolved = false;
+                            break;  // Can't process this struct yet
+                        } else {
+                            // Real error
+                            if (result.error_msg) {
+                                log_error_at(&result.loc, "%s", result.error_msg);
+                                free(result.error_msg);
+                            }
+                            // Mark field as error but continue
+                            stmt->struct_decl.property_array_sizes[j] = 0;
+                        }
+                    }
+                }
+
+                if (all_fields_resolved) {
+                    // All fields resolved, register the struct
+                    collect_struct_declarations(stmt, symbols, type_ctx);
+                    log_verbose_indent(2, "Processed struct: %s", stmt->struct_decl.name);
+                    processed[i] = true;
+                    progress_made = true;
+                }
+                // If not all resolved, we'll try again next iteration
+            }
+        }
+
+        if (progress_made) {
+            log_verbose_indent(2, "Iteration %d: made progress", iteration);
+        }
+    }
+
+    // Check for unprocessed declarations (these are errors)
+    for (int i = 0; i < ast->program.count; i++) {
+        if (!processed[i]) {
+            ASTNode* stmt = ast->program.statements[i];
+            if (stmt->type == AST_VAR_DECL && stmt->var_decl.is_const) {
+                log_error_at(&stmt->loc, "Could not resolve const declaration '%s' (circular dependency or undefined reference)",
+                           stmt->var_decl.name);
+            }
+        }
+    }
+
+    free(processed);
+    log_verbose_indent(2, "Completed after %d iteration(s)", iteration);
+}
+
 // Main entry point: Multi-pass type inference with specialization
 void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx) {
     if (!ast || !symbols || !type_ctx) return;
 
     log_verbose("Starting multi-pass type inference");
 
-    // Pass 0: Collect struct declarations first (so functions can use struct types)
-    log_verbose_indent(1, "Pass 0: Collecting struct declarations");
-    collect_struct_declarations(ast, symbols, type_ctx);
-
-    // Pass 0.5: Collect global variables (so functions can reference them)
-    log_verbose_indent(1, "Pass 0.5: Collecting global variables");
-    if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
-        for (int i = 0; i < ast->program.count; i++) {
-            ASTNode* stmt = ast->program.statements[i];
-            if (stmt->type == AST_VAR_DECL) {
-                // Add variable to symbol table with unknown type initially
-                // Type will be refined in Pass 2
-                symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
-                                                    Type_Unknown, stmt->var_decl.is_const, stmt);
-                log_verbose_indent(2, "Registered global variable: %s", stmt->var_decl.name);
-            }
-        }
-    }
+    // Pass 0: Iteratively collect consts and structs (handles dependencies)
+    log_verbose_indent(1, "Pass 0: Collecting consts and struct declarations");
+    collect_consts_and_structs(ast, symbols, type_ctx);
 
     // Pass 1: Collect function signatures
     log_verbose_indent(1, "Pass 1: Collecting function signatures");

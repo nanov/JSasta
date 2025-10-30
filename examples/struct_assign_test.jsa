@@ -1,0 +1,24 @@
+external printf(format:string, ...):void;
+
+struct inner_t {
+    value: i32;
+}
+
+struct outer_t {
+    stored: inner_t;
+    init(s: ref outer_t):void {
+        var temp: inner_t;
+        temp.value = 2;
+        printf("temp before assign: %d\n", temp.value);
+
+        s.stored = temp;
+        printf("stored after assign: %d\n", s.stored.value);
+
+        temp.value = 3;
+        printf("temp after modify: %d\n", temp.value);
+        printf("stored after temp modify: %d\n", s.stored.value);
+    }
+}
+
+var obj: outer_t;
+obj.init();

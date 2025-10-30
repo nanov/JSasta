@@ -1,0 +1,37 @@
+// termios.h on osx
+const NCCS = 20;
+const TCSANOW = 0;
+
+struct termios_t {
+	c_iflag: u64;
+	c_oflag: u64;
+	c_cflag: u64;
+	c_lflag: u64;
+	cc_cc: u8[NCCS];
+	c_ispeed: u64;
+	c_ospeed: u64;
+}
+
+// termios.h
+external tcgetattr(fd:int, termios_p:ref termios_t):int;
+external tcsetattr(fd:int, optional_actions:int, termios_p:ref termios_t):int;
+external isatty(fd:int):int;
+
+// stdid.h
+const STDIN_FILENO = 0;
+external printf(format:string, ...):void;
+external read(fd:int, buf:string, count:int):int;
+external write(fd:int, buf:string, count:int):int;
+
+var t_o : termios_t;
+var t_original : termios_t;
+
+// Check if stdin is a terminal
+var is_tty:int = isatty(STDIN_FILENO);
+printf("Is stdin a TTY? %d\n", is_tty);
+
+// Get current terminal attributes
+var result:int = tcgetattr(STDIN_FILENO, t_o);
+
+printf("tcgetattr returned: %d\n", result);
+printf("Original c_lflag: %llu (0x%llx)\n", t_o.c_lflag, t_o.c_lflag);

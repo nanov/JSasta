@@ -1,0 +1,7 @@
+const LEN = 10;
+
+struct s_t {
+	arr: i8[LEN];
+}
+
+const a: s_t;

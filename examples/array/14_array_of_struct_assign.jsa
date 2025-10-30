@@ -1,0 +1,11 @@
+external printf(string, ...):void;
+
+struct pos {
+ x:i32;
+ y:i32;
+}
+
+var p:pos[32];
+p[0].x=1;
+
+printf("%d\n", p[0].x);

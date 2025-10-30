@@ -1,0 +1,7 @@
+external printf(format:string, ...):void;
+
+const str = "jsasta";
+
+var c = str[0];
+
+printf("c = %c\n", c); // j

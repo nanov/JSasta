@@ -301,6 +301,7 @@ struct ASTNode {
             TypeInfo** property_types;    // Property types
             ASTNode** default_values;     // Default literal values (NULL if no default)
             int* property_array_sizes;    // Array size for each property (0 if not array)
+            ASTNode** property_array_size_exprs;  // Expression for array size (for const evaluation)
             int property_count;
             ASTNode** methods;            // Method function declarations (AST_FUNC_DECL nodes)
             int method_count;

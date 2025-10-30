@@ -1,145 +1,232 @@
-const NCCS = 20;
-const STDIN_FILENO = 0;
-const TCSANOW = 0;
-
+// based on: https://github.com/tsoding/mine/blob/master/mine.pas
 
 // termios.h on osx
-struct termios {
+const NCCS = 20;
+const TCSANOW = 0;
+
+struct termios_t {
 	c_iflag: u64;
 	c_oflag: u64;
 	c_cflag: u64;
 	c_lflag: u64;
-	cc_cc: u8[20];
+	cc_cc: u8[NCCS];
 	c_ispeed: u64;
 	c_ospeed: u64;
 }
 
-struct pos {
-	x : u8;
-	y: u8;
-}
-
 // termios.h
-external tcgetattr(fd:int, termios_p:termios):int;
-external tcsetattr(fd:int, optional_actions:int, termios_p:termios):int;
+external tcgetattr(fd:int, termios_p:ref termios_t):int;
+external tcsetattr(fd:int, optional_actions:int, termios_p:ref termios_t):int;
 external isatty(fd:int):int;
+
 // stdid.h
+const STDIN_FILENO = 0;
 external printf(format:string, ...):void;
 external read(fd:int, buf:string, count:int):int;
 external write(fd:int, buf:string, count:int):int;
+external rand():i32;
 
 
-struct game_state {
-	cells: bool[100];
-	states: i8[100];
-	cursour: pos;
-	move_up function(self: ref game_state):void {
-		if (self.cursour.y > 0)
-			self.cursour.y--;
+// game
+const Q:i8 = 113;
+const W:i8 = 119;
+const A:i8 = 97;
+const S:i8 = 115;
+const D:i8 = 100;
+const F:i8 = 102;
+const SPACE:i8 = 32;
+
+const CLOSED:u8 = 0;
+const FLAGGED:u8 = 1;
+const OPEN:u8 = 2;
+
+const DOT = '➕️';
+const PERCENT = '⛳';
+const AT = '💣';
+const WIDE_SPACE = '　'
+
+const ROWS:int = 10;
+const COLS:int = 10;
+const BOMBS_PERCENTAGE:int = 17;
+
+
+struct pos {
+	x : u8;
+	y: u8;
+	is_at_pos(s: ref pos, x: i32, y: i32): bool {
+		return x == s.x && y == s.y;
 	}
-	move_down function(self: ref game_state):void {
-		if (self.cursour.y < 10)
-			self.cursour.y++;
+	get_index(s: ref pos): i32 {
+		return s.y*ROWS+s.x;
 	}
-	move_left function(self: ref game_state):void {
-		if (self.cursour.x > 0)
-			self.cursour.x--;
-	}
-	move_right function(self: ref game_state):void {
-		if (self.cursoux.x < 10)
-			self.cursour.x++;
+	cal_index(x:i32, y:i32): i32 {
+		return y*ROWS+x;
 	}
 }
 
 
-var cells = Array(ROWS*COLS);
-var states = Array(ROWS*COLS);
-var cursourRow: int = 0;
-var cursourCell: int = 0;
+struct terminal_t {
+	_original: termios_t;
+	init(s: ref terminal_t):void {
+		var t_current : termios_t;
 
+		// Check if stdin is a terminal
+		var is_tty:int = isatty(STDIN_FILENO);
+		// printf("Is stdin a TTY? %d\n", is_tty);
 
+		// Get current terminal attributes
+		tcgetattr(STDIN_FILENO, t_current);
+		s._original = t_current;
+		// printf("Original c_lflag: %llu (0x%llx)\n", t_current.c_lflag, t_current.c_lflag);
 
+		// Turn off canonical mode and echo
+		// ICANON = 0x00000100, ECHO = 0x00000008
+		// Mask: ~(ICANON | ECHO) = ~0x108 = 0xFFFFFEF7
+		t_current.c_lflag = t_current.c_lflag & 4294966007u64;
+		// printf("Modified c_lflag: %llu (0x%llx)\n", t_current.c_lflag, t_current.c_lflag);
+		tcsetattr(STDIN_FILENO, TCSANOW, t_current);
+		// printf("tcsetattr returned: %d\n", r);
+	}
 
-function draw_field(r: int, c: int):void {
-	const ROWS:int = 10;
-	const COLS:int = 10;
+	reset(s: ref terminal_t):void {
+		tcsetattr(STDIN_FILENO, TCSANOW, s._original);
+		// printf("org: %d\n", s._original.c_iflag);
+	}
+}
+
+struct fied_t {
+	has_bomb: bool;
+	state: u8;
+}
+
+struct game_state_t {
+	fields: fied_t[ROWS*COLS];
+	cursour: pos;
+	is_randomized: bool;
+	move_up(self: ref game_state_t):void {
+		if (self.cursour.y > 0)
+			self.cursour.y--;
+	}
+	move_down(self: ref game_state_t):void {
+		if (self.cursour.y < 10)
+			self.cursour.y++;
+	}
+	move_left(self: ref game_state_t):void {
+		if (self.cursour.x > 0)
+			self.cursour.x--;
+	}
+	move_right(self: ref game_state_t):void {
+		if (self.cursour.x < 10)
+			self.cursour.x++;
+	}
+	flag(s: ref game_state_t):void {
+		var i = s.cursour.get_index();
+		if (s.fields[i].state == CLOSED) {
+			s.fields[i].state = FLAGGED;
+		} else if (s.fields[i].state == FLAGGED) {
+			s.fields[i].state = CLOSED;
+		}
+	}
+	open(s: ref game_state_t):bool {
+		if (!s.is_randomized) {
+			s.randomize();
+			s.is_randomized = true;
+		}
+		var idx = s.cursour.get_index();
+		if (s.fields[idx].state == CLOSED) {
+				s.fields[idx].state = OPEN;
+				return s.fields[idx].has_bomb;
+		}
+		return false;
+	}
+
+	randomize(s: ref game_state_t): void {
+		const bombs_count = (ROWS*COLS*BOMBS_PERCENTAGE + 99) / 100;
+		for (let i = 0; i<bombs_count; i++) {
+			var set = false;
+			while (true) {
+	  		var row = rand() % ROWS;
+	      var col = rand() % COLS;
+				var idx = pos.cal_index(col, row);
+				if (s.cursour.is_at_pos(col, row))
+					continue;
+				if (s.fields[idx].has_bomb)
+					continue;
+				s.fields[idx].has_bomb = true;
+				break;
+			}
+		}
+	}
+}
+
+function draw_field(game: ref game_state_t, reveal: bool):void {
 	for (let row = 0; row < ROWS; row++) {
 		for (let col = 0; col < COLS; col++) {
-			const is_at_cursour = row == r && col == c;
+			const is_at_cursour = game.cursour.is_at_pos(col, row);
+			var idx = pos.cal_index(col, row);
+			var field = game.fields[idx];
+
 			printf(is_at_cursour ? "[" : " ");
-			printf(".");
+
+			var show_bomb = reveal
+				? field.has_bomb
+				: (field.state == OPEN && field.has_bomb);
+
+			if (show_bomb) {
+			    printf(AT);
+			} else if (field.state == FLAGGED) {
+			    printf(PERCENT);
+			} else if (field.state == CLOSED) {
+			    printf(DOT);
+			} else {
+					game.message = game.message + idx + ",";
+			    printf(WIDE_SPACE);
+			}
 			printf(is_at_cursour ? "]" : " ");
 		}
 		printf("\n");
 	}
+	printf("%s\n", game.message);
 }
 
 function redraw_field(): void {
-	const ROWS:int = 10;
-	const COLS:int = 10;
-	printf("\e[%dA", ROWS);
+	printf("\e[%dA", ROWS+1);
 	printf("\e[%dD", COLS*3);
 }
 
-var t_o : termios;
-var t_original : termios;
-
-// Check if stdin is a terminal
-var is_tty:int = isatty(STDIN_FILENO);
-printf("Is stdin a TTY? %d\n", is_tty);
-
-// Get current terminal attributes
-var result:int = tcgetattr(STDIN_FILENO, t_o);
-t_original = t_o;
-
-printf("tcgetattr returned: %d\n", result);
-printf("Original c_lflag: %llu (0x%llx)\n", t_o.c_lflag, t_o.c_lflag);
-
-// Turn off canonical mode and echo
-// ICANON = 0x00000100, ECHO = 0x00000008
-// Mask: ~(ICANON | ECHO) = ~0x108 = 0xFFFFFEF7
-var old_lflag:u64 = t_o.c_lflag;
-t_o.c_lflag = t_o.c_lflag & 4294966007u64;
-
-printf("Modified c_lflag: %llu (0x%llx)\n", t_o.c_lflag, t_o.c_lflag);
-tcsetattr(STDIN_FILENO, TCSANOW, t_o);
-printf("tcsetattr returned: %d\n", result);
-
-printf("\nTerminal is now in raw mode. Press keys (q to quit):\n");
-
-// Allocate a buffer for reading input (mutable memory via string concatenation)
+var terminal: terminal_t;
+var game: game_state_t;
+game.message = "hi!";
+// force malloc, to make buffer writable - to be removed when 'new' introduced
 var buffer:string = "" + " ";
-var game: game_state;
-// Read one character
 
+terminal.init();
 var exit:bool = false;
 while(!exit) {
-	draw_field(cursourRow, cursourCell);
+	draw_field(game, false);
 	var bytes_read:int = read(STDIN_FILENO, buffer, 1);
 	if (bytes_read > 0) {
 	    var ch = buffer[0];
-			if (ch == 113) {
+			if (ch == Q) {
 						exit = true;
 						break;
 			}
-			if (ch == 97) {
+			if (ch == A) {
+				game.move_left();
+			} else if (ch == D) {
+				game.move_right();
+			} else if (ch == S) {
+				game.move_down();
+			} else if (ch == W) {
 				game.move_up();
-				if (cursourCell>0)
-					cursourCell -= 1;
-			} else if (ch == 100) {
-				if (cursourCell<COLS)
-					cursourCell += 1;
-			} else if (ch == 115) {
-				if (cursourRow<ROWS)
-					cursourRow += 1;
-			} else if (ch == 119) {
-				if (cursourRow>0)
-					cursourRow -= 1;
+			} else if (ch == F) {
+				game.flag();
+			} else if (ch == SPACE) {
+				exit = game.open();
 			}
 			redraw_field();
 	}
 }
-
-// Restore original terminal settings
-result = tcsetattr(STDIN_FILENO, TCSANOW, t_original);
-printf("\nTerminal restored to normal mode. code: %d\n", result);
+redraw_field();
+draw_field(game, true);
+terminal.reset();
