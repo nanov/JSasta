@@ -6,7 +6,7 @@ filename=$( basename $script )
 output=${filename%.*}
 output_ll=${filename%.*}.ll
 
-make -B
+make compiler -B
 mkdir -p compiled
 cd compiled
 ../build/jsastac $script $output_ll

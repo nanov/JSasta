@@ -1,6 +1,6 @@
-#include "jsasta_compiler.h"
-#include "logger.h"
-#include "diagnostics.h"
+#include "../common/jsasta_compiler.h"
+#include "../common/logger.h"
+#include "../common/diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
