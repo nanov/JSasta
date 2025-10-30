@@ -19,6 +19,9 @@
     X(TOKEN_CONST, "const") \
     X(TOKEN_FUNCTION, "function") \
     X(TOKEN_EXTERNAL, "external") \
+    X(TOKEN_IMPORT, "import") \
+    X(TOKEN_EXPORT, "export") \
+    X(TOKEN_FROM, "from") \
     X(TOKEN_STRUCT, "struct") \
     X(TOKEN_REF, "ref") \
     X(TOKEN_RETURN, "return") \
@@ -104,6 +107,8 @@ typedef enum {
     AST_VAR_DECL,
     AST_FUNCTION_DECL,  // Used for both user and external functions
     AST_STRUCT_DECL,    // Struct type definition
+    AST_IMPORT_DECL,    // Import statement
+    AST_EXPORT_DECL,    // Export statement
     AST_RETURN,
     AST_BREAK,
     AST_CONTINUE,
@@ -317,6 +322,16 @@ struct ASTNode {
         } struct_decl;
 
         struct {
+            char* module_path;       // Path to module file: "./math/lib.jsa"
+            char* namespace_name;    // Namespace identifier: "math"
+            void* imported_module;   // Pointer to loaded Module (set during module loading)
+        } import_decl;
+
+        struct {
+            ASTNode* declaration;    // The declaration being exported (function, const, struct)
+        } export_decl;
+
+        struct {
             ASTNode* value;
         } return_stmt;
 
@@ -505,6 +520,7 @@ typedef struct SymbolEntry {
     LLVMTypeRef llvm_type;  // For objects, stores the struct type
     TypeInfo* type_info;     // For objects and complex types, stores metadata
     int array_size;          // For arrays, stores the size (0 if not an array)
+    void* imported_module;   // For namespaces, pointer to imported Module
     struct SymbolEntry* next;
 } SymbolEntry;
 
@@ -518,6 +534,7 @@ void symbol_table_free(SymbolTable* table);
 void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_info, LLVMValueRef value, bool is_const);
 void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, TypeInfo* type_info, bool is_const, ASTNode* var_decl_node);
 void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node);
+void symbol_table_insert_namespace(SymbolTable* table, const char* name, void* imported_module);
 SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name);
 
 // TypeInfo management
@@ -805,7 +822,7 @@ typedef struct CodeGen {
 
 CodeGen* codegen_create(const char* module_name);
 void codegen_free(CodeGen* gen);
-void codegen_generate(CodeGen* gen, ASTNode* ast);
+void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module);
 void codegen_emit_llvm_ir(CodeGen* gen, const char* filename);
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node);
 

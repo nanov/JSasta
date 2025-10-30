@@ -355,7 +355,17 @@ TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_n
 
     // Create new function type
     TypeInfo* func_type = type_info_create(TYPE_KIND_FUNCTION, strdup(func_name));
-    func_type->data.function.param_types = param_types;
+    
+    // IMPORTANT: Make a copy of param_types array to avoid double-free
+    // The AST node's param_type_hints array will be freed when the AST is freed
+    // This function type needs its own copy that will be freed by type_context_free
+    if (param_types && param_count > 0) {
+        func_type->data.function.param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * param_count);
+        memcpy(func_type->data.function.param_types, param_types, sizeof(TypeInfo*) * param_count);
+    } else {
+        func_type->data.function.param_types = NULL;
+    }
+    
     func_type->data.function.param_count = param_count;
     func_type->data.function.return_type = return_type;
     func_type->data.function.is_variadic = is_variadic;

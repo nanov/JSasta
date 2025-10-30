@@ -1487,8 +1487,70 @@ static ASTNode* parse_while_statement(Parser* parser) {
     return node;
 }
 
+// import namespace from "path";
+static ASTNode* parse_import_declaration(Parser* parser) {
+    parser_advance(parser); // skip 'import'
+
+    ASTNode* node = AST_NODE(parser, AST_IMPORT_DECL);
+    
+    // Get namespace name
+    if (parser->current_token->type != TOKEN_IDENTIFIER) {
+        PARSE_ERROR(parser, "E230", "Expected namespace identifier after 'import'");
+        return node;
+    }
+    node->import_decl.namespace_name = strdup(parser->current_token->value);
+    parser_advance(parser);
+    
+    // Expect 'from'
+    if (parser->current_token->type != TOKEN_FROM) {
+        PARSE_ERROR(parser, "E231", "Expected 'from' after namespace identifier");
+        return node;
+    }
+    parser_advance(parser);
+    
+    // Expect string literal (module path)
+    if (parser->current_token->type != TOKEN_STRING) {
+        PARSE_ERROR(parser, "E232", "Expected string literal for module path");
+        return node;
+    }
+    node->import_decl.module_path = strdup(parser->current_token->value);
+    parser_advance(parser);
+    
+    // Expect semicolon
+    parser_expect(parser, TOKEN_SEMICOLON);
+    
+    return node;
+}
+
+// export function/const/struct
+static ASTNode* parse_export_declaration(Parser* parser) {
+    parser_advance(parser); // skip 'export'
+
+    ASTNode* node = AST_NODE(parser, AST_EXPORT_DECL);
+    
+    // Parse the declaration being exported
+    if (parser_match(parser, TOKEN_FUNCTION)) {
+        node->export_decl.declaration = parse_function_declaration(parser);
+    } else if (parser_match(parser, TOKEN_CONST)) {
+        node->export_decl.declaration = parse_var_declaration(parser);
+    } else if (parser_match(parser, TOKEN_EXTERNAL)) {
+        node->export_decl.declaration = parse_external_function_declaration(parser);
+    } else if (parser_match(parser, TOKEN_STRUCT)) {
+        node->export_decl.declaration = parse_struct_declaration(parser);
+    } else {
+        PARSE_ERROR(parser, "E233", "Expected function, const, external, or struct after 'export'");
+        return node;
+    }
+    
+    return node;
+}
+
 static ASTNode* parse_statement(Parser* parser) {
-    if (parser_match(parser, TOKEN_VAR) || parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_CONST)) {
+    if (parser_match(parser, TOKEN_IMPORT)) {
+        return parse_import_declaration(parser);
+    } else if (parser_match(parser, TOKEN_EXPORT)) {
+        return parse_export_declaration(parser);
+    } else if (parser_match(parser, TOKEN_VAR) || parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_CONST)) {
         return parse_var_declaration(parser);
     } else if (parser_match(parser, TOKEN_FUNCTION)) {
         return parse_function_declaration(parser);

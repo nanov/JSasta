@@ -3,6 +3,7 @@
 #include "operator_utils.h"
 #include "logger.h"
 #include "diagnostics.h"
+#include "module_loader.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
@@ -1379,7 +1380,57 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             TypeInfo* obj_type_info = NULL;
 
             if (obj->type == AST_IDENTIFIER) {
-                SymbolEntry* entry = symbol_table_lookup(symbols, obj->identifier.name);
+                const char* obj_name = obj->identifier.name;
+                const char* member_name = node->member_access.property;
+                
+                // Look up the identifier in the symbol table
+                SymbolEntry* entry = symbol_table_lookup(symbols, obj_name);
+                
+                // Check if this is an imported namespace (e.g., "math" in "math.add")
+                if (entry && entry->imported_module != NULL) {
+                    // This is a namespace! Resolve the member from the imported module
+                    Module* imported_module = (Module*)entry->imported_module;
+                    
+                    // Look up the export in the imported module
+                    ExportedSymbol* exported = module_find_export(imported_module, member_name);
+                    
+                    if (exported && exported->declaration) {
+                        // Found the export! Get its type
+                        ASTNode* decl = exported->declaration;
+                        
+                        if (decl->type == AST_FUNCTION_DECL) {
+                            // For functions, look up the function type from TypeContext
+                            // Use the mangled name for lookup
+                            char* mangled_name = module_mangle_symbol(imported_module->module_prefix, member_name);
+                            TypeInfo* func_type = type_context_find_function_type(type_ctx, mangled_name);
+                            free(mangled_name);
+                            
+                            if (func_type) {
+                                node->type_info = func_type;
+                            } else {
+                                node->type_info = Type_Unknown;
+                            }
+                        } else if (decl->type == AST_VAR_DECL) {
+                            // For constants, get the type from the declaration
+                            node->type_info = decl->type_info ? decl->type_info : Type_Unknown;
+                        } else {
+                            node->type_info = Type_Unknown;
+                        }
+                        
+                        // Store symbol entry for codegen (namespace entry)
+                        node->member_access.symbol_entry = entry;
+                        break;
+                    } else {
+                        // Member not found in namespace
+                        TYPE_ERROR(diag, node->loc, "E400", 
+                                  "Module '%s' has no exported member '%s'", 
+                                  obj_name, member_name);
+                        node->type_info = Type_Unknown;
+                        break;
+                    }
+                }
+                
+                // Not a namespace, regular identifier
                 if (entry) {
                     obj_type_info = entry->type_info;
                     // Store symbol entry for codegen optimization

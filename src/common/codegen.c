@@ -2331,7 +2331,7 @@ static void codegen_initialize_types(CodeGen* gen) {
     }
 }
 
-void codegen_generate(CodeGen* gen, ASTNode* ast) {
+void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
     // Store type context from type inference (contains types and specializations)
     gen->type_ctx = ast->type_ctx;
     gen->trait_registry = ast->type_ctx ? ast->type_ctx->trait_registry : NULL;
@@ -2397,17 +2397,23 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
     // This allows forward references and recursive calls
     codegen_initialize_types(gen);
 
-    // Create main function
-    LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), NULL, 0, 0);
-    LLVMValueRef main_func = LLVMAddFunction(gen->module, "main", main_type);
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, main_func, "entry");
-    LLVMPositionBuilderAtEnd(gen->builder, entry);
+    // Only create wrapper main function for entry module
+    LLVMValueRef main_func = NULL;
+    LLVMBasicBlockRef entry = NULL;
+    
+    if (is_entry_module) {
+        // Create main function
+        LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), NULL, 0, 0);
+        main_func = LLVMAddFunction(gen->module, "main", main_type);
+        entry = LLVMAppendBasicBlockInContext(gen->context, main_func, "entry");
+        LLVMPositionBuilderAtEnd(gen->builder, entry);
 
-    gen->current_function = main_func;
-    gen->entry_block = entry;
+        gen->current_function = main_func;
+        gen->entry_block = entry;
+    }
 
     // Create debug info for main function
-    if (gen->di_builder) {
+    if (is_entry_module && gen->di_builder) {
         LLVMMetadataRef param_types[] = {};
         LLVMMetadataRef func_type = LLVMDIBuilderCreateSubroutineType(
             gen->di_builder, gen->di_file, param_types, 0, LLVMDIFlagZero
@@ -2473,8 +2479,10 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
                         first_func_ref = LLVMGetNamedFunction(gen->module, spec->specialized_name);
                     }
 
-                    // Restore builder to main
-                    LLVMPositionBuilderAtEnd(gen->builder, entry);
+                    // Restore builder to main (only if entry module)
+                    if (is_entry_module && entry) {
+                        LLVMPositionBuilderAtEnd(gen->builder, entry);
+                    }
 
                     spec = spec->next;
                 }
@@ -2491,46 +2499,48 @@ void codegen_generate(CodeGen* gen, ASTNode* ast) {
         }
     }
 
-    // PASS 2: Generate non-function, non-variable statements in main
-    if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
-        for (int i = 0; i < ast->program.count; i++) {
-            ASTNode* stmt = ast->program.statements[i];
+    // PASS 2: Generate non-function, non-variable statements in main (only for entry module)
+    if (is_entry_module) {
+        if (ast->type == AST_PROGRAM || ast->type == AST_BLOCK) {
+            for (int i = 0; i < ast->program.count; i++) {
+                ASTNode* stmt = ast->program.statements[i];
 
-            // Skip function declarations (already handled in PASS 1)
-            if (stmt->type == AST_FUNCTION_DECL) {
-                continue;
-            }
-
-            // Process variable declarations with non-constant initializers
-            // (constant initializers were handled in PASS 0.5)
-            if (stmt->type == AST_VAR_DECL) {
-                // Only process if it has a non-constant initializer
-                if (stmt->var_decl.init) {
-                    codegen_node(gen, stmt);
+                // Skip function declarations (already handled in PASS 1)
+                if (stmt->type == AST_FUNCTION_DECL) {
+                    continue;
                 }
-                continue;
-            }
 
-            // Generate the statement normally (function calls, expressions, etc.)
-            codegen_node(gen, stmt);
+                // Process variable declarations with non-constant initializers
+                // (constant initializers were handled in PASS 0.5)
+                if (stmt->type == AST_VAR_DECL) {
+                    // Only process if it has a non-constant initializer
+                    if (stmt->var_decl.init) {
+                        codegen_node(gen, stmt);
+                    }
+                    continue;
+                }
 
-            // Stop if current block is already terminated with a return
-            LLVMBasicBlockRef current = LLVMGetInsertBlock(gen->builder);
-            if (current && LLVMGetBasicBlockTerminator(current)) {
-                LLVMValueRef term = LLVMGetBasicBlockTerminator(current);
-                // Only break if it's a return instruction, not just any terminator
-                if (LLVMGetInstructionOpcode(term) == LLVMRet) {
-                    break;
+                // Generate the statement normally (function calls, expressions, etc.)
+                codegen_node(gen, stmt);
+
+                // Stop if current block is already terminated with a return
+                LLVMBasicBlockRef current = LLVMGetInsertBlock(gen->builder);
+                if (current && LLVMGetBasicBlockTerminator(current)) {
+                    LLVMValueRef term = LLVMGetBasicBlockTerminator(current);
+                    // Only break if it's a return instruction, not just any terminator
+                    if (LLVMGetInstructionOpcode(term) == LLVMRet) {
+                        break;
+                    }
                 }
             }
+        } else {
+            codegen_node(gen, ast);
         }
-    } else {
-        codegen_node(gen, ast);
-    }
 
-    // Add return 0 if not present
-    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
-        LLVMBuildRet(gen->builder, LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0));
+        // Add return 0 if not present
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
+            LLVMBuildRet(gen->builder, LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0));
+        }
     }
 
     // Finalize debug info

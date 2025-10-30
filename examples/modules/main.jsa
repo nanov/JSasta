@@ -1,0 +1,13 @@
+// main.jsa - Test module import
+
+import math from "./math.jsa";
+
+external printf(string, ...): void;
+
+function main() {
+    var result = math.add(5, 3);
+    printf("5 + 3 = %d\n", result);
+
+    var product = math.multiply(4, 7);
+    printf("4 * 7 = %d\n", product);
+}

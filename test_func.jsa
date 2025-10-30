@@ -1,0 +1,9 @@
+// Test regular function
+
+function add(a: int, b: int) -> int {
+    return a + b;
+}
+
+function main() {
+    var x = add(1, 2);
+}

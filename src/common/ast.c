@@ -54,6 +54,15 @@ void ast_free(ASTNode* node) {
             ast_free(node->func_decl.body);
             break;
 
+        case AST_IMPORT_DECL:
+            free(node->import_decl.module_path);
+            free(node->import_decl.namespace_name);
+            break;
+
+        case AST_EXPORT_DECL:
+            ast_free(node->export_decl.declaration);
+            break;
+
         case AST_STRUCT_DECL:
             free(node->struct_decl.name);
             for (int i = 0; i < node->struct_decl.property_count; i++) {
@@ -294,6 +303,15 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->var_decl.type_hint = node->var_decl.type_hint;
             // Don't copy symbol_entry - it will be set during type inference on the cloned AST
             clone->var_decl.symbol_entry = NULL;
+            break;
+
+        case AST_IMPORT_DECL:
+            clone->import_decl.module_path = strdup(node->import_decl.module_path);
+            clone->import_decl.namespace_name = strdup(node->import_decl.namespace_name);
+            break;
+
+        case AST_EXPORT_DECL:
+            clone->export_decl.declaration = ast_clone(node->export_decl.declaration);
             break;
 
         case AST_FUNCTION_DECL:

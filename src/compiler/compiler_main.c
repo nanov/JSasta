@@ -1,6 +1,7 @@
 #include "../common/jsasta_compiler.h"
 #include "../common/logger.h"
 #include "../common/diagnostics.h"
+#include "../common/module_loader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,85 +27,113 @@ char* read_file(const char* filename) {
 }
 
 void compile_file(const char* input_file, const char* output_file, bool enable_debug) {
-    // Read source file
-    char* source = read_file(input_file);
-    if (!source) {
-        return;
-    }
-
     log_info("Compiling %s...", input_file);
     if (enable_debug) {
         log_verbose("Debug symbols enabled");
     }
 
-    // Create diagnostic context for collecting errors
-    DiagnosticContext* diagnostics = diagnostic_context_create();
-
-    // Create TypeContext (shared between parser and type inference)
-    TypeContext* type_ctx = type_context_create();
-
-    // Parse
-    log_section("Parsing");
-    Parser* parser = parser_create(source, input_file, type_ctx, diagnostics);
-    ASTNode* ast = parser_parse(parser);
-    parser_free(parser);
-
+    // Create module registry
+    log_section("Module Loading");
+    ModuleRegistry* registry = module_registry_create(input_file);
+    
+    // Load entry module (will recursively load imports)
+    Module* entry_module = module_load(registry, input_file, NULL);
+    
+    if (!entry_module) {
+        log_error("Failed to load entry module");
+        module_registry_free(registry);
+        return;
+    }
+    
     // Check for parse errors
-    if (diagnostic_has_errors(diagnostics)) {
-        diagnostic_report_console(diagnostics);
-        diagnostic_print_summary(diagnostics);
-        diagnostic_context_free(diagnostics);
-        free(source);
-        type_context_free(type_ctx);
+    if (diagnostic_has_errors(registry->diagnostics)) {
+        diagnostic_report_console(registry->diagnostics);
+        diagnostic_print_summary(registry->diagnostics);
+        module_registry_free(registry);
         return;
     }
+    
+    log_verbose("Loaded %d module(s)", registry->module_count);
 
-    if (!ast) {
-        log_error("Parse error");
-        diagnostic_context_free(diagnostics);
-        free(source);
-        type_context_free(type_ctx);
-        return;
-    }
-
-    log_verbose("Parsing complete");
-
-    // Type inference (infer types from usage)
+    // Type inference for all modules
     log_section("Type Inference");
-    SymbolTable* symbols = symbol_table_create(NULL);
-    type_inference_with_diagnostics(ast, symbols, type_ctx, diagnostics);
+    
+    // Run type inference on all modules in dependency order
+    // Start with imported modules (dependencies) first, then the entry module
+    
+    // First, run type inference on all imported modules (they have no imports themselves for now)
+    for (Module* mod = registry->modules; mod != NULL; mod = mod->next) {
+        if (mod == entry_module) continue; // Skip entry module, do it last
+        
+        log_verbose("Running type inference on module: %s", mod->relative_path);
+        
+        // Create symbol table for the module if it doesn't have one
+        if (!mod->module_scope) {
+            mod->module_scope = symbol_table_create(NULL);
+        }
+        
+        type_inference_with_diagnostics(mod->ast, mod->module_scope, registry->type_ctx, registry->diagnostics);
+        
+        if (diagnostic_has_errors(registry->diagnostics)) {
+            log_error("Type inference failed for module: %s", mod->relative_path);
+            diagnostic_report_console(registry->diagnostics);
+            diagnostic_print_summary(registry->diagnostics);
+            module_registry_free(registry);
+            return;
+        }
+    }
+    
+    // Create symbol table for entry module and setup imports
+    if (!entry_module->module_scope) {
+        entry_module->module_scope = symbol_table_create(NULL);
+    }
+    
+    log_verbose("Setting up imports for entry module");
+    if (!module_setup_import_symbols(entry_module, entry_module->module_scope)) {
+        log_error("Failed to setup import symbols");
+        module_registry_free(registry);
+        return;
+    }
+    
+    // Finally, run type inference on the entry module
+    log_verbose("Running type inference on entry module: %s", entry_module->relative_path);
+    type_inference_with_diagnostics(entry_module->ast, entry_module->module_scope, registry->type_ctx, registry->diagnostics);
 
     // Check for type inference errors
-    if (diagnostic_has_errors(diagnostics)) {
-        diagnostic_report_console(diagnostics);
-        diagnostic_print_summary(diagnostics);
-        diagnostic_context_free(diagnostics);
-        ast_free(ast);
-        type_context_free(type_ctx);
+    if (diagnostic_has_errors(registry->diagnostics)) {
+        diagnostic_report_console(registry->diagnostics);
+        diagnostic_print_summary(registry->diagnostics);
+        module_registry_free(registry);
         return;
     }
 
     // Print specializations if any
-    if (ast->type_ctx) {
-        specialization_context_print(ast->type_ctx);
+    if (entry_module->ast->type_ctx) {
+        specialization_context_print(entry_module->ast->type_ctx);
     }
-
-    // Disabled - rework to actually check types
-    // // Type analysis (validate types)
-    // type_analyze(ast, symbols);
-    // Note: Don't free symbols here - it's now stored in ast->symbol_table and will be freed with AST
 
     log_verbose("Type checking complete");
 
     // Code generation
     log_section("Code Generation");
     CodeGen* gen = codegen_create("js_module");
-    gen->type_ctx = type_ctx;  // Set type context for codegen
+    gen->type_ctx = registry->type_ctx;  // Set type context for codegen
     gen->enable_debug = enable_debug;  // Set debug flag
     if (enable_debug) {
         gen->source_filename = input_file;
     }
-    codegen_generate(gen, ast);
+    
+    // Generate code for all modules in dependency order (dependencies first, then entry)
+    for (Module* mod = registry->modules; mod != NULL; mod = mod->next) {
+        if (mod == entry_module) continue; // Skip entry module, do it last
+        
+        log_verbose("Generating code for module: %s", mod->relative_path);
+        codegen_generate(gen, mod->ast, false); // Not entry module
+    }
+    
+    // Finally, generate code for the entry module
+    log_verbose("Generating code for entry module: %s", entry_module->relative_path);
+    codegen_generate(gen, entry_module->ast, true); // Is entry module
 
     log_info("Code generation complete");
 
@@ -112,13 +141,11 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     codegen_emit_llvm_ir(gen, output_file);
 
     log_info("LLVM IR written to %s", output_file);
-    diagnostic_print_summary(diagnostics);
+    diagnostic_print_summary(registry->diagnostics);
 
     // Cleanup
-    ast_free(ast);
     codegen_free(gen);
-    diagnostic_context_free(diagnostics);
-    free(source);
+    module_registry_free(registry);
 }
 
 void print_usage(const char* program_name) {

@@ -174,6 +174,9 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "const") == 0) type = TOKEN_CONST;
     else if (strcmp(buffer, "function") == 0) type = TOKEN_FUNCTION;
     else if (strcmp(buffer, "external") == 0) type = TOKEN_EXTERNAL;
+    else if (strcmp(buffer, "import") == 0) type = TOKEN_IMPORT;
+    else if (strcmp(buffer, "export") == 0) type = TOKEN_EXPORT;
+    else if (strcmp(buffer, "from") == 0) type = TOKEN_FROM;
     else if (strcmp(buffer, "struct") == 0) type = TOKEN_STRUCT;
     else if (strcmp(buffer, "ref") == 0) type = TOKEN_REF;
     else if (strcmp(buffer, "return") == 0) type = TOKEN_RETURN;
