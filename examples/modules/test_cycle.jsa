@@ -1,0 +1,9 @@
+// test_cycle.jsa - Test cyclic import detection
+
+import cycle_a from "./cycle_a.jsa";
+
+external printf(string, ...): void;
+
+function main() {
+    printf("This should fail with cyclic import error\n");
+}

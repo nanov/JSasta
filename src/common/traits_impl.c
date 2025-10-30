@@ -410,8 +410,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 
 #define REGISTER_COMPARISON_OPS(trait, left, rhs) \
     do { \
-        TypeInfo* bool_type = type_ctx->bool_type; \
-        if (left == type_ctx->int_type && rhs == type_ctx->double_type) { \
+        TypeInfo* bool_type = Type_Bool; \
+        if (left == Type_I32 && rhs == Type_Double) { \
             MethodImpl impls[4] = { \
                 { .method_name = "lt", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_int_double_lt, .function_ptr = NULL, .external_name = NULL }, \
@@ -425,7 +425,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             TypeInfo* type_params[] = { rhs }; \
             TypeInfo* assoc_types[] = { bool_type }; \
             trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 4); \
-        } else if (left == type_ctx->double_type && rhs == type_ctx->int_type) { \
+        } else if (left == Type_Double && rhs == Type_I32) { \
             MethodImpl impls[4] = { \
                 { .method_name = "lt", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_double_int_lt, .function_ptr = NULL, .external_name = NULL }, \
@@ -439,7 +439,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             TypeInfo* type_params[] = { rhs }; \
             TypeInfo* assoc_types[] = { bool_type }; \
             trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 4); \
-        } else if (left == type_ctx->double_type && rhs == type_ctx->double_type) { \
+        } else if (left == Type_Double && rhs == Type_Double) { \
             MethodImpl impls[4] = { \
                 { .method_name = "lt", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_double_lt, .function_ptr = NULL, .external_name = NULL }, \
@@ -458,8 +458,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 
 #define REGISTER_EQUALITY_OPS(trait, left, rhs) \
     do { \
-        TypeInfo* bool_type = type_ctx->bool_type; \
-        if (left == type_ctx->int_type && rhs == type_ctx->int_type) { \
+        TypeInfo* bool_type = Type_Bool; \
+        if (left == Type_I32 && rhs == Type_I32) { \
             MethodImpl impls[2] = { \
                 { .method_name = "eq", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_int_eq, .function_ptr = NULL, .external_name = NULL }, \
@@ -469,7 +469,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             TypeInfo* type_params[] = { rhs }; \
             TypeInfo* assoc_types[] = { bool_type }; \
             trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 2); \
-        } else if (left == type_ctx->int_type && rhs == type_ctx->double_type) { \
+        } else if (left == Type_I32 && rhs == Type_Double) { \
             MethodImpl impls[2] = { \
                 { .method_name = "eq", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_int_double_eq, .function_ptr = NULL, .external_name = NULL }, \
@@ -479,7 +479,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             TypeInfo* type_params[] = { rhs }; \
             TypeInfo* assoc_types[] = { bool_type }; \
             trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 2); \
-        } else if (left == type_ctx->double_type && rhs == type_ctx->int_type) { \
+        } else if (left == Type_Double && rhs == Type_I32) { \
             MethodImpl impls[2] = { \
                 { .method_name = "eq", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_double_int_eq, .function_ptr = NULL, .external_name = NULL }, \
@@ -489,7 +489,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             TypeInfo* type_params[] = { rhs }; \
             TypeInfo* assoc_types[] = { bool_type }; \
             trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 2); \
-        } else if (left == type_ctx->double_type && rhs == type_ctx->double_type) { \
+        } else if (left == Type_Double && rhs == Type_Double) { \
             MethodImpl impls[2] = { \
                 { .method_name = "eq", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_double_eq, .function_ptr = NULL, .external_name = NULL }, \
@@ -499,7 +499,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             TypeInfo* type_params[] = { rhs }; \
             TypeInfo* assoc_types[] = { bool_type }; \
             trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 2); \
-        } else if (left == type_ctx->bool_type && rhs == type_ctx->bool_type) { \
+        } else if (left == Type_Bool && rhs == Type_Bool) { \
             MethodImpl impls[2] = { \
                 { .method_name = "eq", .signature = NULL, .kind = METHOD_INTRINSIC, \
                   .codegen = intrinsic_bool_eq, .function_ptr = NULL, .external_name = NULL }, \
@@ -528,8 +528,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 #define REGISTER_INT_ARITHMETIC(trait, method_name_str, add_fn, sub_fn, mul_fn, div_fn, rem_fn) \
     do { \
         TypeInfo* int_types[] = { \
-            type_ctx->i8_type, type_ctx->i16_type, type_ctx->i32_type, type_ctx->i64_type, \
-            type_ctx->u8_type, type_ctx->u16_type, type_ctx->u32_type, type_ctx->u64_type \
+            Type_I8, Type_I16, Type_I32, Type_I64, \
+            Type_U8, Type_U16, Type_U32, Type_U64 \
         }; \
         for (int i = 0; i < 8; i++) { \
             for (int j = 0; j < 8; j++) { \
@@ -553,8 +553,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 #define REGISTER_INT_BITWISE_ALL(trait, method_name_str, intrinsic_fn) \
     do { \
         TypeInfo* int_types[] = { \
-            type_ctx->i8_type, type_ctx->i16_type, type_ctx->i32_type, type_ctx->i64_type, \
-            type_ctx->u8_type, type_ctx->u16_type, type_ctx->u32_type, type_ctx->u64_type \
+            Type_I8, Type_I16, Type_I32, Type_I64, \
+            Type_U8, Type_U16, Type_U32, Type_U64 \
         }; \
         for (int i = 0; i < 8; i++) { \
             for (int j = 0; j < 8; j++) { \
@@ -570,8 +570,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 #define REGISTER_INT_SHIFT_ALL(trait, method_name_str, shl_fn, shr_fn) \
     do { \
         TypeInfo* int_types[] = { \
-            type_ctx->i8_type, type_ctx->i16_type, type_ctx->i32_type, type_ctx->i64_type, \
-            type_ctx->u8_type, type_ctx->u16_type, type_ctx->u32_type, type_ctx->u64_type \
+            Type_I8, Type_I16, Type_I32, Type_I64, \
+            Type_U8, Type_U16, Type_U32, Type_U64 \
         }; \
         for (int i = 0; i < 8; i++) { \
             for (int j = 0; j < 8; j++) { \
@@ -589,8 +589,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 #define REGISTER_INT_COMPARISONS_ALL(trait) \
     do { \
         TypeInfo* int_types[] = { \
-            type_ctx->i8_type, type_ctx->i16_type, type_ctx->i32_type, type_ctx->i64_type, \
-            type_ctx->u8_type, type_ctx->u16_type, type_ctx->u32_type, type_ctx->u64_type \
+            Type_I8, Type_I16, Type_I32, Type_I64, \
+            Type_U8, Type_U16, Type_U32, Type_U64 \
         }; \
         for (int i = 0; i < 8; i++) { \
             for (int j = 0; j < 8; j++) { \
@@ -623,7 +623,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
                 impls[3].function_ptr = NULL; \
                 impls[3].external_name = NULL; \
                 TypeInfo* type_params[] = { right }; \
-                TypeInfo* assoc_types[] = { type_ctx->bool_type }; \
+                TypeInfo* assoc_types[] = { Type_Bool }; \
                 trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 4); \
             } \
         } \
@@ -633,8 +633,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 #define REGISTER_INT_EQUALITY_ALL(trait) \
     do { \
         TypeInfo* int_types[] = { \
-            type_ctx->i8_type, type_ctx->i16_type, type_ctx->i32_type, type_ctx->i64_type, \
-            type_ctx->u8_type, type_ctx->u16_type, type_ctx->u32_type, type_ctx->u64_type \
+            Type_I8, Type_I16, Type_I32, Type_I64, \
+            Type_U8, Type_U16, Type_U32, Type_U64 \
         }; \
         for (int i = 0; i < 8; i++) { \
             for (int j = 0; j < 8; j++) { \
@@ -654,7 +654,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
                 impls[1].function_ptr = NULL; \
                 impls[1].external_name = NULL; \
                 TypeInfo* type_params[] = { right }; \
-                TypeInfo* assoc_types[] = { type_ctx->bool_type }; \
+                TypeInfo* assoc_types[] = { Type_Bool }; \
                 trait_impl_full(trait, left, type_params, 1, assoc_types, 1, impls, 2); \
             } \
         } \
@@ -664,8 +664,8 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 #define REGISTER_INT_UNARY_ALL(trait, method_name_str, intrinsic_fn) \
     do { \
         TypeInfo* int_types[] = { \
-            type_ctx->i8_type, type_ctx->i16_type, type_ctx->i32_type, type_ctx->i64_type, \
-            type_ctx->u8_type, type_ctx->u16_type, type_ctx->u32_type, type_ctx->u64_type \
+            Type_I8, Type_I16, Type_I32, Type_I64, \
+            Type_U8, Type_U16, Type_U32, Type_U64 \
         }; \
         for (int i = 0; i < 8; i++) { \
             REGISTER_UNARY_OP(trait, int_types[i], int_types[i], method_name_str, intrinsic_fn); \
@@ -676,10 +676,11 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 
 void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ctx) {
     (void)registry; // Traits are already defined
+    (void)type_ctx; // Not needed anymore - use global types directly
     
-    TypeInfo* int_type = type_ctx->int_type;
-    TypeInfo* double_type = type_ctx->double_type;
-    TypeInfo* bool_type = type_ctx->bool_type;
+    TypeInfo* int_type = Type_I32;
+    TypeInfo* double_type = Type_Double;
+    TypeInfo* bool_type = Type_Bool;
     
     // === Add Trait ===
     

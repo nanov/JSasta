@@ -1,0 +1,5 @@
+import stdio from "./module_with_external.jsa";
+
+external printf(string, ...):i32;
+
+printf("%d\n", stdio.rand());

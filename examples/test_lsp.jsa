@@ -1,0 +1,11 @@
+function main(): void {
+    // This variable is undefined - should show error
+    undefinedVariable;
+
+    // This should also error
+    let x: int = "string";
+
+    // Valid code
+    let y: int = 42;
+    print(y);
+}

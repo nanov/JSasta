@@ -231,27 +231,8 @@ typedef struct TypeContext {
     int type_count;                  // Number of registered types
     int next_anonymous_id;           // For generating unique anonymous type names
     int specialization_count;        // Total number of specializations across all functions
-
-    // Cached signed integer types
-    TypeInfo* i8_type;
-    TypeInfo* i16_type;
-    TypeInfo* i32_type;
-    TypeInfo* i64_type;
     
-    // Cached unsigned integer types
-    TypeInfo* u8_type;
-    TypeInfo* u16_type;
-    TypeInfo* u32_type;
-    TypeInfo* u64_type;
-    
-    // Legacy alias for default integer (i32)
-    TypeInfo* int_type;  // Points to i32_type
-
-    // Other primitive types
-    TypeInfo* double_type;
-    TypeInfo* string_type;
-    TypeInfo* bool_type;
-    TypeInfo* void_type;
+    char* module_prefix;             // Module prefix for name mangling (e.g., "math__")
 
     // Trait system for operator overloading and methods
     TraitRegistry* trait_registry;
@@ -325,6 +306,7 @@ struct ASTNode {
             char* module_path;       // Path to module file: "./math/lib.jsa"
             char* namespace_name;    // Namespace identifier: "math"
             void* imported_module;   // Pointer to loaded Module (set during module loading)
+            char* module_prefix;     // Prefix for name mangling: "math__"
         } import_decl;
 
         struct {
@@ -516,11 +498,11 @@ typedef struct SymbolEntry {
     char* name;
     bool is_const;
     LLVMValueRef value;
-    ASTNode* node;
-    LLVMTypeRef llvm_type;  // For objects, stores the struct type
+    ASTNode* node;           // For regular symbols: the declaration node
+                             // For namespace symbols: the AST_IMPORT_DECL node
+    LLVMTypeRef llvm_type;   // For objects, stores the struct type
     TypeInfo* type_info;     // For objects and complex types, stores metadata
     int array_size;          // For arrays, stores the size (0 if not an array)
-    void* imported_module;   // For namespaces, pointer to imported Module
     struct SymbolEntry* next;
 } SymbolEntry;
 
@@ -534,8 +516,9 @@ void symbol_table_free(SymbolTable* table);
 void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_info, LLVMValueRef value, bool is_const);
 void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, TypeInfo* type_info, bool is_const, ASTNode* var_decl_node);
 void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node);
-void symbol_table_insert_namespace(SymbolTable* table, const char* name, void* imported_module);
+void symbol_table_insert_namespace(SymbolTable* table, const char* name, ASTNode* import_node);
 SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name);
+SymbolEntry* symbol_table_lookup_all_scopes(SymbolTable* table, const char* name);
 
 // TypeInfo management
 TypeInfo* type_info_create(TypeKind kind, char* name);
@@ -728,6 +711,7 @@ static inline bool type_info_is_array_of(TypeInfo* array_type, TypeInfo* element
 }
 
 // TypeContext API - Unified type management
+void type_system_init_global_types();  // Initialize global Type_* variables once at startup
 TypeContext* type_context_create();
 void type_context_free(TypeContext* ctx);
 TypeInfo* type_context_register_type(TypeContext* ctx, TypeInfo* type);

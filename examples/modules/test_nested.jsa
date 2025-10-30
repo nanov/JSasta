@@ -1,0 +1,13 @@
+// test_nested.jsa - Test nested imports (main -> utils -> math)
+
+import utils from "./utils.jsa";
+
+external printf(string, ...): void;
+
+function main() {
+    var result = utils.double(5);
+    printf("double(5) = %d\n", result);
+
+    var result2 = utils.increment(10);
+    printf("increment(10) = %d\n", result2);
+}

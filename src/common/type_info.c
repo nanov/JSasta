@@ -119,14 +119,21 @@ void type_info_free_shallow(TypeInfo* type_info) {
 void type_info_free(TypeInfo* type_info) {
     if (!type_info) return;
 
+    // Don't free global singleton types
+    if (type_info_is_global_singleton(type_info)) {
+        return;
+    }
+
     // Free type-specific data based on kind
     if (type_info->kind == TYPE_KIND_OBJECT) {
-        // Free property names and types (recursively)
+        // Free property names
         for (int i = 0; i < type_info->data.object.property_count; i++) {
             free(type_info->data.object.property_names[i]);
-            type_info_free(type_info->data.object.property_types[i]);
         }
         free(type_info->data.object.property_names);
+        
+        // Note: property_types are references to types in TypeContext, don't free the TypeInfo objects
+        // Just free the array itself
         free(type_info->data.object.property_types);
     } else if (type_info->kind == TYPE_KIND_ARRAY) {
         // Note: element_type is a reference to a type in TypeContext, don't free it

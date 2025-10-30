@@ -21,9 +21,9 @@ ModuleRegistry* module_registry_create(const char* entry_file) {
     registry->project_root = module_get_directory(entry_abs);
     free(entry_abs);
     
-    // Create shared type context and diagnostics
+    // Create shared type context and diagnostics (use DIRECT mode for immediate error output)
     registry->type_ctx = type_context_create();
-    registry->diagnostics = diagnostic_context_create();
+    registry->diagnostics = diagnostic_context_create_with_mode(DIAG_MODE_DIRECT, stderr);
     
     log_verbose("Module registry created with project root: %s", registry->project_root);
     
@@ -52,11 +52,8 @@ void module_registry_free(ModuleRegistry* registry) {
         free(current->source_code);
         
         // Free AST (now safe since TypeContext is already freed)
-        // Note: ast_free will also free the symbol_table (module_scope) attached to it
+        // ast_free also frees the module_scope (symbol table) attached to it
         if (current->ast) ast_free(current->ast);
-        
-        // Note: module_scope is freed with AST (attached during type inference)
-        // Note: diagnostics is shared, freed below
         
         // Free exports
         ExportedSymbol* exp = current->exports;
@@ -96,6 +93,13 @@ Module* module_load(ModuleRegistry* registry, const char* path, Module* current_
     Module* existing = module_find(registry, absolute_path);
     if (existing) {
         free(absolute_path);
+        
+        // Check for cyclic import
+        if (existing->is_loading) {
+            log_error("Cyclic import detected: %s is already being loaded", existing->relative_path);
+            return NULL;
+        }
+        
         log_verbose("Module already loaded: %s", existing->relative_path);
         return existing;
     }
@@ -108,23 +112,32 @@ Module* module_load(ModuleRegistry* registry, const char* path, Module* current_
         return NULL;
     }
     
+    // Mark as loading (for cyclic import detection)
+    module->is_loading = true;
+    
     // Parse the module
     if (!module_parse(module, registry)) {
         log_error("Failed to parse module: %s", module->relative_path);
+        module->is_loading = false;
         return NULL;
     }
     
     // Collect exports
     if (!module_collect_exports(module)) {
         log_error("Failed to collect exports from module: %s", module->relative_path);
+        module->is_loading = false;
         return NULL;
     }
     
-    // Load imported modules (recursive)
+    // Load imported modules (recursive) - this is where cyclic imports would be detected
     if (!module_load_imports(module, registry)) {
         log_error("Failed to load imports for module: %s", module->relative_path);
+        module->is_loading = false;
         return NULL;
     }
+    
+    // Mark as done loading
+    module->is_loading = false;
     
     log_info("Loaded module: %s (%d exports, %d dependencies)", 
              module->relative_path, module->export_count, module->dependency_count);
@@ -147,8 +160,9 @@ Module* module_get_or_create(ModuleRegistry* registry, const char* absolute_path
     module->source_code = NULL;
     module->ast = NULL;
     module->module_scope = NULL;
-    module->type_ctx = registry->type_ctx; // Shared!
-    module->diagnostics = registry->diagnostics; // Shared!
+    module->type_ctx = type_context_create();
+    module->type_ctx->module_prefix = strdup(module->module_prefix);
+    module->diagnostics = registry->diagnostics;
     
     module->exports = NULL;
     module->export_count = 0;
@@ -156,8 +170,8 @@ Module* module_get_or_create(ModuleRegistry* registry, const char* absolute_path
     module->dependencies = NULL;
     module->dependency_count = 0;
     
+    module->is_loading = false;
     module->is_parsed = false;
-    module->is_type_checked = false;
     
     // Add to registry
     module->next = registry->modules;
@@ -203,8 +217,10 @@ bool module_parse(Module* module, ModuleRegistry* registry) {
         return false;
     }
     
-    // Note: module_scope will be created later during type inference
-    // It is NOT part of the AST
+    // Check if there were parse errors (diagnostics already printed in DIRECT mode)
+    if (registry->diagnostics && diagnostic_has_errors(registry->diagnostics)) {
+        return false;
+    }
     
     module->is_parsed = true;
     return true;
@@ -267,6 +283,12 @@ bool module_load_imports(Module* module, ModuleRegistry* registry) {
             const char* import_path = stmt->import_decl.module_path;
             const char* namespace_name = stmt->import_decl.namespace_name;
             
+            // Check for parse errors (NULL path means parse error occurred)
+            if (!import_path || !namespace_name) {
+                log_error("Import declaration has missing information (likely a parse error)");
+                return false;
+            }
+            
             log_verbose("  Importing: %s as %s", import_path, namespace_name);
             
             // Load the imported module (recursively loads its imports)
@@ -283,7 +305,7 @@ bool module_load_imports(Module* module, ModuleRegistry* registry) {
                 sizeof(Module*) * module->dependency_count);
             module->dependencies[module->dependency_count - 1] = imported_module;
             
-            // Store reference to imported module in the AST node for type inference
+            // Store reference to imported module in the AST node
             stmt->import_decl.imported_module = imported_module;
             
             log_verbose("    Loaded dependency: %s (%d exports)", 
@@ -320,29 +342,25 @@ bool module_setup_import_symbols(Module* module, SymbolTable* symbols) {
                 continue;
             }
             
-            // Add the namespace itself to the symbol table
-            // This allows type inference to recognize "math" in "math.add"
-            symbol_table_insert_namespace(symbols, namespace_name, imported_module);
+            // Set the module_prefix on the import node for name mangling
+            if (!stmt->import_decl.module_prefix) {
+                stmt->import_decl.module_prefix = strdup(imported_module->module_prefix);
+            }
             
-            log_verbose("  Added namespace: %s (from %s, %d exports)", 
-                       namespace_name, imported_module->relative_path, imported_module->export_count);
+            // Add the namespace to the symbol table, storing the import AST node
+            // This allows lookup of: import node -> module -> ast -> type_ctx/symbol_table
+            symbol_table_insert_namespace(symbols, namespace_name, stmt);
+            
+            log_verbose("  Added namespace: %s (from %s, %d exports, prefix: %s)", 
+                       namespace_name, imported_module->relative_path, 
+                       imported_module->export_count, stmt->import_decl.module_prefix);
         }
     }
     
     return true;
 }
 
-bool module_type_check(Module* module, ModuleRegistry* registry) {
-    (void)registry; // Unused for now
-    
-    if (module->is_type_checked) return true;
-    
-    // Type inference will be done later when we integrate with type_inference.c
-    // For now, just mark as type-checked
-    module->is_type_checked = true;
-    
-    return true;
-}
+
 
 // === Export Management ===
 

@@ -690,7 +690,7 @@ void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx) {
 
     // For arrays: implement Index<i32> -> ElementType
     if (type->kind == TYPE_KIND_ARRAY) {
-        TypeInfo* idx_type = type_ctx->int_type;
+        TypeInfo* idx_type = Type_I32;
         TypeInfo* type_param_bindings[] = { idx_type };
 
         // Check if already implemented
@@ -723,7 +723,7 @@ void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx) {
 
     // For strings: implement Index<i32> -> u8
     if (type == Type_String) {
-        TypeInfo* idx_type = type_ctx->int_type;
+        TypeInfo* idx_type = Type_I32;
         TypeInfo* type_param_bindings[] = { idx_type };
 
         // Check if already implemented
@@ -733,7 +733,7 @@ void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx) {
         }
 
         // String indexing returns u8 (byte)
-        TypeInfo* output_type = type_ctx->u8_type;
+        TypeInfo* output_type = Type_U8;
 
         // Create method implementation
         MethodImpl method_impl = {
@@ -777,7 +777,7 @@ void trait_ensure_ref_index_impl(TypeInfo* type, TypeContext* type_ctx) {
 
     // For arrays: implement RefIndex<i32> -> ref<ElementType>
     if (type->kind == TYPE_KIND_ARRAY) {
-        TypeInfo* idx_type = type_ctx->int_type;
+        TypeInfo* idx_type = Type_I32;
         TypeInfo* type_param_bindings[] = { idx_type };
 
         // Check if already implemented
@@ -850,7 +850,7 @@ void trait_ensure_length_impl(TypeInfo* type, TypeContext* type_ctx) {
         };
 
         // Implement Length for this array type with Output = u32
-        TypeInfo* u32_type = type_ctx->u32_type;
+        TypeInfo* u32_type = Type_U32;
         TypeInfo* assoc_type_bindings[] = { u32_type };
 
         trait_impl_full(Trait_Length, type,

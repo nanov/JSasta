@@ -22,6 +22,16 @@ void symbol_table_free(SymbolTable* table) {
 }
 
 void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_info, LLVMValueRef value, bool is_const) {
+    // Check for duplicate in current scope only (not parent scopes)
+    SymbolEntry* current = table->head;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            // Symbol already exists in this scope - don't insert duplicate
+            return;
+        }
+        current = current->next;
+    }
+    
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
     entry->type_info = type_info;
@@ -30,12 +40,21 @@ void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_in
     entry->node = NULL;
     entry->llvm_type = NULL;
     entry->array_size = 0;
-    entry->imported_module = NULL;
     entry->next = table->head;
     table->head = entry;
 }
 
 void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, TypeInfo* type_info, bool is_const, ASTNode* var_decl_node) {
+    // Check for duplicate in current scope only (not parent scopes)
+    SymbolEntry* current = table->head;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            // Symbol already exists in this scope - don't insert duplicate
+            return;
+        }
+        current = current->next;
+    }
+    
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
     entry->type_info = type_info;
@@ -44,12 +63,21 @@ void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, T
     entry->node = var_decl_node;  // Store the AST node for looking up object properties
     entry->llvm_type = NULL;  // Will be set during codegen for objects
     entry->array_size = var_decl_node ? var_decl_node->var_decl.array_size : 0;  // Store array size from AST
-    entry->imported_module = NULL;
     entry->next = table->head;
     table->head = entry;
 }
 
 void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, ASTNode* node) {
+    // Check for duplicate in current scope only (not parent scopes)
+    SymbolEntry* current = table->head;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            // Symbol already exists in this scope - don't insert duplicate
+            return;
+        }
+        current = current->next;
+    }
+    
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
     entry->type_info = NULL;  // Functions don't have type_info yet (could add in future)
@@ -58,21 +86,29 @@ void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, 
     entry->node = node;
     entry->llvm_type = NULL;
     entry->array_size = 0;
-    entry->imported_module = NULL;
     entry->next = table->head;
     table->head = entry;
 }
 
-void symbol_table_insert_namespace(SymbolTable* table, const char* name, void* imported_module) {
+void symbol_table_insert_namespace(SymbolTable* table, const char* name, ASTNode* import_node) {
+    // Check for duplicate in current scope only (not parent scopes)
+    SymbolEntry* current = table->head;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            // Symbol already exists in this scope - don't insert duplicate
+            return;
+        }
+        current = current->next;
+    }
+    
     SymbolEntry* entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
     entry->name = strdup(name);
     entry->type_info = NULL;  // Namespaces don't have a type
     entry->is_const = false;
     entry->value = NULL;
-    entry->node = NULL;
+    entry->node = import_node;  // Store the AST_IMPORT_DECL node
     entry->llvm_type = NULL;
     entry->array_size = 0;
-    entry->imported_module = imported_module;  // Store the Module pointer
     entry->next = table->head;
     table->head = entry;
 }
@@ -102,5 +138,20 @@ SymbolEntry* symbol_table_lookup(SymbolTable* table, const char* name) {
     }
 
     depth--;
+    return NULL;
+}
+
+// This function is no longer needed - was used for Go to Definition which is disabled
+// Keeping it as a stub in case it's called anywhere, but it just searches the current scope
+SymbolEntry* symbol_table_lookup_all_scopes(SymbolTable* table, const char* name) {
+    // Search this scope only (don't search parent or children)
+    SymbolEntry* current = table->head;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    
     return NULL;
 }

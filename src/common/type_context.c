@@ -4,120 +4,79 @@
 #include <string.h>
 #include <stdio.h>
 
-// Create a new TypeContext with pre-registered primitive types
-TypeContext* type_context_create() {
-    TypeContext* ctx = (TypeContext*)malloc(sizeof(TypeContext));
-    ctx->type_table = NULL;
-    ctx->type_count = 0;
-    ctx->next_anonymous_id = 0;
-    ctx->specialization_count = 0;
-    ctx->trait_registry = NULL;
+// Flag to track if global types have been initialized
+static bool global_types_initialized = false;
 
+// Initialize global type variables once at program startup
+void type_system_init_global_types() {
+    if (global_types_initialized) {
+        return; // Already initialized
+    }
+    
     // Pre-register primitive types and cache them
     Type_Unknown = type_info_create(TYPE_KIND_UNKNOWN, strdup("unknown"));
-    type_context_register_type(ctx, Type_Unknown);
 
     // Signed integer types
     Type_I8 = type_info_create_integer(strdup("i8"), 8, true);
-    ctx->i8_type = type_context_register_type(ctx, Type_I8);
-
     Type_I16 = type_info_create_integer(strdup("i16"), 16, true);
-    ctx->i16_type = type_context_register_type(ctx, Type_I16);
-
     Type_I32 = type_info_create_integer(strdup("i32"), 32, true);
-    ctx->i32_type = type_context_register_type(ctx, Type_I32);
-
     Type_I64 = type_info_create_integer(strdup("i64"), 64, true);
-    ctx->i64_type = type_context_register_type(ctx, Type_I64);
 
     // Unsigned integer types
     Type_U8 = type_info_create_integer(strdup("u8"), 8, false);
-    ctx->u8_type = type_context_register_type(ctx, Type_U8);
-
     Type_U16 = type_info_create_integer(strdup("u16"), 16, false);
-    ctx->u16_type = type_context_register_type(ctx, Type_U16);
-
     Type_U32 = type_info_create_integer(strdup("u32"), 32, false);
-    ctx->u32_type = type_context_register_type(ctx, Type_U32);
-
     Type_U64 = type_info_create_integer(strdup("u64"), 64, false);
-    ctx->u64_type = type_context_register_type(ctx, Type_U64);
 
     // Legacy "int" type (alias for i32)
     Type_Int = Type_I32;
-    ctx->int_type = ctx->i32_type;
 
     Type_Double = type_info_create_primitive(strdup("double"));
-    ctx->double_type = type_context_register_type(ctx, Type_Double);
-
     Type_String = type_info_create_primitive(strdup("string"));
-    ctx->string_type = type_context_register_type(ctx, Type_String);
-
     Type_Bool = type_info_create_primitive(strdup("bool"));
-    ctx->bool_type = type_context_register_type(ctx, Type_Bool);
-
     Type_Void = type_info_create_primitive(strdup("void"));
-    ctx->void_type = type_context_register_type(ctx, Type_Void);
 
     // Create array types for all integer types
     Type_Array_I8 = type_info_create(TYPE_KIND_ARRAY, strdup("i8[]"));
     Type_Array_I8->data.array.element_type = Type_I8;
-    type_context_register_type(ctx, Type_Array_I8);
 
     Type_Array_I16 = type_info_create(TYPE_KIND_ARRAY, strdup("i16[]"));
     Type_Array_I16->data.array.element_type = Type_I16;
-    type_context_register_type(ctx, Type_Array_I16);
 
     Type_Array_I32 = type_info_create(TYPE_KIND_ARRAY, strdup("i32[]"));
     Type_Array_I32->data.array.element_type = Type_I32;
-    type_context_register_type(ctx, Type_Array_I32);
 
     Type_Array_I64 = type_info_create(TYPE_KIND_ARRAY, strdup("i64[]"));
     Type_Array_I64->data.array.element_type = Type_I64;
-    type_context_register_type(ctx, Type_Array_I64);
 
     Type_Array_U8 = type_info_create(TYPE_KIND_ARRAY, strdup("u8[]"));
     Type_Array_U8->data.array.element_type = Type_U8;
-    type_context_register_type(ctx, Type_Array_U8);
 
     Type_Array_U16 = type_info_create(TYPE_KIND_ARRAY, strdup("u16[]"));
     Type_Array_U16->data.array.element_type = Type_U16;
-    type_context_register_type(ctx, Type_Array_U16);
 
     Type_Array_U32 = type_info_create(TYPE_KIND_ARRAY, strdup("u32[]"));
     Type_Array_U32->data.array.element_type = Type_U32;
-    type_context_register_type(ctx, Type_Array_U32);
 
     Type_Array_U64 = type_info_create(TYPE_KIND_ARRAY, strdup("u64[]"));
     Type_Array_U64->data.array.element_type = Type_U64;
-    type_context_register_type(ctx, Type_Array_U64);
 
     // Legacy array type (alias for i32[])
     Type_Array_Int = Type_Array_I32;
 
     Type_Array_Double = type_info_create(TYPE_KIND_ARRAY, strdup("double[]"));
     Type_Array_Double->data.array.element_type = Type_Double;
-    type_context_register_type(ctx, Type_Array_Double);
 
     Type_Array_Bool = type_info_create(TYPE_KIND_ARRAY, strdup("bool[]"));
     Type_Array_Bool->data.array.element_type = Type_Bool;
-    type_context_register_type(ctx, Type_Array_Bool);
 
     Type_Array_String = type_info_create(TYPE_KIND_ARRAY, strdup("string[]"));
     Type_Array_String->data.array.element_type = Type_String;
-    type_context_register_type(ctx, Type_Array_String);
 
     // Create object type placeholder
     Type_Object = type_info_create(TYPE_KIND_OBJECT, strdup("object"));
-    type_context_register_type(ctx, Type_Object);
-
-    // Initialize trait registry with built-in traits
-    ctx->trait_registry = trait_registry_create();
-    traits_init_builtins(ctx->trait_registry, ctx);
-    traits_register_builtin_impls(ctx->trait_registry, ctx);
 
     // Create platform-specific type aliases
-    // Determine platform pointer size to decide which types to use
     #if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
         // 64-bit platform
         Type_Usize = type_info_create_alias(strdup("usize"), Type_U64);
@@ -130,9 +89,58 @@ TypeContext* type_context_create() {
         Type_Uint = type_info_create_alias(strdup("uint"), Type_U32);
     #endif
     
+    global_types_initialized = true;
+}
+
+// Create a new TypeContext with pre-registered primitive types
+TypeContext* type_context_create() {
+    TypeContext* ctx = (TypeContext*)malloc(sizeof(TypeContext));
+    ctx->type_table = NULL;
+    ctx->type_count = 0;
+    ctx->next_anonymous_id = 0;
+    ctx->specialization_count = 0;
+    ctx->trait_registry = NULL;
+    ctx->module_prefix = NULL;  // Will be set by module loader
+
+    // Register global types for lookup (doesn't mutate them - we skip type_id for globals)
+    type_context_register_type(ctx, Type_Unknown);
+    type_context_register_type(ctx, Type_I8);
+    type_context_register_type(ctx, Type_I16);
+    type_context_register_type(ctx, Type_I32);
+    type_context_register_type(ctx, Type_I64);
+    type_context_register_type(ctx, Type_U8);
+    type_context_register_type(ctx, Type_U16);
+    type_context_register_type(ctx, Type_U32);
+    type_context_register_type(ctx, Type_U64);
+    type_context_register_type(ctx, Type_Double);
+    type_context_register_type(ctx, Type_String);
+    type_context_register_type(ctx, Type_Bool);
+    type_context_register_type(ctx, Type_Void);
+    
+    // Register array types
+    type_context_register_type(ctx, Type_Array_I8);
+    type_context_register_type(ctx, Type_Array_I16);
+    type_context_register_type(ctx, Type_Array_I32);
+    type_context_register_type(ctx, Type_Array_I64);
+    type_context_register_type(ctx, Type_Array_U8);
+    type_context_register_type(ctx, Type_Array_U16);
+    type_context_register_type(ctx, Type_Array_U32);
+    type_context_register_type(ctx, Type_Array_U64);
+    type_context_register_type(ctx, Type_Array_Double);
+    type_context_register_type(ctx, Type_Array_Bool);
+    type_context_register_type(ctx, Type_Array_String);
+    type_context_register_type(ctx, Type_Object);
+    
+    // Register platform-specific type aliases
     type_context_register_type(ctx, Type_Usize);
     type_context_register_type(ctx, Type_Nint);
     type_context_register_type(ctx, Type_Uint);
+
+    // Initialize trait registry with built-in traits
+    // Each TypeContext gets its own trait registry, but all reference the same global types
+    ctx->trait_registry = trait_registry_create();
+    traits_init_builtins(ctx->trait_registry, ctx);
+    traits_register_builtin_impls(ctx->trait_registry, ctx);
 
     return ctx;
 }
@@ -149,10 +157,14 @@ void type_context_free(TypeContext* ctx) {
 
     // Free all types in the type table (linked list)
     // Note: type_info_free will handle freeing specializations for function types
+    // Note: type_info_free will skip global types automatically
     TypeEntry* entry = ctx->type_table;
     while (entry) {
         TypeEntry* next = entry->next;
+        
+        // type_info_free will check if it's a global type and skip freeing it
         type_info_free(entry->type);
+        
         free(entry);
         entry = next;
     }
@@ -170,8 +182,22 @@ TypeInfo* type_context_register_type(TypeContext* ctx, TypeInfo* type) {
     entry->llvm_type = NULL;  // Initialize to NULL
     entry->next = NULL;
 
-    // Assign type ID
-    type->type_id = ctx->type_count;
+    // Assign type ID only for non-global types
+    // Global types (Type_Unknown, Type_I8, etc.) should not have their type_id modified
+    // to avoid data races when multiple threads create contexts simultaneously
+    bool is_global_type = (type == Type_Unknown || 
+                           type == Type_I8 || type == Type_I16 || type == Type_I32 || type == Type_I64 ||
+                           type == Type_U8 || type == Type_U16 || type == Type_U32 || type == Type_U64 ||
+                           type == Type_Int || type == Type_Double || type == Type_String || 
+                           type == Type_Bool || type == Type_Void ||
+                           type == Type_Array_I8 || type == Type_Array_I16 || type == Type_Array_I32 || type == Type_Array_I64 ||
+                           type == Type_Array_U8 || type == Type_Array_U16 || type == Type_Array_U32 || type == Type_Array_U64 ||
+                           type == Type_Array_Int || type == Type_Array_Double || type == Type_Array_Bool || 
+                           type == Type_Array_String || type == Type_Object);
+    
+    if (!is_global_type) {
+        type->type_id = ctx->type_count;
+    }
 
     // Add to head of linked list
     if (ctx->type_table == NULL) {
@@ -190,6 +216,7 @@ TypeInfo* type_context_register_type(TypeContext* ctx, TypeInfo* type) {
 TypeInfo* type_context_find_type(TypeContext* ctx, const char* type_name) {
     if (!ctx || !type_name) return NULL;
 
+    // First check the context's type table
     TypeEntry* entry = ctx->type_table;
     while (entry) {
         if (entry->type->type_name && strcmp(entry->type->type_name, type_name) == 0) {
@@ -197,6 +224,21 @@ TypeInfo* type_context_find_type(TypeContext* ctx, const char* type_name) {
         }
         entry = entry->next;
     }
+
+    // If not found, check global types
+    if (strcmp(type_name, "unknown") == 0) return Type_Unknown;
+    if (strcmp(type_name, "i8") == 0) return Type_I8;
+    if (strcmp(type_name, "i16") == 0) return Type_I16;
+    if (strcmp(type_name, "i32") == 0) return Type_I32;
+    if (strcmp(type_name, "i64") == 0) return Type_I64;
+    if (strcmp(type_name, "u8") == 0) return Type_U8;
+    if (strcmp(type_name, "u16") == 0) return Type_U16;
+    if (strcmp(type_name, "u32") == 0) return Type_U32;
+    if (strcmp(type_name, "u64") == 0) return Type_U64;
+    if (strcmp(type_name, "double") == 0) return Type_Double;
+    if (strcmp(type_name, "string") == 0) return Type_String;
+    if (strcmp(type_name, "bool") == 0) return Type_Bool;
+    if (strcmp(type_name, "void") == 0) return Type_Void;
 
     return NULL;
 }
@@ -321,23 +363,28 @@ TypeInfo* type_context_find_or_create_object_type(TypeContext* ctx, TypeInfo* ob
 
 // Primitive type accessors (return actual types with aliases resolved)
 TypeInfo* type_context_get_int(TypeContext* ctx) {
-    return type_info_resolve_alias(ctx ? ctx->int_type : NULL);
+    (void)ctx;
+    return type_info_resolve_alias(Type_I32);
 }
 
 TypeInfo* type_context_get_double(TypeContext* ctx) {
-    return type_info_resolve_alias(ctx ? ctx->double_type : NULL);
+    (void)ctx;
+    return type_info_resolve_alias(Type_Double);
 }
 
 TypeInfo* type_context_get_string(TypeContext* ctx) {
-    return type_info_resolve_alias(ctx ? ctx->string_type : NULL);
+    (void)ctx;
+    return type_info_resolve_alias(Type_String);
 }
 
 TypeInfo* type_context_get_bool(TypeContext* ctx) {
-    return type_info_resolve_alias(ctx ? ctx->bool_type : NULL);
+    (void)ctx;
+    return type_info_resolve_alias(Type_Bool);
 }
 
 TypeInfo* type_context_get_void(TypeContext* ctx) {
-    return type_info_resolve_alias(ctx ? ctx->void_type : NULL);
+    (void)ctx;
+    return type_info_resolve_alias(Type_Void);
 }
 
 // Create or find a function type
@@ -425,8 +472,21 @@ TypeInfo* type_context_create_struct_type(TypeContext* ctx, const char* struct_n
 
     // Create new struct type (as an object type with a specific name)
     TypeInfo* struct_type = type_info_create(TYPE_KIND_OBJECT, strdup(struct_name));
-    struct_type->data.object.property_names = property_names;
-    struct_type->data.object.property_types = property_types;
+    
+    // IMPORTANT: Make copies of the arrays to avoid double-free
+    // The AST node's arrays will be freed when the AST is freed
+    // This TypeInfo needs its own copies that will be freed by type_context_free
+    
+    // Copy property names
+    struct_type->data.object.property_names = (char**)malloc(sizeof(char*) * property_count);
+    for (int i = 0; i < property_count; i++) {
+        struct_type->data.object.property_names[i] = strdup(property_names[i]);
+    }
+    
+    // Copy property types array (but the TypeInfo pointers themselves are shared references)
+    struct_type->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * property_count);
+    memcpy(struct_type->data.object.property_types, property_types, sizeof(TypeInfo*) * property_count);
+    
     struct_type->data.object.property_count = property_count;
     struct_type->data.object.struct_decl_node = struct_decl_node;  // Store reference for default values
 
@@ -481,10 +541,18 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
     // Create new specialization
     FunctionSpecialization* spec = (FunctionSpecialization*)calloc(1, sizeof(FunctionSpecialization));
     
-    // Generate specialized name using type names
-    // Sanitize type names to be valid LLVM identifiers (replace < > with _ )
+    // Generate specialized name using type names with module prefix
     char name[256];
-    int offset = snprintf(name, 256, "%s", func_type->type_name);
+    int offset = 0;
+    
+    // Add module prefix if available (with __ separator)
+    if (ctx->module_prefix && ctx->module_prefix[0]) {
+        offset = snprintf(name, 256, "%s__%s", ctx->module_prefix, func_type->type_name);
+    } else {
+        offset = snprintf(name, 256, "%s", func_type->type_name);
+    }
+    
+    // Add parameter types
     for (int i = 0; i < param_count; i++) {
         const char* type_name = param_type_info[i] && param_type_info[i]->type_name 
             ? param_type_info[i]->type_name 

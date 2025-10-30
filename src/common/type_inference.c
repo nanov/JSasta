@@ -9,6 +9,16 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+// Helper: Check if a symbol entry is a namespace (has an import node)
+static inline bool symbol_is_namespace(SymbolEntry* entry) {
+    return entry && entry->node && entry->node->type == AST_IMPORT_DECL;
+}
+
+// Helper: Get the imported module from a namespace symbol entry
+static inline Module* symbol_get_imported_module(SymbolEntry* entry) {
+    return symbol_is_namespace(entry) ? (Module*)entry->node->import_decl.imported_module : NULL;
+}
+
 // Helper macro for type errors (similar to PARSE_ERROR)
 #define TYPE_ERROR(diag, loc, code, ...) do { \
     if (diag) { \
@@ -646,6 +656,12 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             break;
         }
 
+        case AST_EXPORT_DECL: {
+            // Unwrap export declaration and process the inner declaration
+            collect_function_signatures(node->export_decl.declaration, symbols, type_ctx, diag);
+            break;
+        }
+
         case AST_STRUCT_DECL: {
             // Process methods as global functions
             for (int i = 0; i < node->struct_decl.method_count; i++) {
@@ -675,8 +691,12 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_BLOCK: {
             // AST_BLOCK creates a new scope with the current scope as parent
-            SymbolTable* block_symbols = symbol_table_create(symbols);
-            node->symbol_table = block_symbols;
+            // Only create if it doesn't already exist (to avoid duplicates during iteration)
+            SymbolTable* block_symbols = node->symbol_table;
+            if (!block_symbols) {
+                block_symbols = symbol_table_create(symbols);
+                node->symbol_table = block_symbols;
+            }
             for (int i = 0; i < node->block.count; i++) {
                 infer_literal_types(node->block.statements[i], block_symbols, type_ctx, diag);
             }
@@ -1172,8 +1192,12 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_FOR: {
             // For loops create their own scope for variables declared in init
-            SymbolTable* for_scope = symbol_table_create(symbols);
-            node->symbol_table = for_scope;
+            // Only create if it doesn't already exist (to avoid duplicates during iteration)
+            SymbolTable* for_scope = node->symbol_table;
+            if (!for_scope) {
+                for_scope = symbol_table_create(symbols);
+                node->symbol_table = for_scope;
+            }
 
             if (node->for_stmt.init) infer_literal_types(node->for_stmt.init, for_scope, type_ctx, diag);
             if (node->for_stmt.condition) infer_literal_types(node->for_stmt.condition, for_scope, type_ctx, diag);
@@ -1387,9 +1411,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj_name);
                 
                 // Check if this is an imported namespace (e.g., "math" in "math.add")
-                if (entry && entry->imported_module != NULL) {
+                if (symbol_is_namespace(entry)) {
                     // This is a namespace! Resolve the member from the imported module
-                    Module* imported_module = (Module*)entry->imported_module;
+                    Module* imported_module = symbol_get_imported_module(entry);
                     
                     // Look up the export in the imported module
                     ExportedSymbol* exported = module_find_export(imported_module, member_name);
@@ -1578,6 +1602,58 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                 infer_with_specializations(node->call.args[i], symbols, ctx, diag);
             }
 
+            // Handle namespace member access calls (e.g., math.add(5, 3))
+            if (node->call.callee->type == AST_MEMBER_ACCESS) {
+                ASTNode* obj = node->call.callee->member_access.object;
+                const char* member_name = node->call.callee->member_access.property;
+                
+                // Check if object is a namespace (imported module)
+                if (obj->type == AST_IDENTIFIER) {
+                    SymbolEntry* obj_entry = node->call.callee->member_access.symbol_entry;
+                    
+                    if (symbol_is_namespace(obj_entry)) {
+                        Module* imported_module = symbol_get_imported_module(obj_entry);
+                        
+                        // Find the exported function
+                        ExportedSymbol* exported = module_find_export(imported_module, member_name);
+                        if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
+                            ASTNode* func_decl = exported->declaration;
+                            
+                            // Use mangled name for specialization
+                            char* mangled_name = module_mangle_symbol(imported_module->module_prefix, member_name);
+                            
+                            // Collect argument types
+                            TypeInfo** arg_types = malloc(sizeof(TypeInfo*) * node->call.arg_count);
+                            bool all_known = true;
+
+                            for (int i = 0; i < node->call.arg_count; i++) {
+                                arg_types[i] = node->call.args[i]->type_info;
+                                if (type_info_is_unknown(arg_types[i])) {
+                                    all_known = false;
+                                }
+                            }
+
+                            // Create specialization if all types are known
+                            if (all_known && node->call.arg_count > 0) {
+                                FunctionSpecialization* spec = specialization_context_add_by_type_info(ctx, mangled_name, arg_types, node->call.arg_count);
+                                if (spec) {
+                                    specialization_create_body(spec, func_decl, arg_types, symbols, ctx, diag);
+                                    
+                                    // Set the call node's return type
+                                    if (spec->return_type_info) {
+                                        node->type_info = spec->return_type_info;
+                                    }
+                                }
+                            }
+
+                            free(arg_types);
+                            free(mangled_name);
+                            break;
+                        }
+                    }
+                }
+            }
+
             // Check if calling a user function (not a built-in)
             if (node->call.callee->type == AST_IDENTIFIER) {
                 const char* func_name = node->call.callee->identifier.name;
@@ -1684,6 +1760,72 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             for (int i = 0; i < node->method_call.arg_count; i++) {
                 analyze_call_sites(node->method_call.args[i], symbols, ctx, diag);
                 infer_with_specializations(node->method_call.args[i], symbols, ctx, diag);
+            }
+
+            // Check if this is a namespace member access (e.g., math.add(5, 3))
+            if (node->method_call.object->type == AST_IDENTIFIER) {
+                const char* obj_name = node->method_call.object->identifier.name;
+                SymbolEntry* obj_entry = symbol_table_lookup(symbols, obj_name);
+                
+                if (symbol_is_namespace(obj_entry)) {
+                    // This is a namespace call!
+                    Module* imported_module = symbol_get_imported_module(obj_entry);
+                    const char* member_name = node->method_call.method_name;
+                    
+                    // Find the exported function
+                    ExportedSymbol* exported = module_find_export(imported_module, member_name);
+                    if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
+                        ASTNode* func_decl = exported->declaration;
+                        
+                        // Use mangled name for specialization
+                        char* mangled_name = module_mangle_symbol(imported_module->module_prefix, member_name);
+                        
+                        // Collect argument types
+                        TypeInfo** arg_types = malloc(sizeof(TypeInfo*) * node->method_call.arg_count);
+                        bool all_known = true;
+
+                        for (int i = 0; i < node->method_call.arg_count; i++) {
+                            arg_types[i] = node->method_call.args[i]->type_info;
+                            if (type_info_is_unknown(arg_types[i])) {
+                                all_known = false;
+                            }
+                        }
+
+                        // Create specialization if all types are known
+                        if (all_known && node->method_call.arg_count > 0) {
+                            // Use the imported module's TypeContext, not the caller's!
+                            TypeContext* module_type_ctx = imported_module->ast->type_ctx;
+                            
+                            // Look up the function in the module's TypeContext (without mangling)
+                            TypeInfo* module_func_type = type_context_find_function_type(module_type_ctx, member_name);
+                            
+                            if (!module_func_type) {
+                                log_warning("Function '%s' not found in module '%s' TypeContext", member_name, imported_module->relative_path);
+                                break;
+                            }
+                            
+                            // Add specialization to the module's TypeContext
+                            FunctionSpecialization* spec = type_context_add_specialization(module_type_ctx, module_func_type, arg_types, node->method_call.arg_count);
+                            
+                            if (spec) {
+                                log_verbose("  Analyzing body of %s using module's own context", mangled_name);
+                                // Use the imported module's symbol table
+                                SymbolTable* module_symbols = imported_module->module_scope;
+                                specialization_create_body(spec, func_decl, arg_types, module_symbols, module_type_ctx, diag);
+                                log_verbose("  Completed body analysis of %s", mangled_name);
+                                
+                                // Set the call node's return type
+                                if (spec->return_type_info) {
+                                    node->type_info = spec->return_type_info;
+                                }
+                            }
+                        }
+
+                        free(arg_types);
+                        free(mangled_name);
+                        break;
+                    }
+                }
             }
 
             // Build the mangled function name: StructName.method_name
@@ -1851,25 +1993,45 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeCont
                 found_any = true;
             }
 
+            // Special handling for main() - always create a specialization so its body gets analyzed
+            const char* func_name = node->func_decl.name;
+            bool is_main = (strcmp(func_name, "main") == 0);
+
             if (!found_any) {
-                // No specializations - create scope with parameter types
-                SymbolTable* func_scope = symbol_table_create(symbols);
-                for (int i = 0; i < node->func_decl.param_count; i++) {
-                    TypeInfo* param_type_info = (node->func_decl.param_type_hints && node->func_decl.param_type_hints[i])
-                        ? node->func_decl.param_type_hints[i] : NULL;
-                    symbol_table_insert(func_scope, node->func_decl.params[i],
-                                      param_type_info, NULL, false);
-                }
+                if (is_main && node->func_decl.param_count == 0) {
+                    // Force creation of specialization for main() so its body is analyzed
+                    TypeInfo** empty_arg_types = NULL;
+                    
+                    // Debug: Check if namespace symbols are in the symbol table
+                    SymbolEntry* math_entry = symbol_table_lookup(symbols, "math");
+                    log_verbose("Before main specialization - math symbol lookup: %s", 
+                               math_entry ? (symbol_is_namespace(math_entry) ? "found namespace" : "found non-namespace") : "not found");
+                    
+                    FunctionSpecialization* spec = specialization_context_add_by_type_info(ctx, func_name, empty_arg_types, 0);
+                    if (spec) {
+                        specialization_create_body(spec, node, empty_arg_types, symbols, ctx, diag);
+                        log_verbose("Created specialization for entry function: %s", func_name);
+                    }
+                } else {
+                    // No specializations - create scope with parameter types
+                    SymbolTable* func_scope = symbol_table_create(symbols);
+                    for (int i = 0; i < node->func_decl.param_count; i++) {
+                        TypeInfo* param_type_info = (node->func_decl.param_type_hints && node->func_decl.param_type_hints[i])
+                            ? node->func_decl.param_type_hints[i] : NULL;
+                        symbol_table_insert(func_scope, node->func_decl.params[i],
+                                          param_type_info, NULL, false);
+                    }
 
-                // Infer return type
-                TypeInfo* inferred_return = infer_function_return_type_with_params(
-                    node->func_decl.body, func_scope, diag);
-                // Store inferred return type (or use hint if provided)
-                if (!node->func_decl.return_type_hint || type_info_is_unknown(node->func_decl.return_type_hint)) {
-                    node->func_decl.return_type_hint = inferred_return;
-                }
+                    // Infer return type
+                    TypeInfo* inferred_return = infer_function_return_type_with_params(
+                        node->func_decl.body, func_scope, diag);
+                    // Store inferred return type (or use hint if provided)
+                    if (!node->func_decl.return_type_hint || type_info_is_unknown(node->func_decl.return_type_hint)) {
+                        node->func_decl.return_type_hint = inferred_return;
+                    }
 
-                symbol_table_free(func_scope);
+                    symbol_table_free(func_scope);
+                }
             }
             break;
         }
@@ -2156,7 +2318,11 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     if (!type_info_is_unknown(runtime_type)) {
                         node->type_info = runtime_type;
                     } else {
-                        // Unknown function - default to void, will error in codegen if not found
+                        // Unknown function - report error
+                        if (diag) {
+                            diagnostic_error(diag, node->loc, 
+                                "E_UNDEFINED_FUNC", "Undefined function: %s", func_name);
+                        }
                         node->type_info = Type_Void;
                     }
                 }
@@ -2188,6 +2354,47 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             infer_with_specializations(node->method_call.object, symbols, ctx, diag);
             for (int i = 0; i < node->method_call.arg_count; i++) {
                 infer_with_specializations(node->method_call.args[i], symbols, ctx, diag);
+            }
+
+            // Check if this is a namespace member access (e.g., math.add(5, 3))
+            if (node->method_call.object->type == AST_IDENTIFIER) {
+                const char* obj_name = node->method_call.object->identifier.name;
+                SymbolEntry* obj_entry = symbol_table_lookup(symbols, obj_name);
+                
+                if (symbol_is_namespace(obj_entry)) {
+                    // This is a namespace call!
+                    Module* imported_module = symbol_get_imported_module(obj_entry);
+                    const char* member_name = node->method_call.method_name;
+                    
+                    // Use mangled name to look up the specialization
+                    char* mangled_name = module_mangle_symbol(imported_module->module_prefix, member_name);
+                    
+                    // Find the specialization and set the return type
+                    TypeInfo* func_type = type_context_find_function_type(ctx, mangled_name);
+                    if (func_type && func_type->data.function.specializations) {
+                        // Find the matching specialization by argument types
+                        TypeInfo** arg_types = malloc(sizeof(TypeInfo*) * node->method_call.arg_count);
+                        for (int i = 0; i < node->method_call.arg_count; i++) {
+                            arg_types[i] = node->method_call.args[i]->type_info;
+                        }
+                        
+                        FunctionSpecialization* spec = specialization_context_find_by_type_info(
+                            ctx, mangled_name, arg_types, node->method_call.arg_count);
+                        
+                        if (spec && spec->return_type_info) {
+                            node->type_info = spec->return_type_info;
+                        } else {
+                            node->type_info = Type_Unknown;
+                        }
+                        
+                        free(arg_types);
+                    } else {
+                        node->type_info = Type_Unknown;
+                    }
+                    
+                    free(mangled_name);
+                    break;
+                }
             }
 
             // Build the mangled function name: StructName.method_name

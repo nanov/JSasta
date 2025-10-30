@@ -1,0 +1,25 @@
+{
+  "languages": {
+    "JSasta": {
+      "language_servers": ["jsasta-lsp"],
+      "file_types": ["jsa", "jsasta"],
+      "line_comments": ["// "],
+      "block_comments": [["/*", "*/"]],
+      "brackets": [
+        { "start": "{", "end": "}", "close": true, "newline": true },
+        { "start": "[", "end": "]", "close": true, "newline": true },
+        { "start": "(", "end": ")", "close": true, "newline": false }
+      ],
+      "autoclose_before": ";:.,=}])>` \n\t"
+    }
+  },
+  "lsp": {
+    "jsasta-lsp": {
+      "binary": {
+        "path": "jsastad",
+        "arguments": ["--stdio"]
+      },
+      "settings": {}
+    }
+  }
+}

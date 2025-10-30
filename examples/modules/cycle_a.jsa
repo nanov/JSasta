@@ -1,0 +1,7 @@
+// cycle_a.jsa - Part of cyclic import test
+
+import cycle_b from "./cycle_b.jsa";
+
+export function funcA() {
+    return 1;
+}

@@ -2,11 +2,22 @@
 #include "traits.h"
 #include "operator_utils.h"
 #include "logger.h"
+#include "module_loader.h"
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Helper: Check if a symbol entry is a namespace (has an import node)
+static inline bool symbol_is_namespace(SymbolEntry* entry) {
+    return entry && entry->node && entry->node->type == AST_IMPORT_DECL;
+}
+
+// Helper: Get the imported module from a namespace symbol entry
+static inline Module* symbol_get_imported_module(SymbolEntry* entry) {
+    return symbol_is_namespace(entry) ? (Module*)entry->node->import_decl.imported_module : NULL;
+}
 
 // Forward declarations
 static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info);
@@ -160,13 +171,13 @@ static LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     }
 
     // Check other primitive types by pointer comparison
-    if (type_info == ctx->double_type) {
+    if (type_info == Type_Double) {
         return LLVMDoubleTypeInContext(gen->context);
-    } else if (type_info == ctx->string_type) {
+    } else if (type_info == Type_String) {
         return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-    } else if (type_info == ctx->bool_type) {
+    } else if (type_info == Type_Bool) {
         return LLVMInt1TypeInContext(gen->context);
-    } else if (type_info == ctx->void_type) {
+    } else if (type_info == Type_Void) {
         return LLVMVoidTypeInContext(gen->context);
     }
 
@@ -182,11 +193,11 @@ static LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
         return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
     } else if (type_info->kind == TYPE_KIND_ARRAY && type_info->data.array.element_type) {
         // Array type - determine element type
-        if (type_info->data.array.element_type == ctx->int_type) {
+        if (type_info->data.array.element_type == Type_I32) {
             return LLVMPointerType(LLVMInt32TypeInContext(gen->context), 0);
-        } else if (type_info->data.array.element_type == ctx->double_type) {
+        } else if (type_info->data.array.element_type == Type_Double) {
             return LLVMPointerType(LLVMDoubleTypeInContext(gen->context), 0);
-        } else if (type_info->data.array.element_type == ctx->string_type) {
+        } else if (type_info->data.array.element_type == Type_String) {
             return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 0);
         }
     } else if (type_info->kind == TYPE_KIND_OBJECT) {
@@ -1207,13 +1218,41 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         }
 
         case AST_CALL: {
-            // Check if this is a member access call (e.g., console.log())
+            // Check if this is a member access call (e.g., console.log() or math.add())
             if (node->call.callee->type == AST_MEMBER_ACCESS) {
                 ASTNode* obj = node->call.callee->member_access.object;
                 char* prop = node->call.callee->member_access.property;
 
-                // Build fully qualified name (e.g., "console.log")
+                // Check if this is a namespace member access (e.g., math.add)
                 if (obj->type == AST_IDENTIFIER) {
+                    SymbolEntry* obj_entry = node->call.callee->member_access.symbol_entry;
+                    
+                    // If the object is a namespace (imported module)
+                    if (symbol_is_namespace(obj_entry)) {
+                        Module* imported_module = symbol_get_imported_module(obj_entry);
+                        
+                        // Find the exported symbol
+                        ExportedSymbol* exported = module_find_export(imported_module, prop);
+                        if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
+                            // Use the mangled function name
+                            char* mangled_name = module_mangle_symbol(imported_module->module_prefix, prop);
+                            
+                            // Fall through to regular function call logic with the mangled name
+                            // We'll handle this by treating it as a regular identifier call
+                            // Create a temporary identifier node with the mangled name
+                            ASTNode temp_callee = *node->call.callee;
+                            temp_callee.type = AST_IDENTIFIER;
+                            temp_callee.identifier.name = mangled_name;
+                            
+                            // Temporarily replace the callee
+                            node->call.callee = &temp_callee;
+                            
+                            // Fall through to regular call handling below
+                            goto handle_regular_call;
+                        }
+                    }
+                    
+                    // Not a namespace, try runtime function
                     char full_name[256];
                     snprintf(full_name, sizeof(full_name), "%s.%s",
                             obj->identifier.name, prop);
@@ -1230,6 +1269,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         prop);
                 return NULL;
             }
+            
+        handle_regular_call:
 
             // Regular function call (identifier only)
             if (node->call.callee->type != AST_IDENTIFIER) {
@@ -1394,9 +1435,70 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
             } else {
                 // Instance method call: obj.method(args)
-                // Get the object pointer
+                // First check if this is a namespace member call (e.g., math.add())
                 if (node->method_call.object->type == AST_IDENTIFIER) {
                     SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->method_call.object->identifier.name);
+                    
+                    // Check if this is a namespace
+                    if (symbol_is_namespace(entry)) {
+                        // This is a namespace call! Handle it as a regular function call
+                        Module* imported_module = symbol_get_imported_module(entry);
+                        
+                        // Find the specialization in the module's TypeContext
+                        TypeContext* module_type_ctx = imported_module->ast->type_ctx;
+                        const char* member_name = node->method_call.method_name;
+                        TypeInfo* func_type = type_context_find_function_type(module_type_ctx, member_name);
+                        
+                        if (!func_type) {
+                            log_error_at(&node->loc, "Function '%s' not found in module '%s'", 
+                                        member_name, imported_module->relative_path);
+                            return NULL;
+                        }
+                        
+                        // Get argument types for specialization lookup
+                        TypeInfo** arg_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->method_call.arg_count);
+                        for (int i = 0; i < node->method_call.arg_count; i++) {
+                            arg_types[i] = node->method_call.args[i]->type_info;
+                        }
+                        
+                        // Find the specialization
+                        FunctionSpecialization* spec = specialization_context_find_by_type_info(
+                            module_type_ctx, member_name, arg_types, node->method_call.arg_count);
+                        free(arg_types);
+                        
+                        if (!spec) {
+                            log_error_at(&node->loc, "No specialization found for %s.%s", 
+                                        imported_module->relative_path, member_name);
+                            return NULL;
+                        }
+                        
+                        // Get the function from the module
+                        LLVMValueRef func = LLVMGetNamedFunction(gen->module, spec->specialized_name);
+                        if (!func) {
+                            log_error_at(&node->loc, "Function '%s' not generated", spec->specialized_name);
+                            return NULL;
+                        }
+                        
+                        // Generate arguments
+                        LLVMValueRef* args = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * node->method_call.arg_count);
+                        for (int i = 0; i < node->method_call.arg_count; i++) {
+                            args[i] = codegen_node(gen, node->method_call.args[i]);
+                            if (!args[i]) {
+                                free(args);
+                                return NULL;
+                            }
+                        }
+                        
+                        // Call the function
+                        LLVMValueRef result = LLVMBuildCall2(gen->builder, 
+                            LLVMGlobalGetValueType(func), func, args, node->method_call.arg_count, 
+                            "namespace_call");
+                        
+                        free(args);
+                        return result;
+                    }
+                    
+                    // Not a namespace - regular instance method call
                     if (!entry || !entry->value) {
                         log_error_at(&node->loc, "Undefined variable: %s", node->method_call.object->identifier.name);
                         return NULL;
@@ -1640,13 +1742,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Determine element type and size
             LLVMTypeRef elem_type;
             int elem_size;
-            if (type_info_is_array_of(node->type_info, gen->type_ctx->int_type)) {
+            if (type_info_is_array_of(node->type_info, Type_I32)) {
                 elem_type = LLVMInt32TypeInContext(gen->context);
                 elem_size = 4;
-            } else if (type_info_is_array_of(node->type_info, gen->type_ctx->double_type)) {
+            } else if (type_info_is_array_of(node->type_info, Type_Double)) {
                 elem_type = LLVMDoubleTypeInContext(gen->context);
                 elem_size = 8;
-            } else if (type_info_is_array_of(node->type_info, gen->type_ctx->string_type)) {
+            } else if (type_info_is_array_of(node->type_info, Type_String)) {
                 elem_type = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
                 elem_size = 8; // pointer size
             } else {
@@ -2537,6 +2639,20 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
             codegen_node(gen, ast);
         }
 
+        // Call the entry module's main() function
+        if (gen->type_ctx && gen->type_ctx->module_prefix) {
+            // Construct the mangled main function name
+            char mangled_main[256];
+            snprintf(mangled_main, 256, "%s__main", gen->type_ctx->module_prefix);
+            
+            // Look up the function
+            LLVMValueRef entry_main = LLVMGetNamedFunction(gen->module, mangled_main);
+            if (entry_main) {
+                // Call it
+                LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(entry_main), entry_main, NULL, 0, "");
+            }
+        }
+        
         // Add return 0 if not present
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
             LLVMBuildRet(gen->builder, LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0));

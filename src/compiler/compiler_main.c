@@ -61,7 +61,7 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     // Run type inference on all modules in dependency order
     // Start with imported modules (dependencies) first, then the entry module
     
-    // First, run type inference on all imported modules (they have no imports themselves for now)
+    // First, run type inference on all imported modules
     for (Module* mod = registry->modules; mod != NULL; mod = mod->next) {
         if (mod == entry_module) continue; // Skip entry module, do it last
         
@@ -72,7 +72,16 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
             mod->module_scope = symbol_table_create(NULL);
         }
         
-        type_inference_with_diagnostics(mod->ast, mod->module_scope, registry->type_ctx, registry->diagnostics);
+        // Setup import symbols for this module
+        log_verbose("Setting up imports for module: %s", mod->relative_path);
+        if (!module_setup_import_symbols(mod, mod->module_scope)) {
+            log_error("Failed to setup import symbols for module: %s", mod->relative_path);
+            module_registry_free(registry);
+            return;
+        }
+        
+        // Use the module's own TypeContext
+        type_inference_with_diagnostics(mod->ast, mod->module_scope, mod->type_ctx, registry->diagnostics);
         
         if (diagnostic_has_errors(registry->diagnostics)) {
             log_error("Type inference failed for module: %s", mod->relative_path);
@@ -97,7 +106,8 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     
     // Finally, run type inference on the entry module
     log_verbose("Running type inference on entry module: %s", entry_module->relative_path);
-    type_inference_with_diagnostics(entry_module->ast, entry_module->module_scope, registry->type_ctx, registry->diagnostics);
+    // Use the entry module's own TypeContext
+    type_inference_with_diagnostics(entry_module->ast, entry_module->module_scope, entry_module->type_ctx, registry->diagnostics);
 
     // Check for type inference errors
     if (diagnostic_has_errors(registry->diagnostics)) {
@@ -117,7 +127,6 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     // Code generation
     log_section("Code Generation");
     CodeGen* gen = codegen_create("js_module");
-    gen->type_ctx = registry->type_ctx;  // Set type context for codegen
     gen->enable_debug = enable_debug;  // Set debug flag
     if (enable_debug) {
         gen->source_filename = input_file;
@@ -158,6 +167,9 @@ void print_usage(const char* program_name) {
 }
 
 int main(int argc, char** argv) {
+    // Initialize global type system FIRST (before any parsing/type inference)
+    type_system_init_global_types();
+    
     LogLevel log_level = LOG_INFO;
     bool enable_debug = false;
 

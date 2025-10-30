@@ -1,0 +1,11 @@
+// utils.jsa - Utility functions that use math
+
+import math from "./math.jsa";
+
+export function double(x) {
+    return math.multiply(x, 2);
+}
+
+export function increment(x) {
+    return math.add(x, 1);
+}

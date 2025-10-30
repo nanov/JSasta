@@ -1,0 +1,17 @@
+// test_multiple.jsa - Test importing multiple modules
+
+import math from "./math.jsa";
+import strings from "./strings.jsa";
+
+external printf(string, ...): void;
+
+function main() {
+    var sum = math.add(10, 20);
+    printf("10 + 20 = %d\n", sum);
+
+    var product = math.multiply(3, 7);
+    printf("3 * 7 = %d\n", product);
+
+    // Note: string returns aren't fully supported yet, so this is a placeholder
+    printf("Testing strings module\n");
+}

@@ -34,8 +34,8 @@ struct Module {
     Module** dependencies;       // Modules this module imports
     int dependency_count;
     
+    bool is_loading;             // Currently being loaded (for cyclic import detection)
     bool is_parsed;              // Has been parsed
-    bool is_type_checked;        // Has been type-checked
     
     struct Module* next;         // For registry linked list
 };
@@ -86,7 +86,7 @@ bool module_load_imports(Module* module, ModuleRegistry* registry);
 bool module_setup_import_symbols(Module* module, SymbolTable* symbols);
 
 // Type-check a module (including resolving imports)
-bool module_type_check(Module* module, ModuleRegistry* registry);
+
 
 // === Export Management ===
 

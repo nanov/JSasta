@@ -1,0 +1,12 @@
+function main(): void {
+    // Valid variable declaration
+    let myVariable: int = 42;
+
+    // Use the variable - try "Go to Definition" (Cmd+Click or F12) on myVariable!
+    print(myVariable);
+
+    // Another example
+    let counter: int = 0;
+    counter = counter + 1;
+    print(counter);
+}

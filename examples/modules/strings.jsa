@@ -1,0 +1,9 @@
+// strings.jsa - Simple string utilities
+
+export function greeting(name) {
+    return name;
+}
+
+export function farewell() {
+    return "goodbye";
+}

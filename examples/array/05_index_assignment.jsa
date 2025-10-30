@@ -5,6 +5,8 @@ struct Container {
     value: i32;
 }
 
+a();
+
 var c: Container;
 var b:i32[10];
 

@@ -1361,9 +1361,21 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
     if (parser->type_ctx) {
         TypeInfo* struct_type = type_context_find_struct_type(parser->type_ctx, node->struct_decl.name);
         if (struct_type && struct_type->data.object.property_count == 0) {
-            // Update the properties
-            struct_type->data.object.property_names = node->struct_decl.property_names;
-            struct_type->data.object.property_types = node->struct_decl.property_types;
+            // IMPORTANT: Copy the arrays to avoid double-free
+            // The AST node's arrays will be freed when the AST is freed
+            // The TypeInfo needs its own copies that will be freed by type_context_free
+            
+            // Copy property names
+            struct_type->data.object.property_names = (char**)malloc(sizeof(char*) * node->struct_decl.property_count);
+            for (int i = 0; i < node->struct_decl.property_count; i++) {
+                struct_type->data.object.property_names[i] = strdup(node->struct_decl.property_names[i]);
+            }
+            
+            // Copy property types array (but the TypeInfo pointers themselves are shared references)
+            struct_type->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->struct_decl.property_count);
+            memcpy(struct_type->data.object.property_types, node->struct_decl.property_types, 
+                   sizeof(TypeInfo*) * node->struct_decl.property_count);
+            
             struct_type->data.object.property_count = node->struct_decl.property_count;
             struct_type->data.object.struct_decl_node = node;
             

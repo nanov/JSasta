@@ -1,7 +1,7 @@
 external printf(string, ...): void;
 
 var WIDTH = 100;
-var GENERATIONS = 60;
+var GENERATIONS  60;
 
 const ANSI_RESET = "\e[0m";
 const ANSI_BLACK = "\e[30m"; // "\033[0;30m";

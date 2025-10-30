@@ -4,13 +4,15 @@
 // Variable declarations with type annotations
 var count: int = 42;
 var temperature: double = 98.6;
-var message: string = "Hello, JSasta!";
+var message: string  "Hello, JSasta!";
 var isActive: bool = true;
+
 
 // Function with parameter and return type annotations
 function calculateArea(width: int, height: int): int {
     return width * height;
 }
+
 
 // Object with type annotation
 var person: { name: string, age: int, active: bool } = {

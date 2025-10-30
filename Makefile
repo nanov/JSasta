@@ -36,16 +36,19 @@ LSP_TARGET = $(BUILD_DIR)/$(LSP_NAME)
 # Common sources (everything in common directory)
 COMMON_SOURCES = $(wildcard $(COMMON_DIR)/*.c)
 COMMON_OBJECTS = $(COMMON_SOURCES:$(COMMON_DIR)/%.c=$(BUILD_DIR)/common/%.o)
+COMMON_HEADERS = $(wildcard $(COMMON_DIR)/*.h)
 
 # Compiler sources
 COMPILER_SOURCES = $(wildcard $(COMPILER_DIR)/*.c)
 COMPILER_OBJECTS = $(COMPILER_SOURCES:$(COMPILER_DIR)/%.c=$(BUILD_DIR)/compiler/%.o)
+COMPILER_HEADERS = $(wildcard $(COMPILER_DIR)/*.h)
 
-# LSP sources
-LSP_SOURCES = $(wildcard $(LSP_DIR)/*.c)
+# LSP sources (exclude test_code_index.c)
+LSP_SOURCES = $(filter-out $(LSP_DIR)/test_code_index.c, $(wildcard $(LSP_DIR)/*.c))
 LSP_OBJECTS = $(LSP_SOURCES:$(LSP_DIR)/%.c=$(BUILD_DIR)/lsp/%.o)
+LSP_HEADERS = $(wildcard $(LSP_DIR)/*.h)
 
-.PHONY: all compiler lsp clean test install uninstall help
+.PHONY: all compiler lsp clean test install uninstall help test_code_index
 
 # Default target: build both binaries
 all: info compiler lsp
@@ -84,18 +87,31 @@ $(LSP_TARGET): $(COMMON_OBJECTS) $(LSP_OBJECTS) | $(BUILD_DIR)
 	$(CC) $(COMMON_OBJECTS) $(LSP_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(LSP_TARGET)
 	@echo "Built: $(LSP_TARGET)"
 
-# Compile common objects
-$(BUILD_DIR)/common/%.o: $(COMMON_DIR)/%.c | $(BUILD_DIR)
+# Test code index
+test_code_index: $(BUILD_DIR)/test_code_index
+	@echo "Running code index test..."
+	$(BUILD_DIR)/test_code_index test_code_index.jsa
+
+$(BUILD_DIR)/test_code_index: $(COMMON_OBJECTS) $(BUILD_DIR)/lsp/code_index.o $(BUILD_DIR)/lsp/test_code_index.o | $(BUILD_DIR)
+	@echo "Linking test_code_index"
+	$(CC) $(COMMON_OBJECTS) $(BUILD_DIR)/lsp/code_index.o $(BUILD_DIR)/lsp/test_code_index.o $(LDFLAGS) $(LDLIBS) -o $(BUILD_DIR)/test_code_index
+
+$(BUILD_DIR)/lsp/test_code_index.o: $(LSP_DIR)/test_code_index.c $(COMMON_HEADERS) $(LSP_HEADERS) | $(BUILD_DIR)
+	@echo "Compiling test_code_index"
+	$(CC) $(CFLAGS) -c $(LSP_DIR)/test_code_index.c -o $(BUILD_DIR)/lsp/test_code_index.o
+
+# Compile common objects (depend on all common headers)
+$(BUILD_DIR)/common/%.o: $(COMMON_DIR)/%.c $(COMMON_HEADERS) | $(BUILD_DIR)
 	@echo "Compiling [common]: $<"
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Compile compiler objects
-$(BUILD_DIR)/compiler/%.o: $(COMPILER_DIR)/%.c | $(BUILD_DIR)
+# Compile compiler objects (depend on common headers and compiler headers)
+$(BUILD_DIR)/compiler/%.o: $(COMPILER_DIR)/%.c $(COMMON_HEADERS) $(COMPILER_HEADERS) | $(BUILD_DIR)
 	@echo "Compiling [compiler]: $<"
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Compile LSP objects
-$(BUILD_DIR)/lsp/%.o: $(LSP_DIR)/%.c | $(BUILD_DIR)
+# Compile LSP objects (depend on common headers and LSP headers)
+$(BUILD_DIR)/lsp/%.o: $(LSP_DIR)/%.c $(COMMON_HEADERS) $(LSP_HEADERS) | $(BUILD_DIR)
 	@echo "Compiling [lsp]: $<"
 	$(CC) $(CFLAGS) -c $< -o $@
 

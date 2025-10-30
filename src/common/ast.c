@@ -282,6 +282,7 @@ ASTNode* ast_clone(ASTNode* node) {
     clone->type_info = node->type_info ? type_info_clone(node->type_info) : NULL;
     clone->type_ctx = NULL; // Don't clone type context
     clone->symbol_table = symbol_table_clone(node->symbol_table); // Clone symbol table
+    clone->loc = node->loc; // Copy source location
 
     switch (node->type) {
         case AST_PROGRAM:
