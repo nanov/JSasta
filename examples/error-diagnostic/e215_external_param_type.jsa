@@ -1,0 +1,5 @@
+// E215: External function parameters must have type annotations
+// This error occurs when external function parameters lack type annotations
+
+// Error: external function parameter needs type annotation
+external printf(format): void;

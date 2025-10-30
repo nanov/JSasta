@@ -1,0 +1,7 @@
+// E219: Expected struct name after 'struct' keyword
+// This error occurs when struct declaration is missing a name
+
+// Error: missing struct name
+struct {
+    x: i32;
+}

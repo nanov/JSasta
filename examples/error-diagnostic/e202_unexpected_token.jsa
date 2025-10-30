@@ -1,0 +1,7 @@
+// E202: Unexpected token in expression
+// This error occurs when the parser encounters an unexpected token in an expression
+
+function main() {
+    // Error: closing brace is not a valid expression
+    var x = };
+}

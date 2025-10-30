@@ -1,0 +1,7 @@
+// T313: Array size must be an integer
+// This error occurs when array size is a floating-point number
+
+function main() {
+    // Error: array size must be an integer, not 3.14
+    var arr: i32[3.14];
+}

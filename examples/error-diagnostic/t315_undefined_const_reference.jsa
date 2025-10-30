@@ -1,0 +1,9 @@
+// T315: Could not resolve const declaration (undefined reference)
+// This error occurs when const references an undefined identifier
+
+// Error: UNDEFINED_CONST is never declared
+const SIZE = UNDEFINED_CONST * 2;
+
+function main() {
+    var arr: i32[SIZE];
+}

@@ -1,0 +1,10 @@
+// T315: Circular dependency in const declaration
+// This error occurs when const declarations have circular dependencies
+
+// Error: A depends on B, B depends on A (circular)
+const A = B + 1;
+const B = A + 1;
+
+function main() {
+    var x = A;
+}

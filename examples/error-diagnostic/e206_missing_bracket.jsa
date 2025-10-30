@@ -1,0 +1,8 @@
+// E206: Expected ']' after index expression
+// This error occurs when array/index access is missing the closing bracket
+
+function main() {
+    var arr = [1, 2, 3];
+    // Error: missing closing bracket
+    var val = arr[0;
+}

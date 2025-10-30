@@ -1,0 +1,7 @@
+// E214: Expected expression after =
+// This error occurs when variable initialization has no value
+
+function main() {
+    // Error: missing value after =
+    var x = ;
+}

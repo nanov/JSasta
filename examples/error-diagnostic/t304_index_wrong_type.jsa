@@ -1,0 +1,9 @@
+// T304: Type does not implement Index<T> with the given index type
+// This error occurs when indexing with an incompatible type
+
+function main() {
+    var s = "hello";
+
+    // Error: string implements Index<i32> but not Index<double>
+    var ch = s[3.14];
+}

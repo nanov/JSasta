@@ -1,0 +1,7 @@
+// E212: Expected array size expression after '['
+// This error occurs when array declaration has empty size brackets
+
+function main() {
+    // Error: missing array size expression
+    var arr: i32[];
+}

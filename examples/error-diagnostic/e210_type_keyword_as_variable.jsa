@@ -1,0 +1,7 @@
+// E210: Cannot use type keyword as variable name
+// This error occurs when trying to use a type name as a variable name
+
+function main() {
+    // Error: 'i32' is a type keyword and cannot be used as variable name
+    var i32 = 10;
+}

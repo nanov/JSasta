@@ -1,0 +1,5 @@
+// E216: Unknown type in external function parameter
+// This error occurs when an external function uses an undefined type
+
+// Error: 'UnknownType' is not a recognized type
+external printf(format: UnknownType): void;

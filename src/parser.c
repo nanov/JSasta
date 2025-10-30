@@ -4,6 +4,7 @@
 
 #include "jsasta_compiler.h"
 #include "logger.h"
+#include "diagnostics.h"
 
 // Helper macro to create AST nodes with current token location
 #define AST_NODE(parser, type) ast_create_with_loc(type, (SourceLocation){ \
@@ -11,6 +12,16 @@
     .line = (parser)->current_token->line, \
     .column = (parser)->current_token->column \
 })
+
+// Helper macro to add parse error diagnostic
+#define PARSE_ERROR(parser, code, ...) do { \
+    SourceLocation loc = { \
+        .filename = (parser)->filename, \
+        .line = (parser)->current_token->line, \
+        .column = (parser)->current_token->column \
+    }; \
+    diagnostic_error((parser)->diagnostics, loc, code, __VA_ARGS__); \
+} while(0)
 
 static void parser_advance(Parser* parser) {
     if (parser->current_token) {
@@ -30,7 +41,10 @@ static bool parser_expect(Parser* parser, TokenType type) {
             .line = parser->current_token->line,
             .column = parser->current_token->column
         };
-        log_error_at(&loc, "Expected token type %d, got %d", type, parser->current_token->type);
+        diagnostic_error(parser->diagnostics, loc, "E100", 
+                        "Expected %s, got %s", 
+                        token_type_to_string(type),
+                        token_type_to_string(parser->current_token->type));
         return false;
     }
     parser_advance(parser);
@@ -169,13 +183,11 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
         if (parser->type_ctx) {
             type_info = type_context_find_struct_type(parser->type_ctx, type_name);
             if (!type_info) {
-                log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column), 
-                            "Unknown type '%s'", type_name);
+                PARSE_ERROR(parser, "E101", "Unknown type '%s'", type_name);
                 type_info = Type_Unknown;
             }
         } else {
-            log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column), 
-                        "Unknown type '%s'", type_name);
+            PARSE_ERROR(parser, "E101", "Unknown type '%s'", type_name);
             type_info = Type_Unknown;
         }
     }
@@ -204,12 +216,13 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
     return type_info;
 }
 
-Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx) {
+Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx, DiagnosticContext* diagnostics) {
     Parser* parser = (Parser*)malloc(sizeof(Parser));
     parser->lexer = lexer_create(source);
     parser->current_token = NULL;
     parser->filename = filename;
     parser->type_ctx = type_ctx;
+    parser->diagnostics = diagnostics;  // Don't own, just reference
     parser_advance(parser);
     return parser;
 }
@@ -219,6 +232,7 @@ void parser_free(Parser* parser) {
         token_free(parser->current_token);
     }
     lexer_free(parser->lexer);
+    // Don't free diagnostics - it's owned by the caller
     free(parser);
 }
 
@@ -356,12 +370,7 @@ static ASTNode* parse_primary(Parser* parser) {
 
                 // Parse property name (must be an identifier or string)
                 if (!parser_match(parser, TOKEN_IDENTIFIER) && !parser_match(parser, TOKEN_STRING)) {
-                    SourceLocation loc = {
-                        .filename = parser->filename,
-                        .line = parser->current_token->line,
-                        .column = parser->current_token->column
-                    };
-                    log_error_at(&loc, "Expected property name in object literal");
+                    PARSE_ERROR(parser, "E201", "Expected property name in object literal");
                     return node;
                 }
 
@@ -394,12 +403,8 @@ static ASTNode* parse_primary(Parser* parser) {
 
         // NOTE: TypeInfo will be created during type inference with structural sharing
     } else {
-        SourceLocation loc = {
-            .filename = parser->filename,
-            .line = parser->current_token->line,
-            .column = parser->current_token->column
-        };
-        log_error_at(&loc, "Unexpected token in expression (type %d)", parser->current_token->type);
+        PARSE_ERROR(parser, "E202", "Unexpected token in expression: %s", 
+                   token_type_to_string(parser->current_token->type));
     }
 
     return node;
@@ -440,12 +445,7 @@ static ASTNode* parse_call(Parser* parser) {
                 node = postfix;
                 continue;
             } else {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Postfix operator can only be applied to identifiers or member access");
+                PARSE_ERROR(parser, "E203", "Postfix operator can only be applied to identifiers or member access");
                 return node;
             }
         }
@@ -462,12 +462,7 @@ static ASTNode* parse_call(Parser* parser) {
 
             // Handle property access (e.g., console.log, obj.method)
             if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Expected identifier after '.'");
+                PARSE_ERROR(parser, "E204", "Expected identifier after '.'");
                 return node;
             }
 
@@ -552,12 +547,7 @@ static ASTNode* parse_unary(Parser* parser) {
         // We parse as primary and then check if we need member/index access
         ASTNode* target = parse_primary(parser);
         if (!target) {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Expected identifier or expression after %s", prefix->prefix_op.op);
+            PARSE_ERROR(parser, "E207", "Expected identifier or expression after %s", prefix->prefix_op.op);
             return NULL;
         }
 
@@ -567,12 +557,7 @@ static ASTNode* parse_unary(Parser* parser) {
                 // Member access
                 parser_advance(parser);
                 if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                    SourceLocation loc = {
-                        .filename = parser->filename,
-                        .line = parser->current_token->line,
-                        .column = parser->current_token->column
-                    };
-                    log_error_at(&loc, "Expected property name after '.'");
+                    PARSE_ERROR(parser, "E205", "Expected property name after '.'");
                     return NULL;
                 }
 
@@ -589,12 +574,7 @@ static ASTNode* parse_unary(Parser* parser) {
                 index->index_access.index = parse_expression(parser);
 
                 if (!parser_match(parser, TOKEN_RBRACKET)) {
-                    SourceLocation loc = {
-                        .filename = parser->filename,
-                        .line = parser->current_token->line,
-                        .column = parser->current_token->column
-                    };
-                    log_error_at(&loc, "Expected ']' after index expression");
+                    PARSE_ERROR(parser, "E206", "Expected ']' after index expression");
                     return NULL;
                 }
                 parser_advance(parser);
@@ -825,12 +805,7 @@ static ASTNode* parse_assignment(Parser* parser) {
             compound->compound_assignment.value = parse_assignment(parser);
             return compound;
         } else {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Compound assignment requires identifier or member access on left side");
+            PARSE_ERROR(parser, "E209", "Compound assignment requires identifier or member access on left side");
             return node;
         }
     }
@@ -873,12 +848,7 @@ static ASTNode* parse_assignment(Parser* parser) {
             return member_assignment;
         }
         else {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Invalid assignment target");
+            PARSE_ERROR(parser, "E208", "Invalid assignment target");
             return node;
         }
     }
@@ -918,17 +888,12 @@ static ASTNode* parse_var_declaration(Parser* parser) {
     parser_advance(parser); // skip 'var', 'let', or 'const'
 
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        SourceLocation loc = {
-            .filename = parser->filename,
-            .line = parser->current_token->line,
-            .column = parser->current_token->column
-        };
         // Check if a type keyword was used as a variable name
         if (parser->current_token->type >= TOKEN_I8 && parser->current_token->type <= TOKEN_INT) {
-            log_error_at(&loc, "Cannot use type keyword '%s' as variable name", 
+            PARSE_ERROR(parser, "E210", "Cannot use type keyword '%s' as variable name", 
                         parser->current_token->value);
         } else {
-            log_error_at(&loc, "Expected identifier after var/let/const");
+            PARSE_ERROR(parser, "E211", "Expected identifier after var/let/const");
         }
         
         // Error recovery: skip to next semicolon or statement boundary
@@ -962,8 +927,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
         ASTNode* size_expr = parse_ternary(parser);
         
         if (!size_expr) {
-            log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
-                        "Expected array size expression after '['");
+            PARSE_ERROR(parser, "E212", "Expected array size expression after '['");
             ast_free(node);
             return NULL;
         }
@@ -973,8 +937,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
         node->var_decl.array_size_expr = size_expr;
         
         if (!parser_match(parser, TOKEN_RBRACKET)) {
-            log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
-                        "Expected ']' after array size");
+            PARSE_ERROR(parser, "E213", "Expected ']' after array size");
             ast_free(node);
             return NULL;
         }
@@ -999,12 +962,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
         parser_advance(parser);
         node->var_decl.init = parse_expression(parser);
         if (!node->var_decl.init) {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Expected expression after =");
+            PARSE_ERROR(parser, "E214", "Expected expression after =");
             ast_free(node);
             return NULL;
         }
@@ -1111,12 +1069,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     param_name = first_identifier;
                     param_type = parse_type_annotation(parser);
                     if (!param_type) {
-                        SourceLocation loc = {
-                            .filename = parser->filename,
-                            .line = parser->current_token->line,
-                            .column = parser->current_token->column
-                        };
-                        log_error_at(&loc, "External function parameters must have type annotations");
+                        PARSE_ERROR(parser, "E215", "External function parameters must have type annotations");
                         free(first_identifier);
                         return node;
                     }
@@ -1125,12 +1078,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     // Look up the type by name
                     param_type = type_context_find_type(parser->type_ctx, first_identifier);
                     if (!param_type) {
-                        SourceLocation loc = {
-                            .filename = parser->filename,
-                            .line = parser->current_token->line,
-                            .column = parser->current_token->column
-                        };
-                        log_error_at(&loc, "Unknown type '%s' in external function parameter", first_identifier);
+                        PARSE_ERROR(parser, "E216", "Unknown type '%s' in external function parameter", first_identifier);
                         free(first_identifier);
                         return node;
                     }
@@ -1141,12 +1089,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     free(first_identifier);
                 }
             } else {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Expected parameter name or type in external function declaration");
+                PARSE_ERROR(parser, "E217", "Expected parameter name or type in external function declaration");
                 return node;
             }
             
@@ -1161,12 +1104,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
     // Parse REQUIRED return type annotation
     node->func_decl.return_type_hint = parse_type_annotation(parser);
     if (!node->func_decl.return_type_hint) {
-        SourceLocation loc = {
-            .filename = parser->filename,
-            .line = parser->current_token->line,
-            .column = parser->current_token->column
-        };
-        log_error_at(&loc, "External function must have return type annotation");
+        PARSE_ERROR(parser, "E218", "External function must have return type annotation");
         return node;
     }
 
@@ -1182,12 +1120,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
     
     // Parse struct name
     if (parser->current_token->type != TOKEN_IDENTIFIER) {
-        SourceLocation loc = {
-            .filename = parser->filename,
-            .line = parser->current_token->line,
-            .column = parser->current_token->column
-        };
-        log_error_at(&loc, "Expected struct name after 'struct' keyword");
+        PARSE_ERROR(parser, "E219", "Expected struct name after 'struct' keyword");
         return node;
     }
     
@@ -1238,12 +1171,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         
         // Parse property name or method name
         if (parser->current_token->type != TOKEN_IDENTIFIER) {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Expected property or method name in struct declaration");
+            PARSE_ERROR(parser, "E223", "Expected property or method name in struct declaration");
             return node;
         }
         
@@ -1289,12 +1217,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
                 
                 // Parse parameter name
                 if (parser->current_token->type != TOKEN_IDENTIFIER) {
-                    SourceLocation loc = {
-                        .filename = parser->filename,
-                        .line = parser->current_token->line,
-                        .column = parser->current_token->column
-                    };
-                    log_error_at(&loc, "Expected parameter name");
+                    PARSE_ERROR(parser, "E220", "Expected parameter name");
                     free(member_name);
                     return node;
                 }
@@ -1305,12 +1228,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
                 // Parse type annotation (required for methods)
                 TypeInfo* param_type = parse_type_annotation(parser);
                 if (!param_type) {
-                    SourceLocation loc = {
-                        .filename = parser->filename,
-                        .line = parser->current_token->line,
-                        .column = parser->current_token->column
-                    };
-                    log_error_at(&loc, "Method parameter '%s' must have a type annotation", param_name);
+                    PARSE_ERROR(parser, "E221", "Method parameter '%s' must have a type annotation", param_name);
                     free(param_name);
                     free(member_name);
                     return node;
@@ -1330,12 +1248,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             // Parse return type annotation (required for methods)
             method->func_decl.return_type_hint = parse_type_annotation(parser);
             if (!method->func_decl.return_type_hint) {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Method '%s' must have a return type annotation", member_name);
+                PARSE_ERROR(parser, "E222", "Method '%s' must have a return type annotation", member_name);
                 free(member_name);
                 return node;
             }
@@ -1353,12 +1266,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         // This is a property - parse type annotation (required)
         TypeInfo* prop_type = parse_type_annotation(parser);
         if (!prop_type) {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Struct property '%s' must have a type annotation", member_name);
+            PARSE_ERROR(parser, "E224", "Struct property '%s' must have a type annotation", member_name);
             free(member_name);
             return node;
         }
@@ -1373,8 +1281,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             array_size_expr = parse_ternary(parser);
             
             if (!array_size_expr) {
-                log_error_at(SRC_LOC(parser->filename, parser->current_token->line, parser->current_token->column),
-                            "Expected array size expression after '['");
+                PARSE_ERROR(parser, "E225", "Expected array size expression after '['");
                 free(member_name);
                 return node;
             }
@@ -1384,12 +1291,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             array_size = 0;
             
             if (!parser_match(parser, TOKEN_RBRACKET)) {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Expected ']' after array size");
+                PARSE_ERROR(parser, "E226", "Expected ']' after array size");
                 free(member_name);
                 return node;
             }
@@ -1411,12 +1313,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         // If prop_type is already an array type (from parse_type_annotation returning array)
         // but we don't have array_size or array_size_expr, that means it's like "arr: i32[]" which we don't support
         if (array_size == 0 && !array_size_expr && type_info_is_array(prop_type)) {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Array fields in structs must have explicit size (e.g., arr: i32[12]). Generic array types i32[] are not supported yet.");
+            PARSE_ERROR(parser, "E227", "Array fields in structs must have explicit size (e.g., arr: i32[12]). Generic array types i32[] are not supported yet.");
             free(member_name);
             return node;
         }
@@ -1434,12 +1331,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             } else if (parser->current_token->type == TOKEN_TRUE || parser->current_token->type == TOKEN_FALSE) {
                 default_value = parse_primary(parser);
             } else {
-                SourceLocation loc = {
-                    .filename = parser->filename,
-                    .line = parser->current_token->line,
-                    .column = parser->current_token->column
-                };
-                log_error_at(&loc, "Default values must be literals (number, string, true, or false)");
+                PARSE_ERROR(parser, "E228", "Default values must be literals (number, string, true, or false)");
                 free(member_name);
                 return node;
             }
@@ -1680,13 +1572,8 @@ ASTNode* parser_parse(Parser* parser) {
             parser->current_token->column == prev_col &&
             parser->current_token->type == prev_type &&
             !parser_match(parser, TOKEN_EOF)) {
-            SourceLocation loc = {
-                .filename = parser->filename,
-                .line = parser->current_token->line,
-                .column = parser->current_token->column
-            };
-            log_error_at(&loc, "Stuck on token type %d, value '%s'",
-                    parser->current_token->type,
+            PARSE_ERROR(parser, "E229", "Stuck on token %s, value '%s'",
+                    token_type_to_string(parser->current_token->type),
                     parser->current_token->value ? parser->current_token->value : "(null)");
             // Skip the problematic token to avoid infinite loop
             parser_advance(parser);

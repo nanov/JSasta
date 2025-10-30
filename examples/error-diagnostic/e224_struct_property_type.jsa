@@ -1,0 +1,7 @@
+// E224: Struct property must have a type annotation
+// This error occurs when struct properties lack type annotations
+
+struct Point {
+    // Error: property 'x' needs type annotation
+    x;
+}

@@ -1,0 +1,7 @@
+// E223: Expected property or method name in struct declaration
+// This error occurs when struct member declaration is missing a name
+
+struct Point {
+    // Error: missing property/method name
+    : i32;
+}

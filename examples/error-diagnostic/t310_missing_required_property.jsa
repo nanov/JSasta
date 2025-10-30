@@ -1,0 +1,12 @@
+// T310: Missing required property in struct (no default value)
+// This error occurs when struct literal is missing a required property
+
+struct Point {
+    x: i32;
+    y: i32;  // no default value, so it's required
+}
+
+function main() {
+    // Error: missing required property 'y'
+    var p: Point = { x: 10 };
+}

@@ -1,0 +1,11 @@
+// T312: Type mismatch in function call parameter
+// This error occurs when function argument type doesn't match parameter type
+
+function greet(name: string): void {
+    // function body
+}
+
+function main() {
+    // Error: greet expects string but got i32
+    greet(42);
+}

@@ -1,0 +1,7 @@
+// E211: Expected identifier after var/let/const
+// This error occurs when variable declaration has no name
+
+function main() {
+    // Error: missing variable name
+    var = 10;
+}

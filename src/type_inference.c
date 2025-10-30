@@ -2,10 +2,20 @@
 #include "traits.h"
 #include "operator_utils.h"
 #include "logger.h"
+#include "diagnostics.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdio.h>
+
+// Helper macro for type errors (similar to PARSE_ERROR)
+#define TYPE_ERROR(diag, loc, code, ...) do { \
+    if (diag) { \
+        diagnostic_error(diag, loc, code, __VA_ARGS__); \
+    } else { \
+        log_error_at(&loc, __VA_ARGS__); \
+    } \
+} while(0)
 
 // Static counter for generating unique type names
 static int type_name_counter = 0;
@@ -57,13 +67,14 @@ static EvalResult eval_error(SourceLocation loc, const char* msg) {
 }
 
 // Forward declarations
-static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx);
-static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx);
-static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext* ctx);
-static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx);
-static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx);
-static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTable* scope);
-static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
+static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag);
+static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag);
+static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag);
+static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag);
+static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag);
+static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag);
+static TypeInfo* infer_function_return_type_with_params(ASTNode* body, SymbolTable* scope, DiagnosticContext* diag);
+static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag);
 
 // Helper: Evaluate a constant expression to an integer value (Rust-style with EvalResult)
 // Uses the eval_stack for cycle detection
@@ -223,24 +234,6 @@ cleanup:
     return result;
 }
 
-// Wrapper function for const expression evaluation (backward compatible - logs errors)
-static int eval_const_expr(ASTNode* expr, SymbolTable* symbols) {
-    eval_stack_depth = 0;  // Reset stack
-    EvalResult result = eval_const_expr_internal(expr, symbols);
-
-    if (result.status == EVAL_SUCCESS) {
-        return result.value;
-    }
-
-    // Log error for backward compatibility
-    if (result.error_msg) {
-        log_error_at(&result.loc, "%s", result.error_msg);
-        free(result.error_msg);
-    }
-
-    return -1;  // Error indicator
-}
-
 // New wrapper that returns EvalResult (for Rust-style error handling)
 static EvalResult eval_const_expr_result(ASTNode* expr, SymbolTable* symbols) {
     eval_stack_depth = 0;  // Reset stack
@@ -281,7 +274,7 @@ static TypeInfo* infer_binary_result_type(SourceLocation* node, const char* op, 
 }
 
 // Helper: Infer function return type by walking body with typed parameters
-static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTable* scope);
+static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTable* scope, DiagnosticContext* diag);
 
 // Helper: Simple type inference for expressions (used during return type inference)
 static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
@@ -411,7 +404,7 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
 }
 
 // Helper: Infer function return type by walking body with typed parameters
-static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTable* scope) {
+static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTable* scope, DiagnosticContext* diag) {
     if (!node) return Type_Void;
 
     switch (node->type) {
@@ -440,7 +433,7 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
         case AST_PROGRAM:
             for (int i = 0; i < node->program.count; i++) {
                 TypeInfo* ret_type = infer_function_return_type_with_params(
-                    node->program.statements[i], scope);
+                    node->program.statements[i], scope, diag);
                 if (ret_type != Type_Void && !type_info_is_unknown(ret_type)) {
                     return ret_type;
                 }
@@ -449,13 +442,13 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
 
         case AST_IF: {
             TypeInfo*  then_type = infer_function_return_type_with_params(
-                node->if_stmt.then_branch, scope);
+                node->if_stmt.then_branch, scope, diag);
             if (then_type != Type_Void && !type_info_is_unknown(then_type)) {
                 return then_type;
             }
             if (node->if_stmt.else_branch) {
                 TypeInfo*  else_type = infer_function_return_type_with_params(
-                    node->if_stmt.else_branch, scope);
+                    node->if_stmt.else_branch, scope, diag);
                 if (else_type != Type_Void && !type_info_is_unknown(else_type)) {
                     return else_type;
                 }
@@ -465,7 +458,7 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
 
         case AST_FOR:
         case AST_WHILE:
-            return infer_function_return_type_with_params(node->for_stmt.body, scope);
+            return infer_function_return_type_with_params(node->for_stmt.body, scope, diag);
 
         default:
             return Type_Void;
@@ -473,14 +466,14 @@ static TypeInfo* infer_function_return_type_with_params(ASTNode* node, SymbolTab
 }
 
 // Pass 0: Collect struct declarations (before functions, so functions can use struct types)
-static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx) {
+static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!node) return;
 
     switch (node->type) {
         case AST_PROGRAM:
         case AST_BLOCK:
             for (int i = 0; i < node->program.count; i++) {
-                collect_struct_declarations(node->program.statements[i], symbols, type_ctx);
+                collect_struct_declarations(node->program.statements[i], symbols, type_ctx, diag);
             }
             break;
 
@@ -495,7 +488,7 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
             for (int i = 0; i < property_count; i++) {
                 if (default_values[i]) {
                     // Infer the literal's type
-                    infer_literal_types(default_values[i], symbols, NULL);
+                    infer_literal_types(default_values[i], symbols, NULL, diag);
 
                     // Check if default value type matches property type
                     TypeInfo* default_type = default_values[i]->type_info;
@@ -504,7 +497,7 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
                     if (default_type != prop_type) {
                         // Allow int -> double promotion
                         if (!(prop_type == Type_Double && default_type == Type_Int)) {
-                            log_error_at(&node->loc,
+                            TYPE_ERROR(diag, node->loc, "T306",
                                 "Type mismatch in struct '%s': property '%s' has type %s but default value has type %s",
                                 struct_name, property_names[i],
                                 prop_type ? prop_type->type_name : "unknown",
@@ -561,14 +554,14 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
 }
 
 // Pass 1: Collect function signatures
-static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx) {
+static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!node) return;
 
     switch (node->type) {
         case AST_PROGRAM:
         case AST_BLOCK:
             for (int i = 0; i < node->program.count; i++) {
-                collect_function_signatures(node->program.statements[i], symbols, type_ctx);
+                collect_function_signatures(node->program.statements[i], symbols, type_ctx, diag);
             }
             break;
 
@@ -629,7 +622,7 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                                                   node->func_decl.params[i],
                                                   param_type_hints[i], NULL, false);
                             }
-                            infer_literal_types(cloned_body, temp_symbols, type_ctx);
+                            infer_literal_types(cloned_body, temp_symbols, type_ctx, diag);
                             // Note: Don't free temp_symbols - it's the parent of cloned_body's symbol_table
 
                             spec->specialized_body = cloned_body;
@@ -657,7 +650,7 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             for (int i = 0; i < node->struct_decl.method_count; i++) {
                 ASTNode* method = node->struct_decl.methods[i];
                 // Process each method as a regular function
-                collect_function_signatures(method, symbols, type_ctx);
+                collect_function_signatures(method, symbols, type_ctx, diag);
             }
             break;
         }
@@ -668,14 +661,14 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
 }
 
 // Pass 2: Infer literal and obvious types
-static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx) {
+static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!node) return;
 
     switch (node->type) {
         case AST_PROGRAM:
             // AST_PROGRAM uses the passed-in symbols (top-level scope)
             for (int i = 0; i < node->program.count; i++) {
-                infer_literal_types(node->program.statements[i], symbols, type_ctx);
+                infer_literal_types(node->program.statements[i], symbols, type_ctx, diag);
             }
             break;
 
@@ -684,7 +677,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             SymbolTable* block_symbols = symbol_table_create(symbols);
             node->symbol_table = block_symbols;
             for (int i = 0; i < node->block.count; i++) {
-                infer_literal_types(node->block.statements[i], block_symbols, type_ctx);
+                infer_literal_types(node->block.statements[i], block_symbols, type_ctx, diag);
             }
             break;
         }
@@ -704,12 +697,18 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_VAR_DECL:
             // Evaluate const expression for array size
             if (node->var_decl.array_size_expr) {
-                int size = eval_const_expr(node->var_decl.array_size_expr, symbols);
-                if (size < 0) {
-                    log_error_at(&node->loc, "Invalid array size expression");
-                    node->var_decl.array_size = 0;
+                EvalResult result = eval_const_expr_result(node->var_decl.array_size_expr, symbols);
+                if (result.status == EVAL_SUCCESS) {
+                    node->var_decl.array_size = result.value;
                 } else {
-                    node->var_decl.array_size = size;
+                    // Report error with proper diagnostic
+                    if (result.error_msg) {
+                        TYPE_ERROR(diag, result.loc, "T313", "%s", result.error_msg);
+                        free(result.error_msg);
+                    } else {
+                        TYPE_ERROR(diag, node->loc, "T313", "Invalid array size expression");
+                    }
+                    node->var_decl.array_size = 0;
                 }
             }
 
@@ -722,7 +721,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                          node->var_decl.init->type == AST_OBJECT_LITERAL);
 
                 if (!is_struct_literal) {
-                    infer_literal_types(node->var_decl.init, symbols, type_ctx);
+                    infer_literal_types(node->var_decl.init, symbols, type_ctx, diag);
                 }
 
                 // If type hint is provided, validate it matches the initialization value
@@ -734,7 +733,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     if (type_info_is_unknown(inferred_type) && inferred_type != declared_type) {
                         // Allow int -> double promotion
                         if (!(declared_type == Type_Double && inferred_type == Type_Int)) {
-                            log_error_at(&node->loc,
+                            TYPE_ERROR(diag, node->loc, "T307",
                                 "Type mismatch: variable '%s' declared as %s but initialized with %s",
                                 node->var_decl.name,
                                 declared_type->type_name,
@@ -770,7 +769,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                     // Set the literal to the expected type directly
                                     value->type_info = expected_prop_type;
                                 } else {
-                                    infer_literal_types(value, symbols, type_ctx);
+                                    infer_literal_types(value, symbols, type_ctx, diag);
                                 }
                             }
                         }
@@ -809,7 +808,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                         }
 
                                         if (!allow_conversion) {
-                                            log_error_at(&node->loc,
+                                            TYPE_ERROR(diag, node->loc, "T308",
                                                 "Property '%s' type mismatch: expected %s but got %s",
                                                 provided_key,
                                                 expected_type->type_name,
@@ -821,7 +820,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                             }
 
                             if (!found) {
-                                log_error_at(&node->loc,
+                                TYPE_ERROR(diag, node->loc, "T309",
                                     "Unknown property '%s' in struct '%s'",
                                     provided_key, declared_info->type_name);
                             }
@@ -852,7 +851,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                    declared_info->type_name);
                                     } else {
                                         // No default value - this is an error
-                                        log_error_at(&node->loc,
+                                        TYPE_ERROR(diag, node->loc, "T310",
                                             "Missing required property '%s' in struct '%s' (no default value)",
                                             declared_info->data.object.property_names[i],
                                             declared_info->type_name);
@@ -968,8 +967,8 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_BINARY_OP:
-            infer_literal_types(node->binary_op.left, symbols, type_ctx);
-            infer_literal_types(node->binary_op.right, symbols, type_ctx);
+            infer_literal_types(node->binary_op.left, symbols, type_ctx, diag);
+            infer_literal_types(node->binary_op.right, symbols, type_ctx, diag);
             // Binary op type inferred from operands
             node->type_info = infer_binary_result_type(&node->loc, node->binary_op.op,
                                                        node->binary_op.left->type_info,
@@ -977,7 +976,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_UNARY_OP:
-            infer_literal_types(node->unary_op.operand, symbols, type_ctx);
+            infer_literal_types(node->unary_op.operand, symbols, type_ctx, diag);
             if (strcmp(node->unary_op.op, "!") == 0) {
                 node->type_info = Type_Bool;
             } else if (strcmp(node->unary_op.op, "ref") == 0) {
@@ -1001,7 +1000,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_CALL:
             for (int i = 0; i < node->call.arg_count; i++) {
-                infer_literal_types(node->call.args[i], symbols, type_ctx);
+                infer_literal_types(node->call.args[i], symbols, type_ctx, diag);
             }
             if (node->call.callee->type == AST_IDENTIFIER) {
                 const char* func_name = node->call.callee->identifier.name;
@@ -1035,12 +1034,12 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 } else {
                     node->method_call.is_static = false;
                     // Infer type for the object - it's a variable
-                    infer_literal_types(node->method_call.object, symbols, type_ctx);
+                    infer_literal_types(node->method_call.object, symbols, type_ctx, diag);
                 }
             } else {
                 node->method_call.is_static = false;
                 // Infer type for the object - it's an expression
-                infer_literal_types(node->method_call.object, symbols, type_ctx);
+                infer_literal_types(node->method_call.object, symbols, type_ctx, diag);
                 log_verbose("[METHOD_CALL infer_literal] object type after infer: %s",
                            node->method_call.object->type_info ?
                            node->method_call.object->type_info->type_name : "NULL");
@@ -1048,7 +1047,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
             // Infer types for arguments
             for (int i = 0; i < node->method_call.arg_count; i++) {
-                infer_literal_types(node->method_call.args[i], symbols, type_ctx);
+                infer_literal_types(node->method_call.args[i], symbols, type_ctx, diag);
             }
 
             // Look up the method to get its return type
@@ -1070,7 +1069,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_ASSIGNMENT:
-            infer_literal_types(node->assignment.value, symbols, type_ctx);
+            infer_literal_types(node->assignment.value, symbols, type_ctx, diag);
             node->type_info = node->assignment.value->type_info;
             // Store pointer to the symbol entry for fast access in codegen
             node->assignment.symbol_entry = symbol_table_lookup(symbols, node->assignment.name);
@@ -1078,7 +1077,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_MEMBER_ASSIGNMENT: {
             // Infer types for object
-            infer_literal_types(node->member_assignment.object, symbols, type_ctx);
+            infer_literal_types(node->member_assignment.object, symbols, type_ctx, diag);
 
             // Apply contextual typing to the value if it's a literal
             ASTNode* obj = node->member_assignment.object;
@@ -1104,7 +1103,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             if (node->member_assignment.value->type == AST_NUMBER && expected_prop_type && type_info_is_integer(expected_prop_type)) {
                 node->member_assignment.value->type_info = expected_prop_type;
             } else {
-                infer_literal_types(node->member_assignment.value, symbols, type_ctx);
+                infer_literal_types(node->member_assignment.value, symbols, type_ctx, diag);
             }
 
             // Type check: verify the assigned value matches the property type
@@ -1128,7 +1127,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                 }
 
                                 if (!allow_conversion) {
-                                    log_error_at(&node->loc,
+                                    TYPE_ERROR(diag, node->loc, "T311",
                                         "Type mismatch: cannot assign %s to property '%s' of type %s",
                                         assigned_type ? assigned_type->type_name : "unknown",
                                         node->member_assignment.property,
@@ -1146,9 +1145,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         }
 
         case AST_TERNARY:
-            infer_literal_types(node->ternary.condition, symbols, type_ctx);
-            infer_literal_types(node->ternary.true_expr, symbols, type_ctx);
-            infer_literal_types(node->ternary.false_expr, symbols, type_ctx);
+            infer_literal_types(node->ternary.condition, symbols, type_ctx, diag);
+            infer_literal_types(node->ternary.true_expr, symbols, type_ctx, diag);
+            infer_literal_types(node->ternary.false_expr, symbols, type_ctx, diag);
             // Determine result type based on both branches
             if (node->ternary.true_expr->type_info == node->ternary.false_expr->type_info) {
                 node->type_info = node->ternary.true_expr->type_info;
@@ -1163,10 +1162,10 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_IF:
-            infer_literal_types(node->if_stmt.condition, symbols, type_ctx);
-            infer_literal_types(node->if_stmt.then_branch, symbols, type_ctx);
+            infer_literal_types(node->if_stmt.condition, symbols, type_ctx, diag);
+            infer_literal_types(node->if_stmt.then_branch, symbols, type_ctx, diag);
             if (node->if_stmt.else_branch) {
-                infer_literal_types(node->if_stmt.else_branch, symbols, type_ctx);
+                infer_literal_types(node->if_stmt.else_branch, symbols, type_ctx, diag);
             }
             break;
 
@@ -1175,21 +1174,21 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             SymbolTable* for_scope = symbol_table_create(symbols);
             node->symbol_table = for_scope;
 
-            if (node->for_stmt.init) infer_literal_types(node->for_stmt.init, for_scope, type_ctx);
-            if (node->for_stmt.condition) infer_literal_types(node->for_stmt.condition, for_scope, type_ctx);
-            if (node->for_stmt.update) infer_literal_types(node->for_stmt.update, for_scope, type_ctx);
-            infer_literal_types(node->for_stmt.body, for_scope, type_ctx);
+            if (node->for_stmt.init) infer_literal_types(node->for_stmt.init, for_scope, type_ctx, diag);
+            if (node->for_stmt.condition) infer_literal_types(node->for_stmt.condition, for_scope, type_ctx, diag);
+            if (node->for_stmt.update) infer_literal_types(node->for_stmt.update, for_scope, type_ctx, diag);
+            infer_literal_types(node->for_stmt.body, for_scope, type_ctx, diag);
             break;
         }
 
         case AST_WHILE:
-            infer_literal_types(node->while_stmt.condition, symbols, type_ctx);
-            infer_literal_types(node->while_stmt.body, symbols, type_ctx);
+            infer_literal_types(node->while_stmt.condition, symbols, type_ctx, diag);
+            infer_literal_types(node->while_stmt.body, symbols, type_ctx, diag);
             break;
 
         case AST_RETURN:
             if (node->return_stmt.value) {
-                infer_literal_types(node->return_stmt.value, symbols, type_ctx);
+                infer_literal_types(node->return_stmt.value, symbols, type_ctx, diag);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->return_stmt.value);
             }
             break;
@@ -1205,23 +1204,23 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             ASTNode* target = (node->type == AST_PREFIX_OP) ?
                               node->prefix_op.target : node->postfix_op.target;
             if (target) {
-                infer_literal_types(target, symbols, type_ctx);
+                infer_literal_types(target, symbols, type_ctx, diag);
             }
             break;
         }
 
         case AST_COMPOUND_ASSIGNMENT:
             // Infer type of the value expression
-            infer_literal_types(node->compound_assignment.value, symbols, type_ctx);
+            infer_literal_types(node->compound_assignment.value, symbols, type_ctx, diag);
 
             // Infer type of the target (if it's a member/index access)
             if (node->compound_assignment.target) {
-                infer_literal_types(node->compound_assignment.target, symbols, type_ctx);
+                infer_literal_types(node->compound_assignment.target, symbols, type_ctx, diag);
             }
             break;
 
         case AST_EXPR_STMT:
-            infer_literal_types(node->expr_stmt.expression, symbols, type_ctx);
+            infer_literal_types(node->expr_stmt.expression, symbols, type_ctx, diag);
             break;
 
         case AST_IDENTIFIER: {
@@ -1230,7 +1229,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 node->type_info = entry->type_info;
             } else if (!type_info_is_unknown(node->type_info)) {
                 // Only report error on first encounter (when type is not yet UNKNOWN)
-                log_error_at(&node->loc, "Undefined variable: %s", node->identifier.name);
+                TYPE_ERROR(diag, node->loc, "T301", "Undefined variable: %s", node->identifier.name);
                 node->type_info = Type_Unknown;
             }
             break;
@@ -1239,7 +1238,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_ARRAY_LITERAL:
             // Infer types of all elements
             for (int i = 0; i < node->array_literal.count; i++) {
-                infer_literal_types(node->array_literal.elements[i], symbols, type_ctx);
+                infer_literal_types(node->array_literal.elements[i], symbols, type_ctx, diag);
             }
             // Determine array type from first element
             if (node->array_literal.count > 0) {
@@ -1261,8 +1260,8 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_INDEX_ACCESS: {
-            infer_literal_types(node->index_access.object, symbols, type_ctx);
-            infer_literal_types(node->index_access.index, symbols, type_ctx);
+            infer_literal_types(node->index_access.object, symbols, type_ctx, diag);
+            infer_literal_types(node->index_access.index, symbols, type_ctx, diag);
 
             TypeInfo* object_type = node->index_access.object->type_info;
             TypeInfo* index_type = node->index_access.index->type_info;
@@ -1288,7 +1287,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                log_error_at(&node->loc, "Type '%s' does not implement Index<%s>",
+                TYPE_ERROR(diag, node->loc, "T304", "Type '%s' does not implement Index<%s>",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->type_info = Type_Unknown;
@@ -1307,9 +1306,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         }
 
         case AST_INDEX_ASSIGNMENT: {
-            infer_literal_types(node->index_assignment.object, symbols, type_ctx);
-            infer_literal_types(node->index_assignment.index, symbols, type_ctx);
-            infer_literal_types(node->index_assignment.value, symbols, type_ctx);
+            infer_literal_types(node->index_assignment.object, symbols, type_ctx, diag);
+            infer_literal_types(node->index_assignment.index, symbols, type_ctx, diag);
+            infer_literal_types(node->index_assignment.value, symbols, type_ctx, diag);
 
             TypeInfo* object_type = node->index_assignment.object->type_info;
             TypeInfo* index_type = node->index_assignment.index->type_info;
@@ -1334,7 +1333,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                log_error_at(&node->loc, "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
+                TYPE_ERROR(diag, node->loc, "T305", "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->index_assignment.trait_impl = NULL;
@@ -1352,7 +1351,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_OBJECT_LITERAL: {
             // Infer types of all property values first
             for (int i = 0; i < node->object_literal.count; i++) {
-                infer_literal_types(node->object_literal.values[i], symbols, type_ctx);
+                infer_literal_types(node->object_literal.values[i], symbols, type_ctx, diag);
             }
 
             // Create TypeInfo with structural sharing (TypeContext owns the allocation)
@@ -1373,7 +1372,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         }
 
         case AST_MEMBER_ACCESS: {
-            infer_literal_types(node->member_access.object, symbols, type_ctx);
+            infer_literal_types(node->member_access.object, symbols, type_ctx, diag);
 
             // Try to infer the type from the object
             ASTNode* obj = node->member_access.object;
@@ -1437,7 +1436,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
     }
 }
 
-static void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node, TypeInfo** arg_types, SymbolTable* symbols, TypeContext* ctx) {
+static void specialization_create_body(FunctionSpecialization* spec, ASTNode* original_func_node, TypeInfo** arg_types, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag) {
     if (!spec || !original_func_node || original_func_node->type != AST_FUNCTION_DECL) {
         return;
     }
@@ -1461,11 +1460,11 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
             }
         }
     }
-    infer_literal_types(cloned_body, temp_symbols, ctx);  // Pass type_ctx so we can look up struct types for static method calls
-    iterative_specialization_discovery(cloned_body, temp_symbols, ctx);
+    infer_literal_types(cloned_body, temp_symbols, ctx, diag);  // Pass type_ctx so we can look up struct types for static method calls
+    iterative_specialization_discovery(cloned_body, temp_symbols, ctx, diag);
 
     // Infer return type from function body
-    TypeInfo* inferred_return = infer_function_return_type_with_params(cloned_body, temp_symbols);
+    TypeInfo* inferred_return = infer_function_return_type_with_params(cloned_body, temp_symbols, diag);
     log_verbose("  Inferred return type for %s: %s", spec->specialized_name,
                 inferred_return ? inferred_return->type_name : "NULL");
 
@@ -1499,7 +1498,7 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
 }
 
 // Pass 3: Analyze call sites to find needed specializations
-static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext* ctx) {
+static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag) {
     if (!node) return;
 
     switch (node->type) {
@@ -1507,7 +1506,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             // Use the program's own symbol table if it was created
             SymbolTable* prog_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->program.count; i++) {
-                analyze_call_sites(node->program.statements[i], prog_symbols, ctx);
+                analyze_call_sites(node->program.statements[i], prog_symbols, ctx, diag);
             }
             break;
         }
@@ -1516,7 +1515,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             // Use the block's own symbol table if it was created
             SymbolTable* block_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->block.count; i++) {
-                analyze_call_sites(node->block.statements[i], block_symbols, ctx);
+                analyze_call_sites(node->block.statements[i], block_symbols, ctx, diag);
             }
             break;
         }
@@ -1524,8 +1523,8 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
         case AST_CALL: {
             // First analyze arguments
             for (int i = 0; i < node->call.arg_count; i++) {
-                analyze_call_sites(node->call.args[i], symbols, ctx);
-                infer_with_specializations(node->call.args[i], symbols, ctx);
+                analyze_call_sites(node->call.args[i], symbols, ctx, diag);
+                infer_with_specializations(node->call.args[i], symbols, ctx, diag);
             }
 
             // Check if calling a user function (not a built-in)
@@ -1570,7 +1569,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                             if (!type_info_is_unknown(arg_value_type) && arg_value_type != arg_types[i]) {
                                 // Allow int -> double promotion
                                 if (!(arg_types[i] == Type_Double && arg_value_type == Type_Int)) {
-                                    log_error_at(&node->loc,
+                                    TYPE_ERROR(diag, node->loc, "T312",
                                         "Type mismatch in call to '%s': parameter %d expects %s but got %s",
                                         actual_func_name, i + 1,
                                         arg_types[i] ? arg_types[i]->type_name : "unknown",
@@ -1611,7 +1610,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                         	}
 
                         	// Now create the body with TypeInfo available
-                        	specialization_create_body(spec, func_decl, arg_types, symbols, ctx);
+                        	specialization_create_body(spec, func_decl, arg_types, symbols, ctx, diag);
 
                         	// Set the call node's return type from the specialization
                         	if (spec->return_type_info) {
@@ -1628,12 +1627,12 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
 
         case AST_METHOD_CALL: {
             // Analyze object and arguments
-            analyze_call_sites(node->method_call.object, symbols, ctx);
-            infer_with_specializations(node->method_call.object, symbols, ctx);
+            analyze_call_sites(node->method_call.object, symbols, ctx, diag);
+            infer_with_specializations(node->method_call.object, symbols, ctx, diag);
 
             for (int i = 0; i < node->method_call.arg_count; i++) {
-                analyze_call_sites(node->method_call.args[i], symbols, ctx);
-                infer_with_specializations(node->method_call.args[i], symbols, ctx);
+                analyze_call_sites(node->method_call.args[i], symbols, ctx, diag);
+                infer_with_specializations(node->method_call.args[i], symbols, ctx, diag);
             }
 
             // Build the mangled function name: StructName.method_name
@@ -1648,7 +1647,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                 if (obj_type && type_info_is_object(obj_type)) {
                     snprintf(mangled_name, sizeof(mangled_name), "%s.%s", obj_type->type_name, node->method_call.method_name);
                 } else {
-                    log_error_at(&node->loc, "Cannot call method on non-object type");
+                    TYPE_ERROR(diag, node->loc, "T302", "Cannot call method on non-object type");
                     break;
                 }
             }
@@ -1657,91 +1656,91 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             // Just verify the method exists
             SymbolEntry* entry = symbol_table_lookup(symbols, mangled_name);
             if (!entry) {
-                log_error_at(&node->loc, "Method '%s' not found", mangled_name);
+                TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found", mangled_name);
             }
             break;
         }
 
         case AST_VAR_DECL:
             if (node->var_decl.init) {
-                analyze_call_sites(node->var_decl.init, symbols, ctx);
+                analyze_call_sites(node->var_decl.init, symbols, ctx, diag);
             }
             break;
 
         case AST_ASSIGNMENT:
-            analyze_call_sites(node->assignment.value, symbols, ctx);
+            analyze_call_sites(node->assignment.value, symbols, ctx, diag);
             break;
 
         case AST_MEMBER_ASSIGNMENT:
-            analyze_call_sites(node->member_assignment.object, symbols, ctx);
-            analyze_call_sites(node->member_assignment.value, symbols, ctx);
+            analyze_call_sites(node->member_assignment.object, symbols, ctx, diag);
+            analyze_call_sites(node->member_assignment.value, symbols, ctx, diag);
             break;
 
         case AST_COMPOUND_ASSIGNMENT:
-            analyze_call_sites(node->compound_assignment.value, symbols, ctx);
+            analyze_call_sites(node->compound_assignment.value, symbols, ctx, diag);
             if (node->compound_assignment.target) {
-                analyze_call_sites(node->compound_assignment.target, symbols, ctx);
+                analyze_call_sites(node->compound_assignment.target, symbols, ctx, diag);
             }
             break;
 
         case AST_TERNARY:
-            analyze_call_sites(node->ternary.condition, symbols, ctx);
-            analyze_call_sites(node->ternary.true_expr, symbols, ctx);
-            analyze_call_sites(node->ternary.false_expr, symbols, ctx);
+            analyze_call_sites(node->ternary.condition, symbols, ctx, diag);
+            analyze_call_sites(node->ternary.true_expr, symbols, ctx, diag);
+            analyze_call_sites(node->ternary.false_expr, symbols, ctx, diag);
             break;
 
         case AST_ARRAY_LITERAL:
             for (int i = 0; i < node->array_literal.count; i++) {
-                analyze_call_sites(node->array_literal.elements[i], symbols, ctx);
+                analyze_call_sites(node->array_literal.elements[i], symbols, ctx, diag);
             }
             break;
 
         case AST_INDEX_ACCESS:
-            analyze_call_sites(node->index_access.object, symbols, ctx);
-            analyze_call_sites(node->index_access.index, symbols, ctx);
+            analyze_call_sites(node->index_access.object, symbols, ctx, diag);
+            analyze_call_sites(node->index_access.index, symbols, ctx, diag);
             break;
 
         case AST_INDEX_ASSIGNMENT:
-            analyze_call_sites(node->index_assignment.object, symbols, ctx);
-            analyze_call_sites(node->index_assignment.index, symbols, ctx);
-            analyze_call_sites(node->index_assignment.value, symbols, ctx);
+            analyze_call_sites(node->index_assignment.object, symbols, ctx, diag);
+            analyze_call_sites(node->index_assignment.index, symbols, ctx, diag);
+            analyze_call_sites(node->index_assignment.value, symbols, ctx, diag);
             break;
 
         case AST_BINARY_OP:
-            analyze_call_sites(node->binary_op.left, symbols, ctx);
-            analyze_call_sites(node->binary_op.right, symbols, ctx);
+            analyze_call_sites(node->binary_op.left, symbols, ctx, diag);
+            analyze_call_sites(node->binary_op.right, symbols, ctx, diag);
             break;
 
         case AST_UNARY_OP:
-            analyze_call_sites(node->unary_op.operand, symbols, ctx);
+            analyze_call_sites(node->unary_op.operand, symbols, ctx, diag);
             break;
 
         case AST_IF:
-            analyze_call_sites(node->if_stmt.condition, symbols, ctx);
-            analyze_call_sites(node->if_stmt.then_branch, symbols, ctx);
+            analyze_call_sites(node->if_stmt.condition, symbols, ctx, diag);
+            analyze_call_sites(node->if_stmt.then_branch, symbols, ctx, diag);
             if (node->if_stmt.else_branch) {
-                analyze_call_sites(node->if_stmt.else_branch, symbols, ctx);
+                analyze_call_sites(node->if_stmt.else_branch, symbols, ctx, diag);
             }
             break;
 
         case AST_FOR: {
             // Use the for loop's own symbol table if it was created
             SymbolTable* for_symbols = node->symbol_table ? node->symbol_table : symbols;
-            if (node->for_stmt.init) analyze_call_sites(node->for_stmt.init, for_symbols, ctx);
-            if (node->for_stmt.condition) analyze_call_sites(node->for_stmt.condition, for_symbols, ctx);
-            if (node->for_stmt.update) analyze_call_sites(node->for_stmt.update, for_symbols, ctx);
-            analyze_call_sites(node->for_stmt.body, for_symbols, ctx);
+            if (node->for_stmt.init) analyze_call_sites(node->for_stmt.init, for_symbols, ctx, diag);
+            if (node->for_stmt.condition) analyze_call_sites(node->for_stmt.condition, for_symbols, ctx, diag);
+            if (node->for_stmt.update) analyze_call_sites(node->for_stmt.update, for_symbols, ctx, diag);
+            analyze_call_sites(node->for_stmt.body, for_symbols, ctx, diag);
             break;
         }
 
         case AST_WHILE:
-            analyze_call_sites(node->while_stmt.condition, symbols, ctx);
-            analyze_call_sites(node->while_stmt.body, symbols, ctx);
+            analyze_call_sites(node->while_stmt.condition, symbols, ctx, diag);
+            analyze_call_sites(node->while_stmt.body, symbols, ctx, diag);
             break;
 
         case AST_RETURN:
             if (node->return_stmt.value) {
-                analyze_call_sites(node->return_stmt.value, symbols, ctx);
+                analyze_call_sites(node->return_stmt.value, symbols, ctx, diag);
             }
             break;
 
@@ -1751,17 +1750,17 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             break;
 
         case AST_EXPR_STMT:
-            analyze_call_sites(node->expr_stmt.expression, symbols, ctx);
+            analyze_call_sites(node->expr_stmt.expression, symbols, ctx, diag);
             break;
 
         case AST_OBJECT_LITERAL:
             for (int i = 0; i < node->object_literal.count; i++) {
-                analyze_call_sites(node->object_literal.values[i], symbols, ctx);
+                analyze_call_sites(node->object_literal.values[i], symbols, ctx, diag);
             }
             break;
 
         case AST_MEMBER_ACCESS:
-            analyze_call_sites(node->member_access.object, symbols, ctx);
+            analyze_call_sites(node->member_access.object, symbols, ctx, diag);
             break;
 
         default:
@@ -1770,7 +1769,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
 }
 
 // Pass 4: Create specialized function versions
-static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx) {
+static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag) {
     if (!node) return;
 
     switch (node->type) {
@@ -1778,7 +1777,7 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeCont
             // Use the program's own symbol table if it was created
             SymbolTable* prog_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->program.count; i++) {
-                create_specializations(node->program.statements[i], prog_symbols, ctx);
+                create_specializations(node->program.statements[i], prog_symbols, ctx, diag);
             }
             break;
         }
@@ -1787,7 +1786,7 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeCont
             // Use the block's own symbol table if it was created
             SymbolTable* block_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->block.count; i++) {
-                create_specializations(node->block.statements[i], block_symbols, ctx);
+                create_specializations(node->block.statements[i], block_symbols, ctx, diag);
             }
             break;
         }
@@ -1813,7 +1812,7 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeCont
 
                 // Infer return type
                 TypeInfo* inferred_return = infer_function_return_type_with_params(
-                    node->func_decl.body, func_scope);
+                    node->func_decl.body, func_scope, diag);
                 // Store inferred return type (or use hint if provided)
                 if (!node->func_decl.return_type_hint || type_info_is_unknown(node->func_decl.return_type_hint)) {
                     node->func_decl.return_type_hint = inferred_return;
@@ -1830,7 +1829,7 @@ static void create_specializations(ASTNode* node, SymbolTable* symbols, TypeCont
 }
 
 // Pass 5: Final type inference with all specializations known
-static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx) {
+static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag) {
     if (!node) return;
 
     switch (node->type) {
@@ -1838,7 +1837,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // Use the program's own symbol table if it was created
             SymbolTable* prog_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->program.count; i++) {
-                infer_with_specializations(node->program.statements[i], prog_symbols, ctx);
+                infer_with_specializations(node->program.statements[i], prog_symbols, ctx, diag);
             }
             break;
         }
@@ -1847,7 +1846,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // Use the block's own symbol table if it was created
             SymbolTable* block_symbols = node->symbol_table ? node->symbol_table : symbols;
             for (int i = 0; i < node->block.count; i++) {
-                infer_with_specializations(node->block.statements[i], block_symbols, ctx);
+                infer_with_specializations(node->block.statements[i], block_symbols, ctx, diag);
             }
             break;
         }
@@ -1868,8 +1867,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
         }
 
         case AST_BINARY_OP:
-            infer_with_specializations(node->binary_op.left, symbols, ctx);
-            infer_with_specializations(node->binary_op.right, symbols, ctx);
+            infer_with_specializations(node->binary_op.left, symbols, ctx, diag);
+            infer_with_specializations(node->binary_op.right, symbols, ctx, diag);
             // Binary op type inferred from operands
             node->type_info = infer_binary_result_type(&node->loc,
             																				   node->binary_op.op,
@@ -1878,7 +1877,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             break;
 
         case AST_UNARY_OP:
-            infer_with_specializations(node->unary_op.operand, symbols, ctx);
+            infer_with_specializations(node->unary_op.operand, symbols, ctx, diag);
             if (strcmp(node->unary_op.op, "!") == 0) {
                 node->type_info = Type_Bool;
             } else if (strcmp(node->unary_op.op, "ref") == 0) {
@@ -1902,7 +1901,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
         case AST_VAR_DECL:
             if (node->var_decl.init) {
-                infer_with_specializations(node->var_decl.init, symbols, ctx);
+                infer_with_specializations(node->var_decl.init, symbols, ctx, diag);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->var_decl.init);
                 // Only set type_info from init if there's no explicit type hint
                 // Otherwise, keep the declared type that was set in infer_literal_types
@@ -1934,7 +1933,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             break;
 
         case AST_ASSIGNMENT:
-            infer_with_specializations(node->assignment.value, symbols, ctx);
+            infer_with_specializations(node->assignment.value, symbols, ctx, diag);
             node->type_info = node->assignment.value->type_info;
             // Store pointer to the symbol entry for fast access in codegen
             if (!node->assignment.symbol_entry) {
@@ -1943,9 +1942,9 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             break;
 
         case AST_TERNARY:
-            infer_with_specializations(node->ternary.condition, symbols, ctx);
-            infer_with_specializations(node->ternary.true_expr, symbols, ctx);
-            infer_with_specializations(node->ternary.false_expr, symbols, ctx);
+            infer_with_specializations(node->ternary.condition, symbols, ctx, diag);
+            infer_with_specializations(node->ternary.true_expr, symbols, ctx, diag);
+            infer_with_specializations(node->ternary.false_expr, symbols, ctx, diag);
             // Determine result type based on both branches
             if (node->ternary.true_expr->type_info == node->ternary.false_expr->type_info) {
                 node->type_info = node->ternary.true_expr->type_info;
@@ -1961,7 +1960,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
         case AST_ARRAY_LITERAL:
             for (int i = 0; i < node->array_literal.count; i++) {
-                infer_with_specializations(node->array_literal.elements[i], symbols, ctx);
+                infer_with_specializations(node->array_literal.elements[i], symbols, ctx, diag);
             }
             // Determine array type from first element
             if (node->array_literal.count > 0) {
@@ -1983,8 +1982,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             break;
 
         case AST_INDEX_ACCESS: {
-            infer_with_specializations(node->index_access.object, symbols, ctx);
-            infer_with_specializations(node->index_access.index, symbols, ctx);
+            infer_with_specializations(node->index_access.object, symbols, ctx, diag);
+            infer_with_specializations(node->index_access.index, symbols, ctx, diag);
 
             TypeInfo* object_type = node->index_access.object->type_info;
             TypeInfo* index_type = node->index_access.index->type_info;
@@ -2010,7 +2009,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                log_error_at(&node->loc, "Type '%s' does not implement Index<%s>",
+                TYPE_ERROR(diag, node->loc, "T304", "Type '%s' does not implement Index<%s>",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->type_info = Type_Unknown;
@@ -2029,9 +2028,9 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
         }
 
         case AST_INDEX_ASSIGNMENT: {
-            infer_with_specializations(node->index_assignment.object, symbols, ctx);
-            infer_with_specializations(node->index_assignment.index, symbols, ctx);
-            infer_with_specializations(node->index_assignment.value, symbols, ctx);
+            infer_with_specializations(node->index_assignment.object, symbols, ctx, diag);
+            infer_with_specializations(node->index_assignment.index, symbols, ctx, diag);
+            infer_with_specializations(node->index_assignment.value, symbols, ctx, diag);
 
             TypeInfo* object_type = node->index_assignment.object->type_info;
             TypeInfo* index_type = node->index_assignment.index->type_info;
@@ -2056,7 +2055,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                log_error_at(&node->loc, "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
+                TYPE_ERROR(diag, node->loc, "T305", "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->index_assignment.trait_impl = NULL;
@@ -2074,7 +2073,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
         case AST_CALL: {
             // Infer argument types
             for (int i = 0; i < node->call.arg_count; i++) {
-                infer_with_specializations(node->call.args[i], symbols, ctx);
+                infer_with_specializations(node->call.args[i], symbols, ctx, diag);
             }
 
             if (node->call.callee->type == AST_IDENTIFIER) {
@@ -2135,9 +2134,9 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
         case AST_METHOD_CALL: {
             // Infer types for object and arguments
-            infer_with_specializations(node->method_call.object, symbols, ctx);
+            infer_with_specializations(node->method_call.object, symbols, ctx, diag);
             for (int i = 0; i < node->method_call.arg_count; i++) {
-                infer_with_specializations(node->method_call.args[i], symbols, ctx);
+                infer_with_specializations(node->method_call.args[i], symbols, ctx, diag);
             }
 
             // Build the mangled function name: StructName.method_name
@@ -2152,7 +2151,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 if (obj_type && type_info_is_object(obj_type)) {
                     snprintf(mangled_name, sizeof(mangled_name), "%s.%s", obj_type->type_name, node->method_call.method_name);
                 } else {
-                    log_error_at(&node->loc, "Cannot call method on non-object type");
+                    TYPE_ERROR(diag, node->loc, "T302", "Cannot call method on non-object type");
                     node->type_info = Type_Unknown;
                     break;
                 }
@@ -2216,7 +2215,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                            spec->return_type_info ? spec->return_type_info->type_name : "NULL");
             } else {
                 log_verbose("[METHOD_CALL] %s -> NOT FOUND", mangled_name);
-                log_error_at(&node->loc, "Method '%s' not found or type mismatch", mangled_name);
+                TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found or type mismatch", mangled_name);
                 node->type_info = Type_Unknown;
             }
 
@@ -2225,31 +2224,31 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
         }
 
         case AST_IF:
-            infer_with_specializations(node->if_stmt.condition, symbols, ctx);
-            infer_with_specializations(node->if_stmt.then_branch, symbols, ctx);
+            infer_with_specializations(node->if_stmt.condition, symbols, ctx, diag);
+            infer_with_specializations(node->if_stmt.then_branch, symbols, ctx, diag);
             if (node->if_stmt.else_branch) {
-                infer_with_specializations(node->if_stmt.else_branch, symbols, ctx);
+                infer_with_specializations(node->if_stmt.else_branch, symbols, ctx, diag);
             }
             break;
 
         case AST_FOR: {
             // Use the for loop's own symbol table if it was created
             SymbolTable* for_symbols = node->symbol_table ? node->symbol_table : symbols;
-            if (node->for_stmt.init) infer_with_specializations(node->for_stmt.init, for_symbols, ctx);
-            if (node->for_stmt.condition) infer_with_specializations(node->for_stmt.condition, for_symbols, ctx);
-            if (node->for_stmt.update) infer_with_specializations(node->for_stmt.update, for_symbols, ctx);
-            infer_with_specializations(node->for_stmt.body, for_symbols, ctx);
+            if (node->for_stmt.init) infer_with_specializations(node->for_stmt.init, for_symbols, ctx, diag);
+            if (node->for_stmt.condition) infer_with_specializations(node->for_stmt.condition, for_symbols, ctx, diag);
+            if (node->for_stmt.update) infer_with_specializations(node->for_stmt.update, for_symbols, ctx, diag);
+            infer_with_specializations(node->for_stmt.body, for_symbols, ctx, diag);
             break;
         }
 
         case AST_WHILE:
-            infer_with_specializations(node->while_stmt.condition, symbols, ctx);
-            infer_with_specializations(node->while_stmt.body, symbols, ctx);
+            infer_with_specializations(node->while_stmt.condition, symbols, ctx, diag);
+            infer_with_specializations(node->while_stmt.body, symbols, ctx, diag);
             break;
 
         case AST_RETURN:
             if (node->return_stmt.value) {
-                infer_with_specializations(node->return_stmt.value, symbols, ctx);
+                infer_with_specializations(node->return_stmt.value, symbols, ctx, diag);
                 // REMOVED: get_node_value_type(node) = get_node_value_type(node->return_stmt.value);
             }
             break;
@@ -2265,35 +2264,35 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             ASTNode* target = (node->type == AST_PREFIX_OP) ?
                               node->prefix_op.target : node->postfix_op.target;
             if (target) {
-                infer_with_specializations(target, symbols, ctx);
+                infer_with_specializations(target, symbols, ctx, diag);
             }
             break;
         }
 
         case AST_COMPOUND_ASSIGNMENT:
             // Infer type of the value expression
-            infer_with_specializations(node->compound_assignment.value, symbols, ctx);
+            infer_with_specializations(node->compound_assignment.value, symbols, ctx, diag);
 
             // Infer type of the target (if it's a member/index access)
             if (node->compound_assignment.target) {
-                infer_with_specializations(node->compound_assignment.target, symbols, ctx);
+                infer_with_specializations(node->compound_assignment.target, symbols, ctx, diag);
             }
             break;
 
         case AST_EXPR_STMT:
-            infer_with_specializations(node->expr_stmt.expression, symbols, ctx);
+            infer_with_specializations(node->expr_stmt.expression, symbols, ctx, diag);
             break;
 
         case AST_OBJECT_LITERAL:
             for (int i = 0; i < node->object_literal.count; i++) {
-                infer_with_specializations(node->object_literal.values[i], symbols, ctx);
+                infer_with_specializations(node->object_literal.values[i], symbols, ctx, diag);
             }
             // Type info should already be set by infer_literal_types
             // Nothing extra needed here
             break;
 
         case AST_MEMBER_ACCESS: {
-            infer_with_specializations(node->member_access.object, symbols, ctx);
+            infer_with_specializations(node->member_access.object, symbols, ctx, diag);
 
             // Try to infer the type from TypeInfo
             ASTNode* obj = node->member_access.object;
@@ -2360,7 +2359,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 }
 
 // Helper: Count total number of specializations across all function types
-static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols, TypeContext* ctx) {
+static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx, DiagnosticContext* diag) {
 	int iteration = 0;
   int max_iterations = 100; // Safety limit to prevent infinite loops
 
@@ -2370,18 +2369,18 @@ static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols
     log_verbose_indent(2, "Iteration %d: %zu specializations before", iteration, spec_count_before);
 
     // Re-infer literal types to pick up any new type information (e.g., external function return types)
-    infer_literal_types(ast, symbols, ctx);
-    
+    infer_literal_types(ast, symbols, ctx, diag);
+
     // Pass 3: Analyze call sites to find needed specializations
-    analyze_call_sites(ast, symbols, ctx);
+    analyze_call_sites(ast, symbols, ctx, diag);
     log_verbose_indent(2, "After analyze_call_sites: %zu specializations", ctx->specialization_count);
 
     // Pass 4: Create specialized function versions
-    create_specializations(ast, symbols, ctx);
+    create_specializations(ast, symbols, ctx, diag);
     log_verbose_indent(2, "After create_specializations: %zu specializations", ctx->specialization_count);
 
     // Pass 5: Propagate types with known specializations
-    infer_with_specializations(ast, symbols, ctx);
+    infer_with_specializations(ast, symbols, ctx, diag);
     log_verbose_indent(2, "After infer_with_specializations: %zu specializations", ctx->specialization_count);
 
     size_t spec_count_after = ctx->specialization_count;
@@ -2403,7 +2402,7 @@ static void iterative_specialization_discovery(ASTNode*ast, SymbolTable* symbols
 
 // Pass 0: Iteratively collect consts and structs (Rust-style with recursive evaluation)
 // This handles dependencies between consts and struct field array sizes
-static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx) {
+static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!ast) return;
     if (ast->type != AST_PROGRAM && ast->type != AST_BLOCK) return;
 
@@ -2439,7 +2438,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
                     } else {
                         // Real error - log it now
                         if (result.error_msg) {
-                            log_error_at(&result.loc, "%s", result.error_msg);
+                            TYPE_ERROR(diag, result.loc, "T314", "%s", result.error_msg);
                             free(result.error_msg);
                         }
                         processed[i] = true;  // Mark as done (with error)
@@ -2449,7 +2448,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
 
                 // Register the const in symbol table (even if no array size)
                 if (stmt->var_decl.init) {
-                    infer_literal_types(stmt->var_decl.init, symbols, type_ctx);
+                    infer_literal_types(stmt->var_decl.init, symbols, type_ctx, diag);
                     symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
                                                        stmt->var_decl.init->type_info,
                                                        stmt->var_decl.is_const, stmt);
@@ -2482,7 +2481,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
                         } else {
                             // Real error
                             if (result.error_msg) {
-                                log_error_at(&result.loc, "%s", result.error_msg);
+                                TYPE_ERROR(diag, result.loc, "T314", "%s", result.error_msg);
                                 free(result.error_msg);
                             }
                             // Mark field as error but continue
@@ -2493,7 +2492,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
 
                 if (all_fields_resolved) {
                     // All fields resolved, register the struct
-                    collect_struct_declarations(stmt, symbols, type_ctx);
+                    collect_struct_declarations(stmt, symbols, type_ctx, diag);
                     log_verbose_indent(2, "Processed struct: %s", stmt->struct_decl.name);
                     processed[i] = true;
                     progress_made = true;
@@ -2512,7 +2511,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
         if (!processed[i]) {
             ASTNode* stmt = ast->program.statements[i];
             if (stmt->type == AST_VAR_DECL && stmt->var_decl.is_const) {
-                log_error_at(&stmt->loc, "Could not resolve const declaration '%s' (circular dependency or undefined reference)",
+                TYPE_ERROR(diag, stmt->loc, "T315", "Could not resolve const declaration '%s' (circular dependency or undefined reference)",
                            stmt->var_decl.name);
             }
         }
@@ -2522,29 +2521,38 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
     log_verbose_indent(2, "Completed after %d iteration(s)", iteration);
 }
 
-// Main entry point: Multi-pass type inference with specialization
-void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx) {
+// Main entry point: Multi-pass type inference with specialization and diagnostics
+void type_inference_with_diagnostics(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!ast || !symbols || !type_ctx) return;
 
     log_verbose("Starting multi-pass type inference");
 
     // Pass 0: Iteratively collect consts and structs (handles dependencies)
     log_verbose_indent(1, "Pass 0: Collecting consts and struct declarations");
-    collect_consts_and_structs(ast, symbols, type_ctx);
+    collect_consts_and_structs(ast, symbols, type_ctx, diag);
+
+    // Note: We continue even if pass 0 has errors to collect more diagnostics
+    // Pass 1 can still find errors in function signatures independent of const/struct errors
 
     // Pass 1: Collect function signatures
     log_verbose_indent(1, "Pass 1: Collecting function signatures");
-    collect_function_signatures(ast, symbols, type_ctx);
+    collect_function_signatures(ast, symbols, type_ctx, diag);
 
-    // Pass 2: Infer literal types
-    log_verbose_indent(1, "Pass 2: Inferring literal types");
-    infer_literal_types(ast, symbols, type_ctx);
+    // Note: We continue even if pass 1 has errors to collect more diagnostics
+    // Pass 2-4 can still find errors (undefined variables, type mismatches, etc.)
 
-    // Pass 3-5: Iteratively analyze and specialize until no new specializations found
-    // This is needed because variable types depend on function return types,
-    // which depend on specializations, which depend on call site argument types
-    log_verbose_indent(1, "Pass 3-5: Iterative specialization discovery");
-    iterative_specialization_discovery(ast, symbols, type_ctx);
+    // Pass 2-4: Iteratively analyze and specialize until no new specializations found
+    // This handles: literal types, call site analysis, specialization creation, and final inference
+    // Variable types depend on function return types, which depend on specializations,
+    // which depend on call site argument types - so we iterate until convergence
+    log_verbose_indent(1, "Pass 2-4: Iterative specialization discovery");
+    iterative_specialization_discovery(ast, symbols, type_ctx, diag);
+
+    // Check for errors after ALL passes - only stop before codegen
+    if (diag && diagnostic_has_errors(diag)) {
+        log_verbose("Type inference found errors, stopping before codegen");
+        return;
+    }
 
     // Store type context for codegen (contains both types and specializations)
     ast->type_ctx = type_ctx;
@@ -2553,4 +2561,9 @@ void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext
     ast->symbol_table = symbols;
 
     log_verbose("Type inference complete");
+}
+
+// Backward compatibility: version without diagnostics
+void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx) {
+    type_inference_with_diagnostics(ast, symbols, type_ctx, NULL);
 }

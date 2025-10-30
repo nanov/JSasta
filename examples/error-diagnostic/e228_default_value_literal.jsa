@@ -1,0 +1,12 @@
+// E228: Default values must be literals
+// This error occurs when struct property default values are not compile-time literals
+
+struct Point {
+    // Error: default value must be a literal (number, string, bool)
+    // Function calls are not allowed as default values
+    x: i32 = get_default();
+}
+
+function get_default() {
+    return 42;
+}

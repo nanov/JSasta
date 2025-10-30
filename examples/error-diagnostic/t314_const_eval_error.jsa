@@ -1,0 +1,9 @@
+// T314: Const expression evaluation error
+// This error occurs when const expression cannot be evaluated
+
+const ZERO = 0;
+
+function main() {
+    // Error: division by zero in const expression
+    var arr: i32[10 / ZERO];
+}

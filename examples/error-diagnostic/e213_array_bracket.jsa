@@ -1,0 +1,7 @@
+// E213: Expected ']' after array size
+// This error occurs when array size declaration is missing closing bracket
+
+function main() {
+    // Error: missing ] after array size
+    var arr: i32[10;
+}

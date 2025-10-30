@@ -1,0 +1,7 @@
+// E225: Expected array size expression after '['
+// This error occurs when struct array property has empty size brackets
+
+struct Data {
+    // Error: missing array size expression
+    buffer: i32[];
+}

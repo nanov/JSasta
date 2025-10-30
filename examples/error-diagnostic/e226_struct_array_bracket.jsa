@@ -1,0 +1,7 @@
+// E226: Expected ']' after array size
+// This error occurs when struct array property is missing closing bracket
+
+struct Data {
+    // Error: missing ] after array size
+    buffer: i32[10;
+}

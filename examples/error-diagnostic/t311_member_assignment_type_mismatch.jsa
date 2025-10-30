@@ -1,0 +1,14 @@
+// T311: Type mismatch in member assignment
+// This error occurs when assigning wrong type to an object property
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function main() {
+    var p: Point = { x: 10, y: 20 };
+
+    // Error: cannot assign string to i32 property
+    p.x = "hello";
+}

@@ -1,0 +1,11 @@
+// E221: Method parameter must have a type annotation
+// This error occurs when method parameters lack type annotations
+
+struct Point {
+    x: i32;
+
+    // Error: method parameter 'dx' needs type annotation
+    function move(dx): void {
+        this.x = this.x + dx;
+    }
+}

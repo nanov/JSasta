@@ -1,0 +1,7 @@
+// E209: Compound assignment requires identifier or member access on left side
+// This error occurs when += -= *= /= is used with invalid lvalue
+
+function main() {
+    // Error: cannot use compound assignment on a literal
+    5 += 10;
+}

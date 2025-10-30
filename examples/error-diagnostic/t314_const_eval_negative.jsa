@@ -1,0 +1,9 @@
+// T314: Const expression evaluates to non-positive value
+// This error occurs when const expression result is <= 0
+
+const BASE = 5;
+
+function main() {
+    // Error: array size expression evaluates to -5, must be positive
+    var arr: i32[BASE - 10];
+}

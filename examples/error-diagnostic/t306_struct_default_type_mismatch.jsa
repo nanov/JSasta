@@ -1,0 +1,12 @@
+// T306: Type mismatch in struct default value
+// This error occurs when a struct property's default value doesn't match its type
+
+struct Point {
+    x: i32;
+    // Error: default value "hello" is string, but property type is i32
+    y: i32 = "hello";
+}
+
+function main() {
+    var p: Point = { x: 10 };
+}

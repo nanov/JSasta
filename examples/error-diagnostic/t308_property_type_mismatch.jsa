@@ -1,0 +1,12 @@
+// T308: Property type mismatch in struct literal
+// This error occurs when struct literal property has wrong type
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function main() {
+    // Error: property 'x' expects i32 but got string
+    var p: Point = { x: "bad", y: 20 };
+}

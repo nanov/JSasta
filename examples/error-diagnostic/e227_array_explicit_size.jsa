@@ -1,0 +1,8 @@
+// E227: Array fields in structs must have explicit size
+// This error occurs when struct array fields use generic syntax i32[] instead of i32[N]
+
+struct Data {
+    // Error: array field needs explicit size like i32[10]
+    // Generic array types i32[] are not supported in struct fields yet
+    buffer: i32[];
+}

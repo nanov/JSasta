@@ -11,76 +11,85 @@
 #include "logger.h"
 
 // Token types for lexer
+// Use X-Macro pattern to define tokens with automatic string generation
+#define TOKEN_TYPES(X) \
+    X(TOKEN_EOF, "EOF") \
+    X(TOKEN_VAR, "var") \
+    X(TOKEN_LET, "let") \
+    X(TOKEN_CONST, "const") \
+    X(TOKEN_FUNCTION, "function") \
+    X(TOKEN_EXTERNAL, "external") \
+    X(TOKEN_STRUCT, "struct") \
+    X(TOKEN_REF, "ref") \
+    X(TOKEN_RETURN, "return") \
+    X(TOKEN_BREAK, "break") \
+    X(TOKEN_CONTINUE, "continue") \
+    X(TOKEN_IF, "if") \
+    X(TOKEN_ELSE, "else") \
+    X(TOKEN_FOR, "for") \
+    X(TOKEN_WHILE, "while") \
+    X(TOKEN_TRUE, "true") \
+    X(TOKEN_FALSE, "false") \
+    X(TOKEN_I8, "i8") \
+    X(TOKEN_I16, "i16") \
+    X(TOKEN_I32, "i32") \
+    X(TOKEN_I64, "i64") \
+    X(TOKEN_U8, "u8") \
+    X(TOKEN_U16, "u16") \
+    X(TOKEN_U32, "u32") \
+    X(TOKEN_U64, "u64") \
+    X(TOKEN_INT, "int") \
+    X(TOKEN_IDENTIFIER, "identifier") \
+    X(TOKEN_NUMBER, "number") \
+    X(TOKEN_STRING, "string") \
+    X(TOKEN_PLUS, "+") \
+    X(TOKEN_MINUS, "-") \
+    X(TOKEN_PERCENT, "%") \
+    X(TOKEN_PLUSPLUS, "++") \
+    X(TOKEN_MINUSMINUS, "--") \
+    X(TOKEN_RIGHT_SHIFT, ">>") \
+    X(TOKEN_LEFT_SHIFT, "<<") \
+    X(TOKEN_BIT_AND, "&") \
+    X(TOKEN_BIT_OR, "|") \
+    X(TOKEN_BIT_XOR, "^") \
+    X(TOKEN_STAR, "*") \
+    X(TOKEN_SLASH, "/") \
+    X(TOKEN_ASSIGN, "=") \
+    X(TOKEN_PLUS_ASSIGN, "+=") \
+    X(TOKEN_MINUS_ASSIGN, "-=") \
+    X(TOKEN_STAR_ASSIGN, "*=") \
+    X(TOKEN_SLASH_ASSIGN, "/=") \
+    X(TOKEN_EQ, "==") \
+    X(TOKEN_NE, "!=") \
+    X(TOKEN_LT, "<") \
+    X(TOKEN_GT, ">") \
+    X(TOKEN_LE, "<=") \
+    X(TOKEN_GE, ">=") \
+    X(TOKEN_LPAREN, "(") \
+    X(TOKEN_RPAREN, ")") \
+    X(TOKEN_LBRACE, "{") \
+    X(TOKEN_RBRACE, "}") \
+    X(TOKEN_LBRACKET, "[") \
+    X(TOKEN_RBRACKET, "]") \
+    X(TOKEN_SEMICOLON, ";") \
+    X(TOKEN_COMMA, ",") \
+    X(TOKEN_DOT, ".") \
+    X(TOKEN_ELLIPSIS, "...") \
+    X(TOKEN_AND, "&&") \
+    X(TOKEN_OR, "||") \
+    X(TOKEN_NOT, "!") \
+    X(TOKEN_QUESTION, "?") \
+    X(TOKEN_COLON, ":")
+
+// Generate enum
+#define TOKEN_ENUM(name, str) name,
 typedef enum {
-    TOKEN_EOF,
-    TOKEN_VAR,
-    TOKEN_LET,
-    TOKEN_CONST,
-    TOKEN_FUNCTION,
-    TOKEN_EXTERNAL,
-    TOKEN_STRUCT,
-    TOKEN_REF,
-    TOKEN_RETURN,
-    TOKEN_BREAK,
-    TOKEN_CONTINUE,
-    TOKEN_IF,
-    TOKEN_ELSE,
-    TOKEN_FOR,
-    TOKEN_WHILE,
-    TOKEN_TRUE,
-    TOKEN_FALSE,
-    // Integer type keywords
-    TOKEN_I8,
-    TOKEN_I16,
-    TOKEN_I32,
-    TOKEN_I64,
-    TOKEN_U8,
-    TOKEN_U16,
-    TOKEN_U32,
-    TOKEN_U64,
-    TOKEN_INT,       // Keep 'int' as legacy keyword
-    TOKEN_IDENTIFIER,
-    TOKEN_NUMBER,
-    TOKEN_STRING,
-    TOKEN_PLUS,
-    TOKEN_MINUS,
-    TOKEN_PERCENT,
-    TOKEN_PLUSPLUS,
-    TOKEN_MINUSMINUS,
-    TOKEN_RIGHT_SHIFT,
-    TOKEN_LEFT_SHIFT,
-    TOKEN_BIT_AND,
-    TOKEN_BIT_OR,
-    TOKEN_BIT_XOR,
-    TOKEN_STAR,
-    TOKEN_SLASH,
-    TOKEN_ASSIGN,
-    TOKEN_PLUS_ASSIGN,   // +=
-    TOKEN_MINUS_ASSIGN,  // -=
-    TOKEN_STAR_ASSIGN,   // *=
-    TOKEN_SLASH_ASSIGN,  // /=
-    TOKEN_EQ,
-    TOKEN_NE,
-    TOKEN_LT,
-    TOKEN_GT,
-    TOKEN_LE,
-    TOKEN_GE,
-    TOKEN_LPAREN,
-    TOKEN_RPAREN,
-    TOKEN_LBRACE,
-    TOKEN_RBRACE,
-    TOKEN_LBRACKET,
-    TOKEN_RBRACKET,
-    TOKEN_SEMICOLON,
-    TOKEN_COMMA,
-    TOKEN_DOT,
-    TOKEN_ELLIPSIS,    // ...
-    TOKEN_AND,
-    TOKEN_OR,
-    TOKEN_NOT,
-    TOKEN_QUESTION,
-    TOKEN_COLON,
+    TOKEN_TYPES(TOKEN_ENUM)
 } TokenType;
+#undef TOKEN_ENUM
+
+// Function to get token string representation
+const char* token_type_to_string(TokenType type);
 
 typedef struct {
     TokenType type;
@@ -465,15 +474,19 @@ void lexer_free(Lexer* lexer);
 Token* lexer_next_token(Lexer* lexer);
 void token_free(Token* token);
 
+// Forward declare DiagnosticContext (defined in diagnostics.h)
+struct DiagnosticContext;
+
 // Parser
 typedef struct {
     Lexer* lexer;
     Token* current_token;
     const char* filename;
     TypeContext* type_ctx;  // For structural type sharing of objects
+    struct DiagnosticContext* diagnostics;  // For collecting parse errors
 } Parser;
 
-Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx);
+Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx, struct DiagnosticContext* diagnostics);
 void parser_free(Parser* parser);
 ASTNode* parser_parse(Parser* parser);
 
@@ -736,7 +749,8 @@ void type_analyze(ASTNode* node, SymbolTable* symbols);
 
 // Type inference (separate pass before type checking)
 void type_inference(ASTNode* ast, SymbolTable* symbols);
-void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* ctx);
+void type_inference_with_context(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx);
+void type_inference_with_diagnostics(ASTNode* ast, SymbolTable* symbols, TypeContext* type_ctx, struct DiagnosticContext* diag);
 
 // Specialization API (now part of TypeContext)
 // Note: specialization_context_create/free removed - use type_context_create/free

@@ -1,0 +1,5 @@
+// E218: External function must have return type annotation
+// This error occurs when external function is missing return type
+
+// Error: missing return type annotation
+external printf(format: string, ...);

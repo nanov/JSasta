@@ -1,5 +1,6 @@
 #include "jsasta_compiler.h"
 #include "logger.h"
+#include "diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,17 +37,31 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
         log_verbose("Debug symbols enabled");
     }
 
+    // Create diagnostic context for collecting errors
+    DiagnosticContext* diagnostics = diagnostic_context_create();
+
     // Create TypeContext (shared between parser and type inference)
     TypeContext* type_ctx = type_context_create();
 
     // Parse
     log_section("Parsing");
-    Parser* parser = parser_create(source, input_file, type_ctx);
+    Parser* parser = parser_create(source, input_file, type_ctx, diagnostics);
     ASTNode* ast = parser_parse(parser);
     parser_free(parser);
 
+    // Check for parse errors
+    if (diagnostic_has_errors(diagnostics)) {
+        diagnostic_report_console(diagnostics);
+        diagnostic_print_summary(diagnostics);
+        diagnostic_context_free(diagnostics);
+        free(source);
+        type_context_free(type_ctx);
+        return;
+    }
+
     if (!ast) {
         log_error("Parse error");
+        diagnostic_context_free(diagnostics);
         free(source);
         type_context_free(type_ctx);
         return;
@@ -57,7 +72,17 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     // Type inference (infer types from usage)
     log_section("Type Inference");
     SymbolTable* symbols = symbol_table_create(NULL);
-    type_inference_with_context(ast, symbols, type_ctx);
+    type_inference_with_diagnostics(ast, symbols, type_ctx, diagnostics);
+
+    // Check for type inference errors
+    if (diagnostic_has_errors(diagnostics)) {
+        diagnostic_report_console(diagnostics);
+        diagnostic_print_summary(diagnostics);
+        diagnostic_context_free(diagnostics);
+        ast_free(ast);
+        type_context_free(type_ctx);
+        return;
+    }
 
     // Print specializations if any
     if (ast->type_ctx) {
@@ -87,10 +112,12 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     codegen_emit_llvm_ir(gen, output_file);
 
     log_info("LLVM IR written to %s", output_file);
+    diagnostic_print_summary(diagnostics);
 
     // Cleanup
     ast_free(ast);
     codegen_free(gen);
+    diagnostic_context_free(diagnostics);
     free(source);
 }
 

@@ -1,0 +1,14 @@
+// T302: Method not found or cannot call method on non-object type
+// This error occurs when calling a method that doesn't exist or on a non-object
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function main() {
+    var p: Point = { x: 10, y: 20 };
+
+    // Error: Point doesn't have a 'move' method
+    p.move(5);
+}

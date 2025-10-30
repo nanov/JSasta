@@ -1,0 +1,7 @@
+// T301: Undefined variable
+// This error occurs when referencing a variable that doesn't exist
+
+function main() {
+    // Error: 'undefinedVar' is not declared
+    var result = undefinedVar + 5;
+}

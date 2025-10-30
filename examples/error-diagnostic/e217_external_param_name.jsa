@@ -1,0 +1,5 @@
+// E217: Expected parameter name or type in external function declaration
+// This error occurs when external function parameter declaration is malformed
+
+// Error: invalid parameter syntax
+external printf(: string): void;

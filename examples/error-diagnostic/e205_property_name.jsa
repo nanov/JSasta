@@ -1,0 +1,8 @@
+// E205: Expected property name after '.'
+// This error occurs in prefix expressions when member access is incomplete
+
+function main() {
+    var obj = { x: 10 };
+    // Error: missing property name after dot in prefix context
+    var val = -obj.;
+}

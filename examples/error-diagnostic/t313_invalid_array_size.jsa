@@ -1,0 +1,7 @@
+// T313: Invalid array size expression
+// This error occurs when array size is not a positive integer constant
+
+function main() {
+    // Error: array size must be a positive integer
+    var arr: i32[-5];
+}

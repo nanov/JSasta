@@ -1,0 +1,7 @@
+// E207: Expected identifier or expression after prefix operator
+// This error occurs when a prefix operator has no operand
+
+function main() {
+    // Error: minus operator has no operand
+    var x = - ;
+}

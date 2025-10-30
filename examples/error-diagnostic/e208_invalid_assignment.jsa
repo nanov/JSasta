@@ -1,0 +1,7 @@
+// E208: Invalid assignment target
+// This error occurs when trying to assign to something that is not an lvalue
+
+function main() {
+    // Error: cannot assign to a literal
+    5 = 10;
+}

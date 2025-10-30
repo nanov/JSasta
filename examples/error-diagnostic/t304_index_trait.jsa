@@ -1,0 +1,14 @@
+// T304: Type does not implement Index<T>
+// This error occurs when trying to index a type that doesn't support indexing
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function main() {
+    var p: Point = { x: 10, y: 20 };
+
+    // Error: Point doesn't implement Index<i32>
+    var val = p[0];
+}

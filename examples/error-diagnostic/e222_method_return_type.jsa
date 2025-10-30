@@ -1,0 +1,11 @@
+// E222: Method must have a return type annotation
+// This error occurs when struct methods lack return type annotation
+
+struct Point {
+    x: i32;
+
+    // Error: method 'get_x' needs return type annotation
+    function get_x() {
+        return this.x;
+    }
+}

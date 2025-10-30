@@ -1,0 +1,12 @@
+// T309: Unknown property in struct
+// This error occurs when struct literal has a property that doesn't exist
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function main() {
+    // Error: Point doesn't have a 'z' property
+    var p: Point = { x: 10, y: 20, z: 30 };
+}

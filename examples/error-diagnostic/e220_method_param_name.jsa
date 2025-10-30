@@ -1,0 +1,11 @@
+// E220: Expected parameter name
+// This error occurs when a method parameter is missing its name
+
+struct Point {
+    x: i32;
+
+    // Error: method parameter missing name
+    function move(: i32): void {
+        this.x = this.x + 1;
+    }
+}

@@ -1,0 +1,7 @@
+// T307: Type mismatch between variable declaration and initialization
+// This error occurs when initialization value doesn't match declared type
+
+function main() {
+    // Error: declared as i32 but initialized with string
+    var num: i32 = "hello";
+}

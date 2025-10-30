@@ -1,0 +1,16 @@
+// T305: Type does not implement RefIndex<T> (required for index assignment)
+// This error occurs when trying to assign to an index without RefIndex trait
+
+struct ReadOnlyArray {
+    // This struct doesn't implement RefIndex, only Index
+    data: i32;
+}
+
+function main() {
+    var arr = "hello";  // strings are immutable
+
+    // Error: string doesn't implement RefIndex<i32> (required for assignment)
+    // Note: This might not trigger in current implementation if strings
+    // don't support index assignment at all
+    arr[0] = 72;  // trying to change 'h' to 'H'
+}

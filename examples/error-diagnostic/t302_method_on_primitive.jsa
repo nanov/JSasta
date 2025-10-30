@@ -1,0 +1,9 @@
+// T302: Cannot call method on non-object type
+// This error occurs when trying to call a method on a primitive type
+
+function main() {
+    var num = 42;
+
+    // Error: Cannot call method on i32 (primitive type)
+    num.toString();
+}

@@ -1,0 +1,9 @@
+// T313: Array size must be a compile-time constant
+// This error occurs when array size is a non-const variable
+
+function main() {
+    var size = 10;  // not declared as const
+
+    // Error: 'size' is not a const and cannot be used in array size
+    var arr: i32[size];
+}

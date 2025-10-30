@@ -1,0 +1,7 @@
+// E203: Postfix operator can only be applied to identifiers or member access
+// This error occurs when ++ or -- is applied to a non-lvalue
+
+function main() {
+    // Error: cannot apply ++ to a literal
+    var x = 5++;
+}

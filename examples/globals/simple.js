@@ -1,6 +1,6 @@
 var G = 0;
 
-function print():void {
+function print(ref sss):void {
 	printf("mitko");
 }
 

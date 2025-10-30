@@ -1,0 +1,8 @@
+// E229: Stuck on token (parser recovery failed)
+// This error occurs when the parser cannot recover from a syntax error
+
+function main() {
+    var x = 10;
+    // Error: unexpected token that the parser cannot handle
+    @ invalid syntax here
+}
