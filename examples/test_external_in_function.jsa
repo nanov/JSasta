@@ -1,0 +1,7 @@
+external printf(string, ...): void;
+
+function main(): void {
+    printf("Hello from main\n");
+}
+
+main();

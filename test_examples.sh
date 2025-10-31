@@ -9,8 +9,8 @@ echo "JSasta Examples Test Suite"
 echo "======================================"
 echo ""
 
-# Test each .jsa file in examples
-for file in examples/*.jsa; do
+# Test array examples
+for file in examples/const/*.jsa; do
     if [ -f "$file" ]; then
         echo "Testing: $file"
         if $COMPILER "$file" /tmp/test_output.ll 2>&1 | grep -q "Code generation complete"; then
@@ -25,6 +25,23 @@ for file in examples/*.jsa; do
     fi
 done
 
+# Test array examples
+for file in examples/scopes/*.jsa; do
+    if [ -f "$file" ]; then
+        echo "Testing: $file"
+        if $COMPILER "$file" /tmp/test_output.ll 2>&1 | grep -q "Code generation complete"; then
+            echo "✓ PASS"
+            PASS=$((PASS + 1))
+        else
+            echo "✗ FAIL"
+            $COMPILER "$file" /tmp/test_output.ll 2>&1 | tail -5
+            FAIL=$((FAIL + 1))
+        fi
+        echo ""
+    fi
+done
+
+# Test array examples
 # Test array examples
 for file in examples/array/*.jsa; do
     if [ -f "$file" ]; then
@@ -41,6 +58,21 @@ for file in examples/array/*.jsa; do
     fi
 done
 
+# Test array examples
+for file in examples/members/*.jsa; do
+    if [ -f "$file" ]; then
+        echo "Testing: $file"
+        if $COMPILER "$file" /tmp/test_output.ll 2>&1 | grep -q "Code generation complete"; then
+            echo "✓ PASS"
+            PASS=$((PASS + 1))
+        else
+            echo "✗ FAIL"
+            $COMPILER "$file" /tmp/test_output.ll 2>&1 | tail -5
+            FAIL=$((FAIL + 1))
+        fi
+        echo ""
+    fi
+done
 echo "======================================"
 echo "Examples: $PASS passed, $FAIL failed"
 echo "======================================"

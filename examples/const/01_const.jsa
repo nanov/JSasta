@@ -1,0 +1,12 @@
+external printf(string, ...): void;
+
+
+// Test 1: Basic const declaration
+const x = 10;
+printf("%d", 10);
+
+// Test 2: Const with var - regular var can be reassigned
+var y = 20;
+printf("%d", 10);
+y = 30;
+printf("%d", 10);  // 30

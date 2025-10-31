@@ -161,6 +161,7 @@ struct TypeInfo {
     TypeKind kind;              // Type category
     int type_id;                // Unique type ID within TypeContext
     char* type_name;            // Type name (e.g., "Person", "Object_0", "int[]")
+    bool is_global;
 
     // Type-specific data (use union to save memory and improve organization)
     union {
@@ -231,7 +232,7 @@ typedef struct TypeContext {
     int type_count;                  // Number of registered types
     int next_anonymous_id;           // For generating unique anonymous type names
     int specialization_count;        // Total number of specializations across all functions
-    
+
     char* module_prefix;             // Module prefix for name mangling (e.g., "math__")
 
     // Trait system for operator overloading and methods
@@ -283,6 +284,7 @@ struct ASTNode {
         struct {
             char* name;
             char** params;
+            SourceLocation* param_locs;   // Source locations for each parameter
             int param_count;
             ASTNode* body;                // NULL for external functions
             TypeInfo** param_type_hints;  // Optional for user functions, required for external
@@ -293,6 +295,7 @@ struct ASTNode {
         struct {
             char* name;                   // Struct name
             char** property_names;        // Property names
+            SourceLocation* property_locs;  // Source locations for each property
             TypeInfo** property_types;    // Property types
             ASTNode** default_values;     // Default literal values (NULL if no default)
             int* property_array_sizes;    // Array size for each property (0 if not array)
@@ -524,6 +527,7 @@ SymbolEntry* symbol_table_lookup_all_scopes(SymbolTable* table, const char* name
 TypeInfo* type_info_create(TypeKind kind, char* name);
 TypeInfo* type_info_create_primitive(char* name);
 TypeInfo* type_info_create_integer(char* name, int bit_width, bool is_signed);
+TypeInfo* type_info_create_array(TypeInfo* element_type);
 TypeInfo* type_info_create_unknown();
 TypeInfo* type_info_create_int();
 TypeInfo* type_info_create_double();
@@ -591,7 +595,7 @@ static inline bool type_info_is_unknown(TypeInfo* type_info) {
 static inline bool type_info_is_integer(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
     if (!type_info || type_info->kind != TYPE_KIND_PRIMITIVE) return false;
-    return type_info == Type_I8 || type_info == Type_I16 || 
+    return type_info == Type_I8 || type_info == Type_I16 ||
            type_info == Type_I32 || type_info == Type_I64 ||
            type_info == Type_U8 || type_info == Type_U16 ||
            type_info == Type_U32 || type_info == Type_U64;
@@ -601,7 +605,7 @@ static inline bool type_info_is_integer(TypeInfo* type_info) {
 static inline bool type_info_is_signed_int(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
     if (!type_info || type_info->kind != TYPE_KIND_PRIMITIVE) return false;
-    return type_info == Type_I8 || type_info == Type_I16 || 
+    return type_info == Type_I8 || type_info == Type_I16 ||
            type_info == Type_I32 || type_info == Type_I64;
 }
 
@@ -787,14 +791,14 @@ typedef struct CodeGen {
     RuntimeFunction* runtime_functions;
     TypeContext* type_ctx;                      // Type context for TypeInfo and specializations
     TraitRegistry* trait_registry;              // Trait registry (shared with type_ctx)
-    
+
     // Loop control - for break/continue
     LLVMBasicBlockRef loop_exit_block;          // Block to jump to on 'break'
     LLVMBasicBlockRef loop_continue_block;      // Block to jump to on 'continue'
-    
+
     // Stack allocation management
     LLVMBasicBlockRef entry_block;              // Entry block of current function for allocas
-    
+
     // Debug information
     bool enable_debug;                          // Whether to generate debug info
     const char* source_filename;                // Source file name for debug info

@@ -73,6 +73,17 @@ static CodeInfo* find_code_info_by_decl(CodeIndex* index, ASTNode* decl_node) {
     return NULL;
 }
 
+static CodeInfo* find_code_info_by_decl_and_name(CodeIndex* index, ASTNode* decl_node, const char* name) {
+    CodeInfo* current = index->code_items;
+    while (current) {
+        if (current->decl_node == decl_node && strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
 // === Public API ===
 
 CodeIndex* code_index_create(void) {
@@ -116,8 +127,8 @@ void code_index_add_definition(CodeIndex* index, ASTNode* decl_node, const char*
                                 int kind, TypeInfo* type_info, SourceRange range) {
     if (!index || !decl_node || !name) return;
     
-    // Check if we already have this declaration
-    CodeInfo* existing = find_code_info_by_decl(index, decl_node);
+    // Check if we already have this declaration (check by both node and name for parameters/members)
+    CodeInfo* existing = find_code_info_by_decl_and_name(index, decl_node, name);
     if (existing) {
         return; // Already added
     }
@@ -244,11 +255,31 @@ static void add_identifier_reference(CodeIndex* index, ASTNode* identifier_node,
     SourceRange range = source_range_from_location(identifier_node->loc);
     
     // For identifiers, estimate end column by adding name length
+    const char* name = NULL;
     if (identifier_node->type == AST_IDENTIFIER && identifier_node->identifier.name) {
-        range.end_column = range.start_column + strlen(identifier_node->identifier.name);
+        name = identifier_node->identifier.name;
+        range.end_column = range.start_column + strlen(name);
     }
     
-    code_index_add_reference(index, decl_node, range);
+    // Find the code info by both decl_node and name (for parameters/members that share a decl_node)
+    CodeInfo* info = name ? find_code_info_by_decl_and_name(index, decl_node, name) 
+                          : find_code_info_by_decl(index, decl_node);
+    if (!info) {
+        return; // Declaration not found
+    }
+    
+    // Add to temporary references array
+    if (info->temp_reference_count >= info->temp_reference_capacity) {
+        int new_capacity = info->temp_reference_capacity == 0 ? 4 : info->temp_reference_capacity * 2;
+        SourceRange* new_refs = (SourceRange*)realloc(info->temp_references, 
+                                                       new_capacity * sizeof(SourceRange));
+        if (!new_refs) return;
+        
+        info->temp_references = new_refs;
+        info->temp_reference_capacity = new_capacity;
+    }
+    
+    info->temp_references[info->temp_reference_count++] = range;
 }
 
 static void build_index_from_var_decl(CodeIndex* index, ASTNode* node, SymbolTable* symbols) {
@@ -281,9 +312,21 @@ static void build_index_from_function_decl(CodeIndex* index, ASTNode* node) {
     code_index_add_definition(index, node, node->func_decl.name, CODE_FUNCTION,
                               node->type_info, range);
     
-    // Note: Parameters in func_decl are just char* strings, not ASTNodes
-    // We would need to track parameter positions separately if needed
-    // For now, skip parameter indexing since we don't have their source locations
+    // Index function parameters as definitions
+    if (node->func_decl.param_locs) {
+        for (int i = 0; i < node->func_decl.param_count; i++) {
+            if (node->func_decl.params[i] && node->func_decl.param_locs[i].filename) {
+                SourceRange param_range = source_range_from_location(node->func_decl.param_locs[i]);
+                param_range.end_column = param_range.start_column + strlen(node->func_decl.params[i]);
+                
+                // Create a pseudo-node for the parameter (we'll use the function node as parent)
+                // Parameters are variables/parameters, so use CODE_VARIABLE
+                code_index_add_definition(index, node, node->func_decl.params[i], CODE_VARIABLE,
+                                          node->func_decl.param_type_hints ? node->func_decl.param_type_hints[i] : NULL,
+                                          param_range);
+            }
+        }
+    }
     
     // Traverse function body
     if (node->func_decl.body) {
@@ -302,9 +345,20 @@ static void build_index_from_struct_decl(CodeIndex* index, ASTNode* node) {
     code_index_add_definition(index, node, node->struct_decl.name, CODE_TYPE,
                               node->type_info, range);
     
-    // Note: Struct members are stored as property_names (char**), not ASTNodes
-    // We don't have source locations for individual members
-    // For now, skip member indexing
+    // Index struct properties as definitions
+    if (node->struct_decl.property_locs) {
+        for (int i = 0; i < node->struct_decl.property_count; i++) {
+            if (node->struct_decl.property_names[i] && node->struct_decl.property_locs[i].filename) {
+                SourceRange prop_range = source_range_from_location(node->struct_decl.property_locs[i]);
+                prop_range.end_column = prop_range.start_column + strlen(node->struct_decl.property_names[i]);
+                
+                // Index struct properties as fields/members
+                code_index_add_definition(index, node, node->struct_decl.property_names[i], CODE_VARIABLE,
+                                          node->struct_decl.property_types ? node->struct_decl.property_types[i] : NULL,
+                                          prop_range);
+            }
+        }
+    }
     
     // Traverse methods
     for (int i = 0; i < node->struct_decl.method_count; i++) {
@@ -416,7 +470,49 @@ static void build_index_from_node(CodeIndex* index, ASTNode* node, SymbolTable* 
             
         case AST_MEMBER_ACCESS:
             build_index_from_node(index, node->member_access.object, symbols);
-            // Don't traverse member as identifier - it's a field name
+            // Handle member access as a reference to the struct property
+            if (node->member_access.object && node->member_access.object->type_info && 
+                node->member_access.property && node->loc.filename) {
+                TypeInfo* obj_type = type_info_resolve_alias(node->member_access.object->type_info);
+                if (obj_type && obj_type->kind == TYPE_KIND_OBJECT) {
+                    // Find the struct declaration node
+                    ASTNode* struct_node = obj_type->data.object.struct_decl_node;
+                    if (struct_node && struct_node->type == AST_STRUCT_DECL) {
+                        // Find which property index this is
+                        int prop_index = -1;
+                        for (int i = 0; i < struct_node->struct_decl.property_count; i++) {
+                            if (strcmp(struct_node->struct_decl.property_names[i], node->member_access.property) == 0) {
+                                prop_index = i;
+                                break;
+                            }
+                        }
+                        
+                        if (prop_index >= 0) {
+                            // Note: We use the member_access node location, which isn't perfect
+                            // but establishes the reference relationship for Find References
+                            // TODO: Parser should capture property name location separately
+                            SourceRange ref_range = source_range_from_location(node->loc);
+                            ref_range.end_column = ref_range.start_column + 1; // Minimal range
+                            
+                            // Find the code info by struct node and property name
+                            CodeInfo* info = find_code_info_by_decl_and_name(index, struct_node, node->member_access.property);
+                            if (info) {
+                                // Add reference
+                                if (info->temp_reference_count >= info->temp_reference_capacity) {
+                                    int new_capacity = info->temp_reference_capacity == 0 ? 4 : info->temp_reference_capacity * 2;
+                                    SourceRange* new_refs = (SourceRange*)realloc(info->temp_references, 
+                                                                                   new_capacity * sizeof(SourceRange));
+                                    if (new_refs) {
+                                        info->temp_references = new_refs;
+                                        info->temp_reference_capacity = new_capacity;
+                                        info->temp_references[info->temp_reference_count++] = ref_range;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             break;
             
         case AST_MEMBER_ASSIGNMENT:

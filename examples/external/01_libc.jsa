@@ -1,0 +1,3 @@
+external printf(string, ...): void;
+
+printf("i use libc! %d\n", 2);

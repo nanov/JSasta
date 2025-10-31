@@ -1,0 +1,5 @@
+import math from "../modules/math.jsa";
+
+external printf(string, ...):void;
+
+printf("Test 3: top level, with imports\n");

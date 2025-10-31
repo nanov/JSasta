@@ -1,3 +1,5 @@
+external printf(string, ..);
+
 const WIDTH = 100;
 
 for (let i = 0; i < WIDTH; i++) {

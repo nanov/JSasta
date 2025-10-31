@@ -15,3 +15,5 @@ function main() {
     // Note: string returns aren't fully supported yet, so this is a placeholder
     printf("Testing strings module\n");
 }
+
+main();

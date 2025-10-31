@@ -1,0 +1,7 @@
+external printf(string, ...):void;
+
+function test():void {
+    printf("Test 2: inside function, no imports\n");
+}
+
+test();

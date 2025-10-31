@@ -1,0 +1,5 @@
+import math from "../modules/math.jsa";
+
+function main():void {
+    var sum = math.add(10, 20);
+}

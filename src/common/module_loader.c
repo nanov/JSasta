@@ -207,8 +207,9 @@ bool module_parse(Module* module, ModuleRegistry* registry) {
     log_verbose("Parsing module: %s", module->relative_path);
     
     // Parse
+    // Use module's own TypeContext so types are registered in the same context used by type inference
     Parser* parser = parser_create(module->source_code, module->absolute_path, 
-                                   registry->type_ctx, registry->diagnostics);
+                                   module->type_ctx, registry->diagnostics);
     module->ast = parser_parse(parser);
     parser_free(parser);
     

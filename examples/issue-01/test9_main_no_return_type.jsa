@@ -1,0 +1,10 @@
+external printf(string, ...):void;
+var ddd: i32;
+
+ss
+
+function main() {
+    printf("Test 9: main without return type\n");
+}
+
+main();

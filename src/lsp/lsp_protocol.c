@@ -274,7 +274,12 @@ char* lsp_create_initialize_response(LSPServerCapabilities* caps) {
     json_add_key(builder, "capabilities");
     json_start_object(builder);
     
-    json_add_number_field(builder, "textDocumentSync", 1); // Full sync
+    // textDocumentSync - use object format to be explicit about Full sync
+    json_add_key(builder, "textDocumentSync");
+    json_start_object(builder);
+    json_add_number_field(builder, "change", 1); // 1 = Full, 2 = Incremental
+    json_add_bool_field(builder, "openClose", true);
+    json_end_object(builder);
     
     if (caps->hover_provider) {
         json_add_bool_field(builder, "hoverProvider", true);

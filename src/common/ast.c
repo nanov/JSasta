@@ -46,6 +46,9 @@ void ast_free(ASTNode* node) {
                 free(node->func_decl.params[i]);
             }
             free(node->func_decl.params);
+            if (node->func_decl.param_locs) {
+                free(node->func_decl.param_locs);
+            }
             // Note: param_type_hints are references to TypeContext, don't free the TypeInfo objects
             if (node->func_decl.param_type_hints) {
                 free(node->func_decl.param_type_hints);
@@ -71,6 +74,9 @@ void ast_free(ASTNode* node) {
                 ast_free(node->struct_decl.property_array_size_exprs[i]);
             }
             free(node->struct_decl.property_names);
+            if (node->struct_decl.property_locs) {
+                free(node->struct_decl.property_locs);
+            }
             // Note: property_types are references to TypeContext, don't free the TypeInfo objects
             if (node->struct_decl.property_types) {
                 free(node->struct_decl.property_types);

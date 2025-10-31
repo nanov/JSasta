@@ -1,0 +1,8 @@
+import math from "../modules/math.jsa";
+
+external printf(string, ...):void;
+
+function main():void {
+    var sum = math.add(10, 20);
+    printf("Sum: %d\n", sum);
+}

@@ -1,0 +1,9 @@
+external prinf(string, ...): void;
+
+
+printf("ss");
+
+function a(name) {
+  name = "dd";
+
+}

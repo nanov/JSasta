@@ -3,8 +3,10 @@
 
 #include "../common/jsasta_compiler.h"
 #include "../common/diagnostics.h"
+#include "../common/string_utils.h"
 #include "lsp_protocol.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 
 // === CodeIndex for LSP Features ===
 
@@ -61,32 +63,39 @@ typedef struct CodeIndex {
     int position_capacity;
 } CodeIndex;
 
-// Forward declare for timer
+// Forward declarations
 typedef struct LSPDocument LSPDocument;
 
-// Parsed snapshot of a document (can be in main or diagnostic thread)
-typedef struct ParsedSnapshot {
-    ASTNode* ast;
-    SymbolTable* symbols;
-    TypeContext* type_ctx;
-    DiagnosticContext* diagnostics;
-    CodeIndex* code_index;
-    char* content;           // Content that was parsed
-    char* filename;          // Filename used for parsing
-} ParsedSnapshot;
+// Analysis work for a document (parsing + type inference)
+// This represents a parsed document with all analysis data.
+// Can be created in main thread and passed to worker thread for type inference.
+typedef struct AnalysisWork {
+    char* uri;                      // Document URI (for sending diagnostics)
+    char* filename;                 // Filename for diagnostics and AST location info
+    ASTNode* ast;                   // AST to run type inference on
+    SymbolTable* symbols;           // Symbol table
+    TypeContext* type_ctx;          // Type context
+    DiagnosticContext* diagnostics; // Diagnostics context
+} AnalysisWork;
 
 // Document state in the LSP server
 struct LSPDocument {
     char* uri;               // Document URI (file:///path/to/file.jsa)
     char* filename;          // Filesystem path (for AST location info)
-    char* content;           // Current document content
+    JsaStringBuilder* content;  // Current document content (mutable for incremental updates)
     int version;             // Document version (incremented on changes)
     
-    // Main thread's parsed state (for LSP features - Go to Definition, etc)
-    ParsedSnapshot* main_snapshot;
+    // Code index for LSP features (Go to Definition, Hover, References, etc)
+    // Only accessed by main thread, no synchronization needed
+    CodeIndex* code_index;
     
-    // Mutex to protect main_snapshot swapping
-    pthread_mutex_t swap_mutex;
+    // Per-document work queue for type inference
+    AnalysisWork* pending_work;  // NULL if no work, otherwise work for this document (protected by work_mutex)
+    
+    // Completed type inference work with typed AST for code index rebuild
+    // Worker thread stores completed work here, main thread consumes it
+    // If not NULL, code index needs to be rebuilt with type information
+    _Atomic(AnalysisWork*) completed_work;  // Atomic pointer, no mutex needed
     
     bool needs_reparse;      // Flag to track if document needs reparsing
     
@@ -117,6 +126,12 @@ typedef struct {
     
     // Mutex for stdout writes (worker threads send diagnostics)
     pthread_mutex_t write_mutex;
+    
+    // Work queue for type inference worker
+    pthread_mutex_t work_mutex;        // Protects access to all documents' pending_work
+    pthread_cond_t work_available;     // Condition variable to signal when work is ready
+    pthread_t worker_thread;           // Persistent worker thread
+    bool worker_running;               // Flag to stop worker on shutdown
 } LSPServer;
 
 // === Server Lifecycle ===
@@ -136,7 +151,9 @@ void lsp_server_run(LSPServer* server);
 LSPDocument* lsp_document_open(LSPServer* server, const char* uri, const char* language_id, int version, const char* text);
 
 // Update a document (didChange notification)
-void lsp_document_update(LSPServer* server, const char* uri, int version, const char* text);
+// If range is NULL, it's a full document sync (text replaces everything)
+// If range is provided, it's an incremental update (text replaces the range)
+void lsp_document_update(LSPServer* server, const char* uri, int version, const TextRange* range, const char* text);
 
 // Close a document (didClose notification)
 void lsp_document_close(LSPServer* server, const char* uri);
@@ -144,8 +161,12 @@ void lsp_document_close(LSPServer* server, const char* uri);
 // Find document by URI
 LSPDocument* lsp_document_find(LSPServer* server, const char* uri);
 
-// Get diagnostics for a document (from a parsed snapshot)
-void lsp_document_get_diagnostics(ParsedSnapshot* snapshot, LSPDiagnostic** out_diagnostics, int* out_count);
+// Get code index for a document, rebuilding it if type inference completed
+// Returns the code index, or NULL if not available
+CodeIndex* lsp_document_get_code_index(LSPDocument* doc);
+
+// Get diagnostics for a document (from analysis work)
+void lsp_document_get_diagnostics(AnalysisWork* work, LSPDiagnostic** out_diagnostics, int* out_count);
 
 // === LSP Request Handlers ===
 
@@ -213,13 +234,13 @@ LSPDocument* lsp_server_find_document(LSPServer* server, const char* uri);
 // Get hover information for a node
 char* lsp_get_hover_info(ASTNode* node, SymbolEntry* symbol);
 
-// === ParsedSnapshot Functions ===
+// === AnalysisWork Functions ===
 
-// Create a new parsed snapshot
-ParsedSnapshot* parsed_snapshot_create(void);
+// Parse content into analysis work (WITHOUT running type inference yet)
+AnalysisWork* analysis_work_parse(const char* content, const char* uri, const char* filename);
 
-// Free a parsed snapshot
-void parsed_snapshot_free(ParsedSnapshot* snapshot);
+// Free an analysis work
+void analysis_work_free(AnalysisWork* work);
 
 // === CodeIndex Functions ===
 

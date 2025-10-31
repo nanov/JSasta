@@ -1,0 +1,5 @@
+external printf(string, ...):void;
+
+function main():void {
+    printf("Test 5: main function, not called\n");
+}

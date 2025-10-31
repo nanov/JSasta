@@ -1,0 +1,7 @@
+import math from "../modules/math.jsa";
+
+external printf(string, ...):void;
+
+function main():void {
+    printf("Test 6: main function with imports, not called\n");
+}

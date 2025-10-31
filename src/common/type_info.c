@@ -1,9 +1,7 @@
 #include "jsasta_compiler.h"
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-
-// Forward declarations
-static bool type_info_is_global_singleton(TypeInfo* type_info);
 
 // Create a basic TypeInfo with just a base type
 TypeInfo* type_info_create(TypeKind kind, char* name) {
@@ -11,10 +9,11 @@ TypeInfo* type_info_create(TypeKind kind, char* name) {
     info->type_id = -1;  // Not registered yet
     info->type_name = name;
     info->kind = kind;
-    
+    info->is_global = false;
+
     // Initialize union data to zero
     memset(&info->data, 0, sizeof(info->data));
-    
+
     return info;
 }
 
@@ -28,6 +27,15 @@ TypeInfo* type_info_create_integer(char* name, int bit_width, bool is_signed) {
     info->data.integer.bit_width = bit_width;
     info->data.integer.is_signed = is_signed;
     return info;
+}
+
+TypeInfo* type_info_create_array(TypeInfo* element_type) {
+	static char buffer[1024];
+	strcpy(buffer, element_type->type_name);
+	strcat(buffer, "[]");
+	TypeInfo* type = type_info_create(TYPE_KIND_ARRAY, buffer);
+	type->data.array.element_type = element_type;
+	return type;
 }
 
 // Create a fresh unknown type instance
@@ -45,12 +53,12 @@ TypeInfo* type_info_create_alias(char* alias_name, TypeInfo* target_type) {
 // Recursively resolve type aliases to get the actual type
 TypeInfo* type_info_resolve_alias(TypeInfo* type_info) {
     if (!type_info) return NULL;
-    
+
     // Keep following alias chain until we hit a non-alias type
     while (type_info && type_info->kind == TYPE_KIND_ALIAS) {
         type_info = type_info->data.alias.target_type;
     }
-    
+
     return type_info;
 }
 
@@ -64,10 +72,10 @@ TypeInfo* type_info_create_from_object_literal(ASTNode* obj_literal) {
     info->type_id = -1;  // Not registered yet
     info->type_name = NULL;
     info->kind = TYPE_KIND_OBJECT;
-    
+
     // Initialize union
     memset(&info->data, 0, sizeof(info->data));
-    
+
     // Set object-specific data
     info->data.object.property_count = obj_literal->object_literal.count;
     info->data.object.property_names = (char**)malloc(sizeof(char*) * info->data.object.property_count);
@@ -96,7 +104,7 @@ TypeInfo* type_info_create_from_object_literal(ASTNode* obj_literal) {
 // Free TypeInfo without freeing referenced types (shallow free)
 // Used when property_types and element_type are references owned by TypeContext
 void type_info_free_shallow(TypeInfo* type_info) {
-    if (!type_info) return;
+    if (!type_info || type_info->is_global) return;
 
     // Free type-specific data based on kind
     if (type_info->kind == TYPE_KIND_OBJECT) {
@@ -109,7 +117,7 @@ void type_info_free_shallow(TypeInfo* type_info) {
     }
     // For arrays: element_type is a reference, don't free
     // For functions: param_types and return_type are references, don't free
-    
+
     free(type_info->type_name);
     free(type_info);
 }
@@ -117,12 +125,7 @@ void type_info_free_shallow(TypeInfo* type_info) {
 // Free TypeInfo and all its nested data (deep free)
 // WARNING: Only use this when TypeInfo owns its nested types (not references)
 void type_info_free(TypeInfo* type_info) {
-    if (!type_info) return;
-
-    // Don't free global singleton types
-    if (type_info_is_global_singleton(type_info)) {
-        return;
-    }
+    if (!type_info || type_info->is_global) return;
 
     // Free type-specific data based on kind
     if (type_info->kind == TYPE_KIND_OBJECT) {
@@ -131,7 +134,7 @@ void type_info_free(TypeInfo* type_info) {
             free(type_info->data.object.property_names[i]);
         }
         free(type_info->data.object.property_names);
-        
+
         // Note: property_types are references to types in TypeContext, don't free the TypeInfo objects
         // Just free the array itself
         free(type_info->data.object.property_types);
@@ -147,7 +150,7 @@ void type_info_free(TypeInfo* type_info) {
         if (type_info->data.function.param_types) {
             free(type_info->data.function.param_types);
         }
-        
+
         // Free all specializations
         FunctionSpecialization* spec = type_info->data.function.specializations;
         while (spec) {
@@ -164,7 +167,7 @@ void type_info_free(TypeInfo* type_info) {
             free(spec);
             spec = next;
         }
-        
+
         // Note: original_body is a reference to AST, not owned by TypeInfo
         // Note: return_type is a reference to TypeContext, don't free it
     }
@@ -183,12 +186,8 @@ typedef struct CloneContext {
 
 // Internal clone function with cycle detection
 static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx) {
-    if (!type_info) return NULL;
+    if (!type_info || type_info->is_global) return NULL;
 
-    // Don't clone global singleton types - preserve the reference
-    if (type_info_is_global_singleton(type_info)) {
-        return type_info;
-    }
 
     // Check if we've already cloned this TypeInfo (cycle detection)
     for (int i = 0; i < ctx->count; i++) {
@@ -203,7 +202,7 @@ static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx
     clone->type_id = type_info->type_id;
     clone->type_name = type_info->type_name ? strdup(type_info->type_name) : NULL;
     clone->kind = type_info->kind;
-    
+
     // Initialize union
     memset(&clone->data, 0, sizeof(clone->data));
 
@@ -238,50 +237,19 @@ static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx
     return clone;
 }
 
-// Check if a TypeInfo is a global primitive/singleton that shouldn't be cloned
-static bool type_info_is_global_singleton(TypeInfo* type_info) {
-    if (!type_info) return false;
-
-    // Check if it's one of the global singleton types
-    return type_info == Type_Unknown ||
-           type_info == Type_Bool ||
-           type_info == Type_Void ||
-           type_info == Type_Int ||
-           type_info == Type_Double ||
-           type_info == Type_Object ||
-           type_info == Type_String ||
-           // Signed integer types
-           type_info == Type_I8 ||
-           type_info == Type_I16 ||
-           type_info == Type_I32 ||
-           type_info == Type_I64 ||
-           // Unsigned integer types
-           type_info == Type_U8 ||
-           type_info == Type_U16 ||
-           type_info == Type_U32 ||
-           type_info == Type_U64 ||
-           // Array types
-           type_info == Type_Array_Int ||
-           type_info == Type_Array_I8 ||
-           type_info == Type_Array_I16 ||
-           type_info == Type_Array_I32 ||
-           type_info == Type_Array_I64 ||
-           type_info == Type_Array_U8 ||
-           type_info == Type_Array_U16 ||
-           type_info == Type_Array_U32 ||
-           type_info == Type_Array_U64 ||
-           type_info == Type_Array_Bool ||
-           type_info == Type_Array_Double ||
-           type_info == Type_Array_String;
-}
-
 // Clone a TypeInfo (deep copy with cycle detection)
 // Returns the original pointer for global singletons
 TypeInfo* type_info_clone(TypeInfo* type_info) {
     if (!type_info) return NULL;
-
-    // Don't clone global singleton types - preserve the reference
-    if (type_info_is_global_singleton(type_info)) {
+    
+    // Global types (like primitives) are shared, don't clone them - just return the reference
+    if (type_info->is_global) return type_info;
+    
+    // ALL struct/object types registered in TypeContext should not be cloned
+    // This includes both named structs (like "counter_t") and anonymous objects (like "Object_123")
+    // They are managed by TypeContext and should be treated as singletons
+    if (type_info->kind == TYPE_KIND_OBJECT && type_info->type_name) {
+        // This is a struct/object type - don't clone, return the reference
         return type_info;
     }
 
@@ -304,7 +272,7 @@ TypeInfo* type_info_clone(TypeInfo* type_info) {
 // Find property index by name, returns -1 if not found
 int type_info_find_property(TypeInfo* type_info, const char* property_name) {
     if (!type_info || !property_name) return -1;
-    
+
     if (type_info->kind != TYPE_KIND_OBJECT) return -1;
 
     for (int i = 0; i < type_info->data.object.property_count; i++) {

@@ -1,5 +1,6 @@
 #include "jsasta_compiler.h"
 #include "traits.h"
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -7,88 +8,74 @@
 // Flag to track if global types have been initialized
 static bool global_types_initialized = false;
 
+#define INIT_GLOBAL_TYPE(TARGET, INIT) {\
+	TARGET = INIT; \
+	TARGET->is_global = true; \
+}
+
+#define INIT_ARRAY_TYPE(TARGET, NAME, ELEM) {\
+	TARGET = INIT; \
+	TARGET->is_global = true; \
+}
 // Initialize global type variables once at program startup
 void type_system_init_global_types() {
     if (global_types_initialized) {
         return; // Already initialized
     }
-    
+
     // Pre-register primitive types and cache them
-    Type_Unknown = type_info_create(TYPE_KIND_UNKNOWN, strdup("unknown"));
+    INIT_GLOBAL_TYPE(Type_Unknown,type_info_create(TYPE_KIND_UNKNOWN, strdup("unknown")));
 
     // Signed integer types
-    Type_I8 = type_info_create_integer(strdup("i8"), 8, true);
-    Type_I16 = type_info_create_integer(strdup("i16"), 16, true);
-    Type_I32 = type_info_create_integer(strdup("i32"), 32, true);
-    Type_I64 = type_info_create_integer(strdup("i64"), 64, true);
+    INIT_GLOBAL_TYPE(Type_I8, type_info_create_integer(strdup("i8"), 8, true))
+    INIT_GLOBAL_TYPE(Type_I16, type_info_create_integer(strdup("i16"), 16, true));
+    INIT_GLOBAL_TYPE(Type_I32, type_info_create_integer(strdup("i32"), 32, true));
+    INIT_GLOBAL_TYPE(Type_I64, type_info_create_integer(strdup("i64"), 64, true));
 
     // Unsigned integer types
-    Type_U8 = type_info_create_integer(strdup("u8"), 8, false);
-    Type_U16 = type_info_create_integer(strdup("u16"), 16, false);
-    Type_U32 = type_info_create_integer(strdup("u32"), 32, false);
-    Type_U64 = type_info_create_integer(strdup("u64"), 64, false);
+    INIT_GLOBAL_TYPE(Type_U8, type_info_create_integer(strdup("u8"), 8, false))
+    INIT_GLOBAL_TYPE(Type_U16, type_info_create_integer(strdup("u16"), 16, false))
+    INIT_GLOBAL_TYPE(Type_U32, type_info_create_integer(strdup("u32"), 32, false))
+    INIT_GLOBAL_TYPE(Type_U64, type_info_create_integer(strdup("u64"), 64, false))
 
     // Legacy "int" type (alias for i32)
-    Type_Int = Type_I32;
+    INIT_GLOBAL_TYPE(Type_Int, type_info_create_alias("int", Type_I32))
 
-    Type_Double = type_info_create_primitive(strdup("double"));
-    Type_String = type_info_create_primitive(strdup("string"));
-    Type_Bool = type_info_create_primitive(strdup("bool"));
-    Type_Void = type_info_create_primitive(strdup("void"));
+    INIT_GLOBAL_TYPE(Type_Double, type_info_create_primitive(strdup("double")))
+    INIT_GLOBAL_TYPE(Type_String, type_info_create_primitive(strdup("string")))
+    INIT_GLOBAL_TYPE(Type_Bool, type_info_create_primitive(strdup("bool")))
+    INIT_GLOBAL_TYPE(Type_Void, type_info_create_primitive(strdup("void")))
 
     // Create array types for all integer types
-    Type_Array_I8 = type_info_create(TYPE_KIND_ARRAY, strdup("i8[]"));
-    Type_Array_I8->data.array.element_type = Type_I8;
-
-    Type_Array_I16 = type_info_create(TYPE_KIND_ARRAY, strdup("i16[]"));
-    Type_Array_I16->data.array.element_type = Type_I16;
-
-    Type_Array_I32 = type_info_create(TYPE_KIND_ARRAY, strdup("i32[]"));
-    Type_Array_I32->data.array.element_type = Type_I32;
-
-    Type_Array_I64 = type_info_create(TYPE_KIND_ARRAY, strdup("i64[]"));
-    Type_Array_I64->data.array.element_type = Type_I64;
-
-    Type_Array_U8 = type_info_create(TYPE_KIND_ARRAY, strdup("u8[]"));
-    Type_Array_U8->data.array.element_type = Type_U8;
-
-    Type_Array_U16 = type_info_create(TYPE_KIND_ARRAY, strdup("u16[]"));
-    Type_Array_U16->data.array.element_type = Type_U16;
-
-    Type_Array_U32 = type_info_create(TYPE_KIND_ARRAY, strdup("u32[]"));
-    Type_Array_U32->data.array.element_type = Type_U32;
-
-    Type_Array_U64 = type_info_create(TYPE_KIND_ARRAY, strdup("u64[]"));
-    Type_Array_U64->data.array.element_type = Type_U64;
-
-    // Legacy array type (alias for i32[])
-    Type_Array_Int = Type_Array_I32;
-
-    Type_Array_Double = type_info_create(TYPE_KIND_ARRAY, strdup("double[]"));
-    Type_Array_Double->data.array.element_type = Type_Double;
-
-    Type_Array_Bool = type_info_create(TYPE_KIND_ARRAY, strdup("bool[]"));
-    Type_Array_Bool->data.array.element_type = Type_Bool;
-
-    Type_Array_String = type_info_create(TYPE_KIND_ARRAY, strdup("string[]"));
-    Type_Array_String->data.array.element_type = Type_String;
+    INIT_GLOBAL_TYPE(Type_Array_I8, type_info_create_array(Type_I8))
+    INIT_GLOBAL_TYPE(Type_Array_I16, type_info_create_array(Type_I16));
+    INIT_GLOBAL_TYPE(Type_Array_I32, type_info_create_array(Type_I32));
+    INIT_GLOBAL_TYPE(Type_Array_I64, type_info_create_array(Type_I64));
+    INIT_GLOBAL_TYPE(Type_Array_U8, type_info_create_array(Type_U8));
+    INIT_GLOBAL_TYPE(Type_Array_U16, type_info_create_array(Type_U16));
+    INIT_GLOBAL_TYPE(Type_Array_U32, type_info_create_array(Type_U32));
+    INIT_GLOBAL_TYPE(Type_Array_U64, type_info_create_array(Type_U64));
+    INIT_GLOBAL_TYPE(Type_Array_Int, type_info_create_array(Type_Int));
+    INIT_GLOBAL_TYPE(Type_Array_Double, type_info_create_array(Type_Double));
+    INIT_GLOBAL_TYPE(Type_Array_Bool, type_info_create_array(Type_Bool));
+    INIT_GLOBAL_TYPE(Type_Array_String, type_info_create_array(Type_String));
 
     // Create object type placeholder
-    Type_Object = type_info_create(TYPE_KIND_OBJECT, strdup("object"));
+    INIT_GLOBAL_TYPE(Type_Object, type_info_create(TYPE_KIND_OBJECT, strdup("object")));
 
     // Create platform-specific type aliases
     #if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
         // 64-bit platform
-        Type_Usize = type_info_create_alias(strdup("usize"), Type_U64);
-        Type_Nint = type_info_create_alias(strdup("nint"), Type_I64);
-        Type_Uint = type_info_create_alias(strdup("uint"), Type_U64);
+        INIT_GLOBAL_TYPE(Type_Usize, type_info_create_alias(strdup("usize"), Type_U64));
+        INIT_GLOBAL_TYPE(Type_Nint, type_info_create_alias(strdup("nint"), Type_I64));
+        INIT_GLOBAL_TYPE(Type_Uint, type_info_create_alias(strdup("uint"), Type_U64));
     #else
         // 32-bit platform
-        Type_Usize = type_info_create_alias(strdup("usize"), Type_U32);
-        Type_Nint = type_info_create_alias(strdup("nint"), Type_I32);
-        Type_Uint = type_info_create_alias(strdup("uint"), Type_U32);
+        INIT_GLOBAL_TYPE(Type_Usize, type_info_create_alias(strdup("usize"), Type_U32));
+        INIT_GLOBAL_TYPE(Type_Nint, type_info_create_alias(strdup("nint"), Type_I32));
+        INIT_GLOBAL_TYPE(Type_Uint, type_info_create_alias(strdup("uint"), Type_U32));
     #endif
-    
+
     global_types_initialized = true;
 }
 
@@ -116,7 +103,7 @@ TypeContext* type_context_create() {
     type_context_register_type(ctx, Type_String);
     type_context_register_type(ctx, Type_Bool);
     type_context_register_type(ctx, Type_Void);
-    
+
     // Register array types
     type_context_register_type(ctx, Type_Array_I8);
     type_context_register_type(ctx, Type_Array_I16);
@@ -130,8 +117,9 @@ TypeContext* type_context_create() {
     type_context_register_type(ctx, Type_Array_Bool);
     type_context_register_type(ctx, Type_Array_String);
     type_context_register_type(ctx, Type_Object);
-    
+
     // Register platform-specific type aliases
+    type_context_register_type(ctx, Type_Int);
     type_context_register_type(ctx, Type_Usize);
     type_context_register_type(ctx, Type_Nint);
     type_context_register_type(ctx, Type_Uint);
@@ -161,10 +149,10 @@ void type_context_free(TypeContext* ctx) {
     TypeEntry* entry = ctx->type_table;
     while (entry) {
         TypeEntry* next = entry->next;
-        
+
         // type_info_free will check if it's a global type and skip freeing it
         type_info_free(entry->type);
-        
+
         free(entry);
         entry = next;
     }
@@ -182,20 +170,7 @@ TypeInfo* type_context_register_type(TypeContext* ctx, TypeInfo* type) {
     entry->llvm_type = NULL;  // Initialize to NULL
     entry->next = NULL;
 
-    // Assign type ID only for non-global types
-    // Global types (Type_Unknown, Type_I8, etc.) should not have their type_id modified
-    // to avoid data races when multiple threads create contexts simultaneously
-    bool is_global_type = (type == Type_Unknown || 
-                           type == Type_I8 || type == Type_I16 || type == Type_I32 || type == Type_I64 ||
-                           type == Type_U8 || type == Type_U16 || type == Type_U32 || type == Type_U64 ||
-                           type == Type_Int || type == Type_Double || type == Type_String || 
-                           type == Type_Bool || type == Type_Void ||
-                           type == Type_Array_I8 || type == Type_Array_I16 || type == Type_Array_I32 || type == Type_Array_I64 ||
-                           type == Type_Array_U8 || type == Type_Array_U16 || type == Type_Array_U32 || type == Type_Array_U64 ||
-                           type == Type_Array_Int || type == Type_Array_Double || type == Type_Array_Bool || 
-                           type == Type_Array_String || type == Type_Object);
-    
-    if (!is_global_type) {
+    if (!type->is_global) {
         type->type_id = ctx->type_count;
     }
 
@@ -272,7 +247,7 @@ bool type_info_equals(TypeInfo* a, TypeInfo* b) {
             if (!a->data.object.property_types || !b->data.object.property_types) {
                 return false;  // Can't determine equality without property types
             }
-            
+
             if (!type_info_equals(a->data.object.property_types[i], b->data.object.property_types[i])) {
                 return false;
             }
@@ -402,7 +377,7 @@ TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_n
 
     // Create new function type
     TypeInfo* func_type = type_info_create(TYPE_KIND_FUNCTION, strdup(func_name));
-    
+
     // IMPORTANT: Make a copy of param_types array to avoid double-free
     // The AST node's param_type_hints array will be freed when the AST is freed
     // This function type needs its own copy that will be freed by type_context_free
@@ -412,7 +387,7 @@ TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_n
     } else {
         func_type->data.function.param_types = NULL;
     }
-    
+
     func_type->data.function.param_count = param_count;
     func_type->data.function.return_type = return_type;
     func_type->data.function.is_variadic = is_variadic;
@@ -472,21 +447,21 @@ TypeInfo* type_context_create_struct_type(TypeContext* ctx, const char* struct_n
 
     // Create new struct type (as an object type with a specific name)
     TypeInfo* struct_type = type_info_create(TYPE_KIND_OBJECT, strdup(struct_name));
-    
+
     // IMPORTANT: Make copies of the arrays to avoid double-free
     // The AST node's arrays will be freed when the AST is freed
     // This TypeInfo needs its own copies that will be freed by type_context_free
-    
+
     // Copy property names
     struct_type->data.object.property_names = (char**)malloc(sizeof(char*) * property_count);
     for (int i = 0; i < property_count; i++) {
         struct_type->data.object.property_names[i] = strdup(property_names[i]);
     }
-    
+
     // Copy property types array (but the TypeInfo pointers themselves are shared references)
     struct_type->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * property_count);
     memcpy(struct_type->data.object.property_types, property_types, sizeof(TypeInfo*) * property_count);
-    
+
     struct_type->data.object.property_count = property_count;
     struct_type->data.object.struct_decl_node = struct_decl_node;  // Store reference for default values
 
@@ -513,12 +488,31 @@ TypeInfo* type_context_find_struct_type(TypeContext* ctx, const char* struct_nam
     return NULL;
 }
 
-// Helper: Check if two TypeInfo arrays match
+// Helper: Check if two TypeInfo arrays match (with implicit ref conversion and alias resolution)
 static bool type_arrays_match(TypeInfo** types1, TypeInfo** types2, int count) {
     for (int i = 0; i < count; i++) {
-        if (types1[i] != types2[i]) {
-            return false;
+        TypeInfo* t1 = types1[i];
+        TypeInfo* t2 = types2[i];
+        
+        // Exact match
+        if (t1 == t2) continue;
+        
+        // Resolve aliases on both sides
+        t1 = type_info_resolve_alias(t1);
+        t2 = type_info_resolve_alias(t2);
+        
+        // Check again after alias resolution
+        if (t1 == t2) continue;
+        
+        // Check for implicit ref conversion: T <-> ref<T>
+        // Unwrap one level of ref on both sides (returns the type itself if not a ref)
+        // Then compare: this allows counter_t to match ref<counter_t>
+        if (type_info_resolve_alias(type_info_get_ref_target(t1)) == 
+            type_info_resolve_alias(type_info_get_ref_target(t2))) {
+            continue;
         }
+        
+        return false;
     }
     return true;
 }
@@ -540,24 +534,24 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
 
     // Create new specialization
     FunctionSpecialization* spec = (FunctionSpecialization*)calloc(1, sizeof(FunctionSpecialization));
-    
+
     // Generate specialized name using type names with module prefix
     char name[256];
     int offset = 0;
-    
+
     // Add module prefix if available (with __ separator)
     if (ctx->module_prefix && ctx->module_prefix[0]) {
         offset = snprintf(name, 256, "%s__%s", ctx->module_prefix, func_type->type_name);
     } else {
         offset = snprintf(name, 256, "%s", func_type->type_name);
     }
-    
+
     // Add parameter types
     for (int i = 0; i < param_count; i++) {
-        const char* type_name = param_type_info[i] && param_type_info[i]->type_name 
-            ? param_type_info[i]->type_name 
+        const char* type_name = param_type_info[i] && param_type_info[i]->type_name
+            ? param_type_info[i]->type_name
             : "unknown";
-        
+
         // Sanitize type name: replace < and > with underscores for valid LLVM identifiers
         char sanitized[128];
         int j = 0;
@@ -569,27 +563,27 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
             }
         }
         sanitized[j] = '\0';
-        
+
         offset += snprintf(name + offset, 256 - offset, "_%s", sanitized);
     }
     spec->specialized_name = strdup(name);
-    
+
     spec->param_count = param_count;
     spec->param_type_info = (TypeInfo**)calloc(param_count, sizeof(TypeInfo*));
     for (int i = 0; i < param_count; i++) {
         spec->param_type_info[i] = param_type_info[i];  // Reference, not owned
     }
-    
+
     spec->return_type_info = NULL;  // Will be inferred
     spec->specialized_body = NULL;  // Will be set during specialization pass
-    
+
     // Add to head of list
     spec->next = func_type->data.function.specializations;
     func_type->data.function.specializations = spec;
-    
+
     // Increment global specialization counter
     ctx->specialization_count++;
-    
+
     return spec;
 }
 
@@ -597,13 +591,25 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
 FunctionSpecialization* type_context_find_specialization(TypeContext* ctx, TypeInfo* func_type,
                                                          TypeInfo** param_type_info, int param_count) {
     (void)ctx;  // Unused
-    
+
     if (!func_type || func_type->kind != TYPE_KIND_FUNCTION) return NULL;
 
     FunctionSpecialization* spec = func_type->data.function.specializations;
     while (spec) {
-        if (spec->param_count == param_count &&
-            type_arrays_match(spec->param_type_info, param_type_info, param_count)) {
+        // For variadic functions, allow call with more arguments than declared parameters
+        bool param_count_matches;
+        if (func_type->data.function.is_variadic) {
+            // Call must have at least as many args as required params (excluding ...)
+            param_count_matches = (param_count >= spec->param_count);
+        } else {
+            // Non-variadic: exact match required
+            param_count_matches = (spec->param_count == param_count);
+        }
+
+        // Match required parameters (variadic only checks the required params, not extra args)
+        int params_to_check = spec->param_count;
+        if (param_count_matches &&
+            type_arrays_match(spec->param_type_info, param_type_info, params_to_check)) {
             return spec;
         }
         spec = spec->next;

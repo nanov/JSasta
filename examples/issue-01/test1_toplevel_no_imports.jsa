@@ -1,0 +1,3 @@
+external printf(string, ...):void;
+
+printf("Test 1: top level, no imports\n");
