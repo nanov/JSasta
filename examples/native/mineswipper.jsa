@@ -179,24 +179,21 @@ function draw_field(game: ref game_state_t, reveal: bool):void {
 			} else if (field.state == CLOSED) {
 			    printf(DOT);
 			} else {
-					game.message = game.message + idx + ",";
 			    printf(WIDE_SPACE);
 			}
 			printf(is_at_cursour ? "]" : " ");
 		}
 		printf("\n");
 	}
-	printf("%s\n", game.message);
 }
 
 function redraw_field(): void {
-	printf("\e[%dA", ROWS+1);
+	printf("\e[%dA", ROWS);
 	printf("\e[%dD", COLS*3);
 }
 
 var terminal: terminal_t;
 var game: game_state_t;
-game.message = "hi!";
 // force malloc, to make buffer writable - to be removed when 'new' introduced
 var buffer:string = "" + " ";
 
