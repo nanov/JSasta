@@ -1896,8 +1896,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
                         // If object is a ref, dereference it first
                         if (is_ref) {
-                            LLVMTypeRef target_llvm_type = get_llvm_type(gen, index_target_type);
-                            array_ptr = LLVMBuildLoad2(gen->builder, target_llvm_type, array_ptr, "deref");
+                            // For ref types, we're loading a pointer, so use a generic pointer type
+                            array_ptr = LLVMBuildLoad2(gen->builder,
+                                LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+                                array_ptr, "deref");
                         }
 
                         // For stack-allocated arrays, use GEP with [0, index]
