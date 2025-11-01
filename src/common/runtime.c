@@ -97,4 +97,29 @@ void runtime_init(CodeGen* gen) {
         0
     );
     LLVMAddFunction(gen->module, "calloc", calloc_type);
+
+    // Declare jsasta_alloc - allocates memory (wraps calloc for now, future: ARC/GC)
+    // Returns zeroed memory
+    LLVMTypeRef jsasta_alloc_args[] = {
+        LLVMInt64TypeInContext(gen->context)  // size in bytes
+    };
+    LLVMTypeRef jsasta_alloc_type = LLVMFunctionType(
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+        jsasta_alloc_args,
+        1,
+        0
+    );
+    LLVMAddFunction(gen->module, "jsasta_alloc", jsasta_alloc_type);
+
+    // Declare jsasta_free - deallocates memory (wraps free for now, future: ARC/GC)
+    LLVMTypeRef jsasta_free_args[] = {
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0)  // pointer to free
+    };
+    LLVMTypeRef jsasta_free_type = LLVMFunctionType(
+        LLVMVoidTypeInContext(gen->context),
+        jsasta_free_args,
+        1,
+        0
+    );
+    LLVMAddFunction(gen->module, "jsasta_free", jsasta_free_type);
 }

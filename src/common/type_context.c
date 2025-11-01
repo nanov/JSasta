@@ -362,6 +362,31 @@ TypeInfo* type_context_get_void(TypeContext* ctx) {
     return type_info_resolve_alias(Type_Void);
 }
 
+// Get or create a reference type to target_type
+// This ensures we reuse the same ref type for the same target
+TypeInfo* type_context_get_or_create_ref_type(TypeContext* ctx, TypeInfo* target_type, bool is_mutable) {
+    if (!ctx || !target_type) return NULL;
+
+    // Generate the ref type name
+    char type_name[256];
+    snprintf(type_name, sizeof(type_name), "ref<%s>",
+            target_type->type_name ? target_type->type_name : "?");
+
+    // Check if this ref type already exists
+    TypeInfo* existing = type_context_find_type(ctx, type_name);
+    if (existing && existing->kind == TYPE_KIND_REF) {
+        return existing;
+    }
+
+    // Create new ref type
+    TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, strdup(type_name));
+    ref_type->data.ref.target_type = target_type;
+    ref_type->data.ref.is_mutable = is_mutable;
+
+    // Register and return
+    return type_context_register_type(ctx, ref_type);
+}
+
 // Create or find a function type
 TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_name,
                                             TypeInfo** param_types, int param_count,

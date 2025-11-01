@@ -736,9 +736,17 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                     );
 
                     if (spec) {
-                        // Use original name instead of specialized name
+                        // Use module-prefixed name for user functions, original name for external functions
                         free(spec->specialized_name);
-                        spec->specialized_name = strdup(func_name);
+                        if (body && type_ctx->module_prefix) {
+                            // User functions get module prefix
+                            char mangled_name[512];
+                            snprintf(mangled_name, sizeof(mangled_name), "%s__%s", type_ctx->module_prefix, func_name);
+                            spec->specialized_name = strdup(mangled_name);
+                        } else {
+                            // External functions keep their original name
+                            spec->specialized_name = strdup(func_name);
+                        }
 
                         // Set return type
                         spec->return_type_info = return_type_hint;
@@ -1150,17 +1158,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             } else if (strcmp(node->unary_op.op, "ref") == 0) {
                 // ref operator creates a reference type
                 TypeInfo* operand_type = node->unary_op.operand->type_info;
-                TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, NULL);
-                ref_type->data.ref.target_type = operand_type;
-                ref_type->data.ref.is_mutable = true;  // Default to mutable
-
-                // Generate type name like "ref<termios>"
-                char type_name[256];
-                snprintf(type_name, sizeof(type_name), "ref<%s>",
-                        operand_type && operand_type->type_name ? operand_type->type_name : "?");
-                ref_type->type_name = strdup(type_name);
-
-                node->type_info = ref_type;
+                node->type_info = type_context_get_or_create_ref_type(type_ctx, operand_type, true);
             } else {
                 node->type_info = node->unary_op.operand->type_info;
             }
@@ -1650,6 +1648,48 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
             // Couldn't determine type
             node->type_info = Type_Unknown;
+            break;
+        }
+
+        case AST_NEW_EXPR: {
+            // Infer type of size expression
+            infer_literal_types(node->new_expr.size_expr, symbols, type_ctx, diag);
+            
+            // Resolve element type if it's unknown (could be a struct type)
+            if (node->new_expr.element_type->kind == TYPE_KIND_UNKNOWN) {
+                const char* type_name = node->new_expr.element_type->type_name;
+                TypeInfo* resolved = type_context_find_struct_type(type_ctx, type_name);
+                if (resolved) {
+                    node->new_expr.element_type = resolved;
+                } else {
+                    TYPE_ERROR(diag, node->loc, "T311", "Unknown type '%s' in new expression", type_name);
+                    node->type_info = Type_Unknown;
+                    break;
+                }
+            }
+            
+            // new T[size] returns ref T[] (ref to array of T)
+            // Create array type T[]
+            TypeInfo* array_type = type_info_create_array(node->new_expr.element_type);
+            // Wrap in ref type
+            node->type_info = type_context_get_or_create_ref_type(type_ctx, array_type, true);
+            break;
+        }
+
+        case AST_DELETE_EXPR: {
+            // Infer type of operand
+            infer_literal_types(node->delete_expr.operand, symbols, type_ctx, diag);
+            
+            // Validate that operand is a ref type
+            TypeInfo* operand_type = node->delete_expr.operand->type_info;
+            if (!type_info_is_ref(operand_type)) {
+                TYPE_ERROR(diag, node->loc, "T312", 
+                    "delete requires a reference type, got %s", 
+                    operand_type->type_name);
+            }
+            
+            // delete returns void
+            node->type_info = Type_Void;
             break;
         }
 
@@ -2146,6 +2186,14 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             analyze_call_sites(node->member_access.object, symbols, ctx, diag);
             break;
 
+        case AST_NEW_EXPR:
+            analyze_call_sites(node->new_expr.size_expr, symbols, ctx, diag);
+            break;
+
+        case AST_DELETE_EXPR:
+            analyze_call_sites(node->delete_expr.operand, symbols, ctx, diag);
+            break;
+
         default:
             break;
     }
@@ -2238,17 +2286,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             } else if (strcmp(node->unary_op.op, "ref") == 0) {
                 // ref operator creates a reference type
                 TypeInfo* operand_type = node->unary_op.operand->type_info;
-                TypeInfo* ref_type = type_info_create(TYPE_KIND_REF, NULL);
-                ref_type->data.ref.target_type = operand_type;
-                ref_type->data.ref.is_mutable = true;  // Default to mutable
-
-                // Generate type name like "ref<termios>"
-                char type_name[256];
-                snprintf(type_name, sizeof(type_name), "ref<%s>",
-                        operand_type && operand_type->type_name ? operand_type->type_name : "?");
-                ref_type->type_name = strdup(type_name);
-
-                node->type_info = ref_type;
+                node->type_info = type_context_get_or_create_ref_type(ctx, operand_type, true);
             } else {
                 node->type_info = node->unary_op.operand->type_info;
             }
@@ -2744,6 +2782,48 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             if (!node->type_info) {
                 node->type_info = Type_Unknown;
             }
+            break;
+        }
+
+        case AST_NEW_EXPR: {
+            // Infer type of size expression
+            infer_with_specializations(node->new_expr.size_expr, symbols, ctx, diag);
+            
+            // Resolve element type if it's unknown (could be a struct type)
+            if (node->new_expr.element_type->kind == TYPE_KIND_UNKNOWN) {
+                const char* type_name = node->new_expr.element_type->type_name;
+                TypeInfo* resolved = type_context_find_struct_type(ctx, type_name);
+                if (resolved) {
+                    node->new_expr.element_type = resolved;
+                } else {
+                    TYPE_ERROR(diag, node->loc, "T311", "Unknown type '%s' in new expression", type_name);
+                    node->type_info = Type_Unknown;
+                    break;
+                }
+            }
+            
+            // new T[size] returns ref T[] (ref to array of T)
+            // Create array type T[]
+            TypeInfo* array_type = type_info_create_array(node->new_expr.element_type);
+            // Wrap in ref type
+            node->type_info = type_context_get_or_create_ref_type(ctx, array_type, true);
+            break;
+        }
+
+        case AST_DELETE_EXPR: {
+            // Infer type of operand
+            infer_with_specializations(node->delete_expr.operand, symbols, ctx, diag);
+            
+            // Validate that operand is a ref type
+            TypeInfo* operand_type = node->delete_expr.operand->type_info;
+            if (!type_info_is_ref(operand_type)) {
+                TYPE_ERROR(diag, node->loc, "T312", 
+                    "delete requires a reference type, got %s", 
+                    operand_type->type_name);
+            }
+            
+            // delete returns void
+            node->type_info = Type_Void;
             break;
         }
 

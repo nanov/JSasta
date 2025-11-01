@@ -187,6 +187,8 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "else") == 0) type = TOKEN_ELSE;
     else if (strcmp(buffer, "for") == 0) type = TOKEN_FOR;
     else if (strcmp(buffer, "while") == 0) type = TOKEN_WHILE;
+    else if (strcmp(buffer, "new") == 0) type = TOKEN_NEW;
+    else if (strcmp(buffer, "delete") == 0) type = TOKEN_DELETE;
     else if (strcmp(buffer, "true") == 0) type = TOKEN_TRUE;
     else if (strcmp(buffer, "false") == 0) type = TOKEN_FALSE;
     // Integer type keywords

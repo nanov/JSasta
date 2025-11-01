@@ -1,0 +1,16 @@
+// Minimal heap allocation test
+import io from @io;
+
+function main(): i32 {
+    io.println("Before allocation");
+    let arr = new i32[3];
+    io.println("After allocation");
+
+    arr[0] = 42;
+    io.println("Value: {}", arr[0]);
+
+    delete arr;
+    io.println("After delete");
+
+    return 0;
+}

@@ -31,6 +31,7 @@ endif
 COMMON_DIR = src/common
 COMPILER_DIR = src/compiler
 LSP_DIR = src/lsp
+RUNTIME_DIR = src/runtime
 TESET_RUNNER_DIR = src/test-runner
 BUILD_DIR = build
 
@@ -43,6 +44,10 @@ TEST_RUNNER_TARGET = $(BUILD_DIR)/$(TEST_RUNNER_NAME)
 COMMON_SOURCES = $(wildcard $(COMMON_DIR)/*.c)
 COMMON_OBJECTS = $(COMMON_SOURCES:$(COMMON_DIR)/%.c=$(BUILD_DIR)/common/%.o)
 COMMON_HEADERS = $(wildcard $(COMMON_DIR)/*.h)
+
+# Runtime sources
+RUNTIME_SOURCES = $(wildcard $(RUNTIME_DIR)/*.c)
+RUNTIME_OBJECTS = $(RUNTIME_SOURCES:$(RUNTIME_DIR)/%.c=$(BUILD_DIR)/runtime/%.o)
 
 # Compiler sources
 COMPILER_SOURCES = $(wildcard $(COMPILER_DIR)/*.c)
@@ -90,7 +95,7 @@ info:
 
 # Create build directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/common $(BUILD_DIR)/compiler $(BUILD_DIR)/lsp $(BUILD_DIR)/test-runner
+	mkdir -p $(BUILD_DIR)/common $(BUILD_DIR)/compiler $(BUILD_DIR)/lsp $(BUILD_DIR)/runtime $(BUILD_DIR)/test-runner
 
 # Compiler binary
 $(TEST_RUNNER_TARGET): $(TEST_OBJECTS) | $(BUILD_DIR)
@@ -99,15 +104,15 @@ $(TEST_RUNNER_TARGET): $(TEST_OBJECTS) | $(BUILD_DIR)
 	@echo "Built: $(TEST_RUNNER_TARGET)"
 
 # Compiler binary
-$(COMPILER_TARGET): $(COMMON_OBJECTS) $(COMPILER_OBJECTS) | $(BUILD_DIR)
+$(COMPILER_TARGET): $(COMMON_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS) | $(BUILD_DIR)
 	@echo "Linking compiler: $(COMPILER_TARGET)"
-	$(CC) $(COMMON_OBJECTS) $(COMPILER_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(COMPILER_TARGET)
+	$(CC) $(COMMON_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(COMPILER_TARGET)
 	@echo "Built: $(COMPILER_TARGET)"
 
 # LSP daemon binary
-$(LSP_TARGET): $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(LSP_OBJECTS) | $(BUILD_DIR)
+$(LSP_TARGET): $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(RUNTIME_OBJECTS) $(LSP_OBJECTS) | $(BUILD_DIR)
 	@echo "Linking LSP daemon: $(LSP_TARGET)"
-	$(CC) $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(LSP_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(LSP_TARGET)
+	$(CC) $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(RUNTIME_OBJECTS) $(LSP_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(LSP_TARGET)
 	@echo "Built: $(LSP_TARGET)"
 
 # Test code index
@@ -142,6 +147,12 @@ $(BUILD_DIR)/lsp/%.o: $(LSP_DIR)/%.c $(COMMON_HEADERS) $(LSP_HEADERS) | $(BUILD_
 $(BUILD_DIR)/test-runner/%.o: $(TESET_RUNNER_DIR)/%.c $(TEST_HEADERS) | $(BUILD_DIR)
 	@echo "Compiling [test-runner]: $<"
 	$(CC) $(TEST_RUNNER_CFLAGS) -c $< -o $@
+
+# Compile runtime objects (no LLVM dependencies)
+$(BUILD_DIR)/runtime/%.o: $(RUNTIME_DIR)/%.c | $(BUILD_DIR)
+	@echo "Compiling [runtime]: $<"
+	$(CC) -Wall -Wextra -O2 -c $< -o $@
+
 # Clean build artifacts
 #
 clean:

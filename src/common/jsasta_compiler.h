@@ -31,6 +31,8 @@
     X(TOKEN_ELSE, "else") \
     X(TOKEN_FOR, "for") \
     X(TOKEN_WHILE, "while") \
+    X(TOKEN_NEW, "new") \
+    X(TOKEN_DELETE, "delete") \
     X(TOKEN_TRUE, "true") \
     X(TOKEN_FALSE, "false") \
     X(TOKEN_I8, "i8") \
@@ -138,6 +140,8 @@ typedef enum {
     AST_PREFIX_OP,      // ++i, --i
     AST_POSTFIX_OP,     // i++, i--
     AST_OBJECT_LITERAL, // Object literal { key: value, ... }
+    AST_NEW_EXPR,       // new T[size] - heap allocation
+    AST_DELETE_EXPR,    // delete expr - heap deallocation
 } ASTNodeType;
 
 // Forward declare TypeInfo for recursive types
@@ -481,6 +485,15 @@ struct ASTNode {
             ASTNode** values; // Property values
             int count;        // Number of properties
         } object_literal;
+
+        struct {
+            TypeInfo* element_type;  // Type of array elements (e.g., int)
+            ASTNode* size_expr;      // Size expression (e.g., 12 for new int[12])
+        } new_expr;
+
+        struct {
+            ASTNode* operand;        // Expression to delete (must be ref type)
+        } delete_expr;
     };
 };
 
@@ -755,6 +768,9 @@ TypeInfo* type_context_get_double(TypeContext* ctx);
 TypeInfo* type_context_get_string(TypeContext* ctx);
 TypeInfo* type_context_get_bool(TypeContext* ctx);
 TypeInfo* type_context_get_void(TypeContext* ctx);
+
+// Reference type management
+TypeInfo* type_context_get_or_create_ref_type(TypeContext* ctx, TypeInfo* target_type, bool is_mutable);
 
 // Function type management
 TypeInfo* type_context_create_function_type(TypeContext* ctx, const char* func_name,

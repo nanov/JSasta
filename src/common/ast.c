@@ -242,6 +242,15 @@ void ast_free(ASTNode* node) {
             ast_free(node->index_assignment.value);
             break;
 
+        case AST_NEW_EXPR:
+            // Note: element_type is a reference or created TypeInfo, freed by type context
+            ast_free(node->new_expr.size_expr);
+            break;
+
+        case AST_DELETE_EXPR:
+            ast_free(node->delete_expr.operand);
+            break;
+
         default:
             break;
     }
@@ -558,6 +567,16 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->index_assignment.object = ast_clone(node->index_assignment.object);
             clone->index_assignment.index = ast_clone(node->index_assignment.index);
             clone->index_assignment.value = ast_clone(node->index_assignment.value);
+            break;
+
+        case AST_NEW_EXPR:
+            // Copy element type reference (don't clone - it's managed by TypeContext)
+            clone->new_expr.element_type = node->new_expr.element_type;
+            clone->new_expr.size_expr = ast_clone(node->new_expr.size_expr);
+            break;
+
+        case AST_DELETE_EXPR:
+            clone->delete_expr.operand = ast_clone(node->delete_expr.operand);
             break;
     }
 

@@ -3,7 +3,6 @@
 #include "operator_utils.h"
 #include "logger.h"
 #include "module_loader.h"
-#include "format_string.h"
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
 #include <stdio.h>
@@ -2142,6 +2141,77 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
         case AST_EXPR_STMT:
             return codegen_node(gen, node->expr_stmt.expression);
+
+        case AST_NEW_EXPR: {
+            // new T[size] - allocate array on heap
+            // Get element type
+            TypeInfo* elem_type_info = node->new_expr.element_type;
+            LLVMTypeRef elem_type = get_llvm_type(gen, elem_type_info);
+            
+            // Generate size expression
+            LLVMValueRef size_value = codegen_node(gen, node->new_expr.size_expr);
+            if (!size_value) {
+                log_error_at(&node->loc, "Failed to generate size expression for new");
+                return NULL;
+            }
+            
+            // Calculate total size in bytes: size * sizeof(T)
+            // Cast size to i64 for multiplication
+            LLVMValueRef size_i64 = LLVMBuildIntCast2(gen->builder, size_value, 
+                                                       LLVMInt64TypeInContext(gen->context), 
+                                                       false, "size_i64");
+            LLVMValueRef elem_size = LLVMSizeOf(elem_type);
+            LLVMValueRef total_size = LLVMBuildMul(gen->builder, size_i64, elem_size, "total_size");
+            
+            // Get jsasta_alloc function
+            LLVMValueRef jsasta_alloc = LLVMGetNamedFunction(gen->module, "jsasta_alloc");
+            if (!jsasta_alloc) {
+                log_error_at(&node->loc, "jsasta_alloc function not found (runtime not initialized?)");
+                return NULL;
+            }
+            
+            // Call jsasta_alloc(total_size) - returns i8*
+            LLVMValueRef alloc_args[] = { total_size };
+            LLVMValueRef raw_ptr = LLVMBuildCall2(gen->builder, 
+                                                   LLVMGlobalGetValueType(jsasta_alloc),
+                                                   jsasta_alloc, alloc_args, 1, "raw_ptr");
+            
+            // Cast to T*
+            LLVMValueRef typed_ptr = LLVMBuildBitCast(gen->builder, raw_ptr,
+                                                       LLVMPointerType(elem_type, 0), "array_ptr");
+            
+            return typed_ptr;
+        }
+
+        case AST_DELETE_EXPR: {
+            // delete expr - free heap memory
+            // Generate operand (should be a ref/pointer)
+            LLVMValueRef ptr = codegen_node(gen, node->delete_expr.operand);
+            if (!ptr) {
+                log_error_at(&node->loc, "Failed to generate operand for delete");
+                return NULL;
+            }
+            
+            // Cast to i8* for free
+            LLVMValueRef void_ptr = LLVMBuildBitCast(gen->builder, ptr,
+                                                      LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+                                                      "void_ptr");
+            
+            // Get jsasta_free function
+            LLVMValueRef jsasta_free = LLVMGetNamedFunction(gen->module, "jsasta_free");
+            if (!jsasta_free) {
+                log_error_at(&node->loc, "jsasta_free function not found (runtime not initialized?)");
+                return NULL;
+            }
+            
+            // Call jsasta_free(ptr)
+            LLVMValueRef free_args[] = { void_ptr };
+            LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(jsasta_free),
+                          jsasta_free, free_args, 1, "");
+            
+            // delete returns void
+            return NULL;
+        }
 
         default:
             return NULL;

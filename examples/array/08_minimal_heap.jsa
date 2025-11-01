@@ -1,0 +1,13 @@
+// Ultra minimal heap test - no I/O
+external printf(string, ...): void;
+
+function main(): i32 {
+    printf("Starting\n");
+    let arr = new i32[3];
+    printf("Allocated\n");
+    arr[0] = 42;
+    printf("Set value\n");
+    delete arr;
+    printf("Freed\n");
+    return 0;
+}

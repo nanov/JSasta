@@ -431,6 +431,59 @@ static ASTNode* parse_primary(Parser* parser) {
         parser_expect(parser, TOKEN_RBRACE);
 
         // NOTE: TypeInfo will be created during type inference with structural sharing
+    } else if (parser_match(parser, TOKEN_NEW)) {
+        // new T[size] - heap allocation
+        parser_advance(parser);
+        node = AST_NODE(parser, AST_NEW_EXPR);
+
+        // Parse element type (simple type for now: i32, i64, u8, etc.)
+        TypeInfo* element_type = NULL;
+        if (parser_match(parser, TOKEN_I8)) {
+            element_type = Type_I8;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_I16)) {
+            element_type = Type_I16;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_I32)) {
+            element_type = Type_I32;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_I64)) {
+            element_type = Type_I64;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_U8)) {
+            element_type = Type_U8;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_U16)) {
+            element_type = Type_U16;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_U32)) {
+            element_type = Type_U32;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_U64)) {
+            element_type = Type_U64;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_INT)) {
+            element_type = Type_Int;
+            parser_advance(parser);
+        } else if (parser_match(parser, TOKEN_IDENTIFIER)) {
+            // Could be a struct type - we'll resolve it during type inference
+            char* type_name = strdup(parser->current_token->value);
+            element_type = type_info_create(TYPE_KIND_UNKNOWN, type_name);
+            free(type_name);
+            parser_advance(parser);
+        } else {
+            PARSE_ERROR(parser, "E210", "Expected type after 'new'");
+            return node;
+        }
+
+        node->new_expr.element_type = element_type;
+
+        // Expect [size]
+        parser_expect(parser, TOKEN_LBRACKET);
+        node->new_expr.size_expr = parse_expression(parser);
+        parser_expect(parser, TOKEN_RBRACKET);
+
+        // Type will be set to ref element_type during type inference
     } else {
         PARSE_ERROR(parser, "E202", "Unexpected token in expression: %s",
                    token_type_to_string(parser->current_token->type));
@@ -630,6 +683,14 @@ static ASTNode* parse_unary(Parser* parser) {
         }
 
         return prefix;
+    }
+
+    // delete operator
+    if (parser_match(parser, TOKEN_DELETE)) {
+        parser_advance(parser);
+        ASTNode* node = AST_NODE(parser, AST_DELETE_EXPR);
+        node->delete_expr.operand = parse_unary(parser);
+        return node;
     }
 
     // Other unary operators (including ref)
