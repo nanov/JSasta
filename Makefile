@@ -1,6 +1,7 @@
 # Compiler and LSP daemon names
 COMPILER_NAME = jsastac
 LSP_NAME = jsastad
+TEST_RUNNER_NAME = jsastat
 
 CC = cc
 
@@ -19,6 +20,9 @@ CFLAGS = -Wall -Wextra $(OPT_FLAGS) -Isrc $(shell llvm-config --cflags)
 LDFLAGS = $(shell llvm-config --ldflags --libs core)
 LDLIBS = $(shell llvm-config --system-libs)
 
+# test-runner
+TEST_RUNNER_CFLAGS = -Wall -Wextra -O3
+
 ifdef DEBUG
 	LDFLAGS += -fsanitize=address
 endif
@@ -27,11 +31,13 @@ endif
 COMMON_DIR = src/common
 COMPILER_DIR = src/compiler
 LSP_DIR = src/lsp
+TESET_RUNNER_DIR = src/test-runner
 BUILD_DIR = build
 
 # Targets
 COMPILER_TARGET = $(BUILD_DIR)/$(COMPILER_NAME)
 LSP_TARGET = $(BUILD_DIR)/$(LSP_NAME)
+TEST_RUNNER_TARGET = $(BUILD_DIR)/$(TEST_RUNNER_NAME)
 
 # Common sources (everything in common directory)
 COMMON_SOURCES = $(wildcard $(COMMON_DIR)/*.c)
@@ -43,21 +49,32 @@ COMPILER_SOURCES = $(wildcard $(COMPILER_DIR)/*.c)
 COMPILER_OBJECTS = $(COMPILER_SOURCES:$(COMPILER_DIR)/%.c=$(BUILD_DIR)/compiler/%.o)
 COMPILER_HEADERS = $(wildcard $(COMPILER_DIR)/*.h)
 
+# Compiler library objects (exclude main)
+COMPILER_LIB_OBJECTS = $(filter-out $(BUILD_DIR)/compiler/compiler_main.o, $(COMPILER_OBJECTS))
+
 # LSP sources (exclude test_code_index.c)
 LSP_SOURCES = $(filter-out $(LSP_DIR)/test_code_index.c, $(wildcard $(LSP_DIR)/*.c))
 LSP_OBJECTS = $(LSP_SOURCES:$(LSP_DIR)/%.c=$(BUILD_DIR)/lsp/%.o)
 LSP_HEADERS = $(wildcard $(LSP_DIR)/*.h)
 
-.PHONY: all compiler lsp clean test install uninstall help test_code_index
+# Test Runner Sources
+TEST_SOURCES = $(wildcard $(TESET_RUNNER_DIR)/*.c)
+TEST_OBJECTS = $(TEST_SOURCES:$(TESET_RUNNER_DIR)/%.c=$(BUILD_DIR)/test-runner/%.o)
+TEST_HEADERS = $(wildcard $(TESET_RUNNER_DIR)/*.h)
+
+.PHONY: all compiler lsp test-runner clean test install uninstall help test_code_index
 
 # Default target: build both binaries
-all: info compiler lsp
+all: info compiler lsp test-runner
 
 # Build only compiler
 compiler: $(COMPILER_TARGET)
 
 # Build only LSP daemon
 lsp: $(LSP_TARGET)
+
+# Build only LSP daemon
+test-runner: $(TEST_RUNNER_TARGET)
 
 # Show build configuration
 info:
@@ -73,7 +90,13 @@ info:
 
 # Create build directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/common $(BUILD_DIR)/compiler $(BUILD_DIR)/lsp
+	mkdir -p $(BUILD_DIR)/common $(BUILD_DIR)/compiler $(BUILD_DIR)/lsp $(BUILD_DIR)/test-runner
+
+# Compiler binary
+$(TEST_RUNNER_TARGET): $(TEST_OBJECTS) | $(BUILD_DIR)
+	@echo "Linking test-runner: $(TEST_RUNNER_TARGET)"
+	$(CC) $(TEST_OBJECTS) -o $(TEST_RUNNER_TARGET)
+	@echo "Built: $(TEST_RUNNER_TARGET)"
 
 # Compiler binary
 $(COMPILER_TARGET): $(COMMON_OBJECTS) $(COMPILER_OBJECTS) | $(BUILD_DIR)
@@ -82,9 +105,9 @@ $(COMPILER_TARGET): $(COMMON_OBJECTS) $(COMPILER_OBJECTS) | $(BUILD_DIR)
 	@echo "Built: $(COMPILER_TARGET)"
 
 # LSP daemon binary
-$(LSP_TARGET): $(COMMON_OBJECTS) $(LSP_OBJECTS) | $(BUILD_DIR)
+$(LSP_TARGET): $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(LSP_OBJECTS) | $(BUILD_DIR)
 	@echo "Linking LSP daemon: $(LSP_TARGET)"
-	$(CC) $(COMMON_OBJECTS) $(LSP_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(LSP_TARGET)
+	$(CC) $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(LSP_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(LSP_TARGET)
 	@echo "Built: $(LSP_TARGET)"
 
 # Test code index
@@ -115,7 +138,12 @@ $(BUILD_DIR)/lsp/%.o: $(LSP_DIR)/%.c $(COMMON_HEADERS) $(LSP_HEADERS) | $(BUILD_
 	@echo "Compiling [lsp]: $<"
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Compile test-runner objects
+$(BUILD_DIR)/test-runner/%.o: $(TESET_RUNNER_DIR)/%.c $(TEST_HEADERS) | $(BUILD_DIR)
+	@echo "Compiling [test-runner]: $<"
+	$(CC) $(TEST_RUNNER_CFLAGS) -c $< -o $@
 # Clean build artifacts
+#
 clean:
 	rm -rf $(BUILD_DIR) *.ll
 	@echo "Cleaned build directory"

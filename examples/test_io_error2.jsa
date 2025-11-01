@@ -1,0 +1,7 @@
+import io from "@io";
+
+var x: i32 = 42;
+var y: i32 = 100;
+
+// Test mismatched argument count (2 placeholders, 1 argument)
+io.println("x = {}, y = {}", x);

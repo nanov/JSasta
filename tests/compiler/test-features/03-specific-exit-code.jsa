@@ -1,0 +1,8 @@
+// jastat-summary: Checks that a program exits with a specific non-zero code.
+// jastat: expect-exit-code=88
+
+external printf(string, ...): void;
+external exit(int): void;
+
+printf("This program will exit with status 88.");
+exit(88);

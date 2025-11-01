@@ -1,0 +1,8 @@
+import io from @io;
+
+io.println("Hello World");
+io.print("Test");
+io.print("\n");
+
+var greeting = io.format("Welcome to JSasta!");
+io.println(greeting);

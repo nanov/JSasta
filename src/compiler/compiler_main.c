@@ -26,7 +26,7 @@ char* read_file(const char* filename) {
     return content;
 }
 
-void compile_file(const char* input_file, const char* output_file, bool enable_debug) {
+int compile_file(const char* input_file, const char* output_file, bool enable_debug) {
     log_info("Compiling %s...", input_file);
     if (enable_debug) {
         log_verbose("Debug symbols enabled");
@@ -35,75 +35,75 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     // Create module registry
     log_section("Module Loading");
     ModuleRegistry* registry = module_registry_create(input_file);
-    
+
     // Load entry module (will recursively load imports)
     Module* entry_module = module_load(registry, input_file, NULL);
-    
+
     if (!entry_module) {
         log_error("Failed to load entry module");
         module_registry_free(registry);
-        return;
+        return 404;
     }
-    
+
     // Check for parse errors
     if (diagnostic_has_errors(registry->diagnostics)) {
         diagnostic_report_console(registry->diagnostics);
         diagnostic_print_summary(registry->diagnostics);
         module_registry_free(registry);
-        return;
+        return 500;
     }
-    
+
     log_verbose("Loaded %d module(s)", registry->module_count);
 
     // Type inference for all modules
     log_section("Type Inference");
-    
+
     // Run type inference on all modules in dependency order
     // Start with imported modules (dependencies) first, then the entry module
-    
+
     // First, run type inference on all imported modules
     for (Module* mod = registry->modules; mod != NULL; mod = mod->next) {
         if (mod == entry_module) continue; // Skip entry module, do it last
-        
+
         log_verbose("Running type inference on module: %s", mod->relative_path);
-        
+
         // Create symbol table for the module if it doesn't have one
         if (!mod->module_scope) {
             mod->module_scope = symbol_table_create(NULL);
         }
-        
+
         // Setup import symbols for this module
         log_verbose("Setting up imports for module: %s", mod->relative_path);
         if (!module_setup_import_symbols(mod, mod->module_scope)) {
             log_error("Failed to setup import symbols for module: %s", mod->relative_path);
             module_registry_free(registry);
-            return;
+            return 404;
         }
-        
+
         // Use the module's own TypeContext
         type_inference_with_diagnostics(mod->ast, mod->module_scope, mod->type_ctx, registry->diagnostics);
-        
+
         if (diagnostic_has_errors(registry->diagnostics)) {
             log_error("Type inference failed for module: %s", mod->relative_path);
             diagnostic_report_console(registry->diagnostics);
             diagnostic_print_summary(registry->diagnostics);
             module_registry_free(registry);
-            return;
+            return 404;
         }
     }
-    
+
     // Create symbol table for entry module and setup imports
     if (!entry_module->module_scope) {
         entry_module->module_scope = symbol_table_create(NULL);
     }
-    
+
     log_verbose("Setting up imports for entry module");
     if (!module_setup_import_symbols(entry_module, entry_module->module_scope)) {
         log_error("Failed to setup import symbols");
         module_registry_free(registry);
-        return;
+        return 404;
     }
-    
+
     // Finally, run type inference on the entry module
     log_verbose("Running type inference on entry module: %s", entry_module->relative_path);
     // Use the entry module's own TypeContext
@@ -114,7 +114,7 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
         diagnostic_report_console(registry->diagnostics);
         diagnostic_print_summary(registry->diagnostics);
         module_registry_free(registry);
-        return;
+        return 500;
     }
 
     // Print specializations if any
@@ -131,15 +131,15 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     if (enable_debug) {
         gen->source_filename = input_file;
     }
-    
+
     // Generate code for all modules in dependency order (dependencies first, then entry)
     for (Module* mod = registry->modules; mod != NULL; mod = mod->next) {
         if (mod == entry_module) continue; // Skip entry module, do it last
-        
+
         log_verbose("Generating code for module: %s", mod->relative_path);
         codegen_generate(gen, mod->ast, false); // Not entry module
     }
-    
+
     // Finally, generate code for the entry module
     log_verbose("Generating code for entry module: %s", entry_module->relative_path);
     codegen_generate(gen, entry_module->ast, true); // Is entry module
@@ -155,6 +155,7 @@ void compile_file(const char* input_file, const char* output_file, bool enable_d
     // Cleanup
     codegen_free(gen);
     module_registry_free(registry);
+    return 0;
 }
 
 void print_usage(const char* program_name) {
@@ -169,7 +170,7 @@ void print_usage(const char* program_name) {
 int main(int argc, char** argv) {
     // Initialize global type system FIRST (before any parsing/type inference)
     type_system_init_global_types();
-    
+
     LogLevel log_level = LOG_INFO;
     bool enable_debug = false;
 
@@ -216,7 +217,5 @@ int main(int argc, char** argv) {
     const char* input_file = argv[optind];
     const char* output_file = (optind + 1 < argc) ? argv[optind + 1] : "output.ll";
 
-    compile_file(input_file, output_file, enable_debug);
-
-    return 0;
+    return compile_file(input_file, output_file, enable_debug);
 }

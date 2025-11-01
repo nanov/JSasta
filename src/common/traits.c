@@ -26,6 +26,7 @@ Trait* Trait_DivAssign = NULL;
 Trait* Trait_Index = NULL;
 Trait* Trait_RefIndex = NULL;
 Trait* Trait_Length = NULL;
+Trait* Trait_Display = NULL;
 
 // === Core Trait Registry Functions ===
 
@@ -658,6 +659,15 @@ void traits_init_builtins(TraitRegistry* registry) {
                                      NULL, 0,  // No type parameters
                                      length_assoc_types, 1,
                                      length_method_names, length_method_sigs, 1);
+
+    // Display { fn fmt(self, formatter: ref Formatter) -> void }
+    // Simple trait with no type parameters or associated types
+    const char* display_method_names[] = { "fmt" };
+    TypeInfo* display_method_sigs[] = { NULL };  // Placeholder
+    
+    Trait_Display = trait_define_simple(registry, "Display",
+                                       display_method_names,
+                                       display_method_sigs, 1);
 }
 
 // === Array Index Intrinsic ===

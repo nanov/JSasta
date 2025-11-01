@@ -3,6 +3,7 @@
 #include "operator_utils.h"
 #include "logger.h"
 #include "module_loader.h"
+#include "format_string.h"
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
 #include <stdio.h>
@@ -155,7 +156,7 @@ void codegen_free(CodeGen* gen) {
     free(gen);
 }
 
-static LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
+LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     if (!type_info) return LLVMInt32TypeInContext(gen->context);
 
     // Note: type_info should already be resolved if it came from type_context getters
@@ -288,7 +289,6 @@ static LLVMValueRef codegen_bool_to_string(CodeGen* gen, LLVMValueRef value) {
     // Select based on boolean value
     return LLVMBuildSelect(gen->builder, value, true_str, false_str, "bool_str");
 }
-
 
 // Helper to get a pointer to a member field (for use in assignments and inc/dec)
 static LLVMValueRef codegen_member_access_ptr(CodeGen* gen, ASTNode* node) {
@@ -1441,10 +1441,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     if (symbol_is_namespace(entry)) {
                         // This is a namespace call! Handle it as a regular function call
                         Module* imported_module = symbol_get_imported_module(entry);
+                        const char* member_name = node->method_call.method_name;
+
+                        // Check if the exported function has a codegen callback
+                        ExportedSymbol* exported = module_find_export(imported_module, member_name);
+                        if (exported && exported->declaration && 
+                            exported->declaration->type == AST_FUNCTION_DECL &&
+                            exported->declaration->func_decl.codegen_callback) {
+                            // Use the custom codegen callback
+                            return exported->declaration->func_decl.codegen_callback(gen, node);
+                        }
 
                         // Find the specialization in the module's TypeContext
                         TypeContext* module_type_ctx = imported_module->ast->type_ctx;
-                        const char* member_name = node->method_call.method_name;
                         TypeInfo* func_type = type_context_find_function_type(module_type_ctx, member_name);
 
                         if (!func_type) {
@@ -1488,9 +1497,11 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         }
 
                         // Call the function
+                        // Use empty name for void functions
+                        const char* call_name = (node->type_info == Type_Void) ? "" : "namespace_call";
                         LLVMValueRef result = LLVMBuildCall2(gen->builder,
                             LLVMGlobalGetValueType(func), func, args, node->method_call.arg_count,
-                            "namespace_call");
+                            call_name);
 
                         free(args);
                         return result;
@@ -2277,7 +2288,7 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
         return NULL;
     }
 
-    // Search through type table by type_name (handles cloned TypeInfo)
+    // First, search through current module's type table by type_name (handles cloned TypeInfo)
     TypeEntry* entry = gen->type_ctx->type_table;
     while (entry) {
         if (entry->type && entry->type->type_name &&
@@ -2286,6 +2297,36 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
             return entry->llvm_type;
         }
         entry = entry->next;
+    }
+    
+    // Not found in current module - the type might be from an imported module
+    // Since type_info was resolved during type inference, it should have an llvm_type
+    // somewhere in one of the module TypeContexts. Search imported modules.
+    if (gen->symbols) {
+        SymbolEntry* sym_entry = gen->symbols->head;
+        while (sym_entry) {
+            if (symbol_is_namespace(sym_entry)) {
+                Module* imported_module = symbol_get_imported_module(sym_entry);
+                if (imported_module && imported_module->type_ctx) {
+                    // Search this module's type table for matching type_name
+                    TypeEntry* imported_entry = imported_module->type_ctx->type_table;
+                    while (imported_entry) {
+                        if (imported_entry->type && imported_entry->type->type_name &&
+                            strcmp(imported_entry->type->type_name, type_info->type_name) == 0 &&
+                            imported_entry->llvm_type) {
+                            
+                            log_verbose("Found struct type '%s' in imported module '%s'", 
+                                       type_info->type_name, imported_module->relative_path);
+                            
+                            // Return the LLVM type directly - no need to cache since lookups are fast enough
+                            return imported_entry->llvm_type;
+                        }
+                        imported_entry = imported_entry->next;
+                    }
+                }
+            }
+            sym_entry = sym_entry->next;
+        }
     }
 
     return NULL;
@@ -2385,7 +2426,8 @@ static void codegen_initialize_types(CodeGen* gen) {
         TypeInfo* type = entry->type;
 
         if (type->kind == TYPE_KIND_FUNCTION) {
-            // Register function in codegen symbol table
+        		/*
+            // don't add it, it's alrady there we persist symbol table
             SymbolEntry* sym_entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
             sym_entry->name = strdup(type->type_name);
             sym_entry->type_info = type;
@@ -2396,11 +2438,25 @@ static void codegen_initialize_types(CodeGen* gen) {
             sym_entry->array_size = 0;
             sym_entry->next = gen->symbols->head;
             gen->symbols->head = sym_entry;
+            */
 
             // Declare all function specializations (includes fully typed and external)
             FunctionSpecialization* spec = type->data.function.specializations;
 
             while (spec) {
+		            // Check if variadic (only for external functions currenty)
+		            int is_var_arg = type->data.function.is_variadic ? 1 : 0;
+
+            		// it is external
+            		if (function_specialization_is_external(spec) &&
+              			LLVMGetNamedFunction(gen->module, spec->specialized_name) != NULL) {
+	                 	log_verbose_indent(1, "Skipping redclaraton of extranl functiom %s with %d params%s",
+																				  spec->specialized_name,
+																				  spec->param_count,
+	                                   			is_var_arg ? " (variadic)" : "");
+										spec = spec->next;
+										continue;
+                }
                 // Create parameter types
                 LLVMTypeRef* param_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * spec->param_count);
                 for (int j = 0; j < spec->param_count; j++) {
@@ -2409,9 +2465,6 @@ static void codegen_initialize_types(CodeGen* gen) {
 
                 // Create return type
                 LLVMTypeRef ret_type = get_llvm_type(gen, spec->return_type_info);
-
-                // Check if variadic (only for external functions)
-                int is_var_arg = type->data.function.is_variadic ? 1 : 0;
 
                 // Create function type
                 LLVMTypeRef llvm_func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, is_var_arg);
@@ -2510,6 +2563,35 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
 
         gen->current_function = main_func;
         gen->entry_block = entry;
+        
+        // Initialize standard streams (stdout, stderr, stdin) as global variables
+        // Declare FILE as opaque struct
+        LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
+        
+        // Declare get_stdout, get_stderr, get_stdin helper functions
+        LLVMTypeRef get_stream_type = LLVMFunctionType(LLVMPointerType(file_type, 0), NULL, 0, false);
+        LLVMValueRef get_stdout_fn = LLVMAddFunction(gen->module, "get_stdout", get_stream_type);
+        LLVMValueRef get_stderr_fn = LLVMAddFunction(gen->module, "get_stderr", get_stream_type);
+        LLVMValueRef get_stdin_fn = LLVMAddFunction(gen->module, "get_stdin", get_stream_type);
+        
+        // Create global variables for the streams
+        LLVMValueRef global_stdout = LLVMAddGlobal(gen->module, LLVMPointerType(file_type, 0), "__jsasta_stdout");
+        LLVMValueRef global_stderr = LLVMAddGlobal(gen->module, LLVMPointerType(file_type, 0), "__jsasta_stderr");
+        LLVMValueRef global_stdin = LLVMAddGlobal(gen->module, LLVMPointerType(file_type, 0), "__jsasta_stdin");
+        
+        LLVMSetInitializer(global_stdout, LLVMConstNull(LLVMPointerType(file_type, 0)));
+        LLVMSetInitializer(global_stderr, LLVMConstNull(LLVMPointerType(file_type, 0)));
+        LLVMSetInitializer(global_stdin, LLVMConstNull(LLVMPointerType(file_type, 0)));
+        
+        // Call helper functions and store results at program start
+        LLVMValueRef stdout_ptr = LLVMBuildCall2(gen->builder, get_stream_type, get_stdout_fn, NULL, 0, "stdout_init");
+        LLVMBuildStore(gen->builder, stdout_ptr, global_stdout);
+        
+        LLVMValueRef stderr_ptr = LLVMBuildCall2(gen->builder, get_stream_type, get_stderr_fn, NULL, 0, "stderr_init");
+        LLVMBuildStore(gen->builder, stderr_ptr, global_stderr);
+        
+        LLVMValueRef stdin_ptr = LLVMBuildCall2(gen->builder, get_stream_type, get_stdin_fn, NULL, 0, "stdin_init");
+        LLVMBuildStore(gen->builder, stdin_ptr, global_stdin);
     }
 
     // Create debug info for main function

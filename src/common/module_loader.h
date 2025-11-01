@@ -96,6 +96,9 @@ void module_add_export(Module* module, const char* name, ASTNode* declaration);
 // Find an exported symbol by name
 ExportedSymbol* module_find_export(Module* module, const char* name);
 
+// Register a codegen callback for a builtin function (called from compiler layer)
+void module_register_codegen_callback(Module* module, const char* func_name, BuiltinCodegenCallback callback);
+
 // === Path Resolution ===
 
 // Resolve a module path relative to current module or project root

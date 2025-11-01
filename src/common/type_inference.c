@@ -29,6 +29,92 @@ static inline Module* symbol_get_imported_module(SymbolEntry* entry) {
     } \
 } while(0)
 
+// Helper: Resolve namespaced type (e.g., "termios.termios_t" or "a.b.c.Type")
+// Walks the namespace chain from left to right: a.b.c.Type means
+// - Look up 'a' in current symbols (must be namespace)
+// - Look up 'b' in module 'a' (must be namespace)
+// - Look up 'c' in module 'b' (must be namespace)  
+// - Look up 'Type' in module 'c' (the actual type)
+// Returns the resolved TypeInfo* or NULL if not found
+static TypeInfo* resolve_namespaced_type(const char* type_path, SymbolTable* symbols, TypeContext* type_ctx) {
+    if (!type_path || !symbols) return NULL;
+    
+    log_verbose("Resolving type path: %s", type_path);
+    
+    // Check if this is a namespaced type (contains a dot)
+    if (!strchr(type_path, '.')) {
+        // Not namespaced, just look it up directly in the TypeContext
+        TypeInfo* result = type_context_find_struct_type(type_ctx, type_path);
+        log_verbose("  Direct lookup '%s': %s", type_path, result ? "found" : "not found");
+        return result;
+    }
+    
+    // Split the path into parts: "a.b.c.Type" -> ["a", "b", "c", "Type"]
+    char path_copy[512];
+    strncpy(path_copy, type_path, sizeof(path_copy) - 1);
+    path_copy[sizeof(path_copy) - 1] = '\0';
+    
+    char* parts[32]; // Max 32 levels of nesting
+    int part_count = 0;
+    
+    char* token = strtok(path_copy, ".");
+    while (token && part_count < 32) {
+        parts[part_count++] = token;
+        token = strtok(NULL, ".");
+    }
+    
+    if (part_count < 2) {
+        log_error("Invalid type path: %s", type_path);
+        return NULL;
+    }
+    
+    // The last part is the type name, everything before is namespace chain
+    const char* type_name = parts[part_count - 1];
+    
+    // For now, only support single-level namespaces: namespace.Type
+    // Deeply nested like a.b.c.Type would require modules to re-export other modules
+    if (part_count > 2) {
+        log_error("Deeply nested namespace types not yet supported: '%s'", type_path);
+        log_error("Only single-level namespaces like 'namespace.Type' are supported");
+        return NULL;
+    }
+    
+    // Single level: namespace.Type
+    const char* namespace_name = parts[0];
+    log_verbose("  Looking up namespace '%s'", namespace_name);
+    
+    // Look up the namespace in the current symbol table
+    SymbolEntry* entry = symbol_table_lookup(symbols, namespace_name);
+    if (!entry || !symbol_is_namespace(entry)) {
+        log_error("Unknown namespace '%s' in type path '%s'", namespace_name, type_path);
+        return NULL;
+    }
+    
+    // Get the module for this namespace
+    Module* current_module = symbol_get_imported_module(entry);
+    if (!current_module) {
+        log_error("Failed to get module for namespace '%s'", namespace_name);
+        return NULL;
+    }
+    
+    log_verbose("  Found module: %s", current_module->relative_path);
+    
+    // Now look up the actual type in the final module's TypeContext
+    if (!current_module || !current_module->type_ctx) {
+        log_error("No module or type context for type lookup");
+        return NULL;
+    }
+    
+    TypeInfo* resolved = type_context_find_struct_type(current_module->type_ctx, type_name);
+    if (!resolved) {
+        log_error("Type '%s' not found in final namespace", type_name);
+        return NULL;
+    }
+    
+    log_verbose("  Resolved to type: %s", resolved->type_name);
+    return resolved;
+}
+
 // Static counter for generating unique type names
 static int type_name_counter = 0;
 
@@ -583,6 +669,40 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             TypeInfo* return_type_hint = node->func_decl.return_type_hint;
             ASTNode* body = node->func_decl.body;  // NULL for external functions
             bool is_variadic = node->func_decl.is_variadic;
+            
+            // Resolve namespaced type hints in parameters
+            for (int i = 0; i < param_count; i++) {
+                if (param_type_hints[i] && 
+                    param_type_hints[i]->kind == TYPE_KIND_UNKNOWN &&
+                    param_type_hints[i]->type_name) {
+                    TypeInfo* resolved = resolve_namespaced_type(param_type_hints[i]->type_name, symbols, type_ctx);
+                    if (resolved) {
+                        param_type_hints[i] = resolved;
+                    } else {
+                        TYPE_ERROR(diag, node->loc, "T101", 
+                            "Cannot resolve parameter type '%s' in function '%s'", 
+                            param_type_hints[i]->type_name, func_name);
+                        param_type_hints[i] = Type_Unknown;
+                    }
+                }
+            }
+            
+            // Resolve namespaced return type hint
+            if (return_type_hint && 
+                return_type_hint->kind == TYPE_KIND_UNKNOWN &&
+                return_type_hint->type_name) {
+                TypeInfo* resolved = resolve_namespaced_type(return_type_hint->type_name, symbols, type_ctx);
+                if (resolved) {
+                    node->func_decl.return_type_hint = resolved;
+                    return_type_hint = resolved;
+                } else {
+                    TYPE_ERROR(diag, node->loc, "T101", 
+                        "Cannot resolve return type '%s' in function '%s'", 
+                        return_type_hint->type_name, func_name);
+                    node->func_decl.return_type_hint = Type_Unknown;
+                    return_type_hint = Type_Unknown;
+                }
+            }
 
             // Register function in symbol table
             symbol_table_insert_func_declaration(symbols, func_name, node);
@@ -722,6 +842,24 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_VAR_DECL:
+            // Resolve namespaced type hints (e.g., "termios.termios_t")
+            if (node->var_decl.type_hint && 
+                node->var_decl.type_hint->kind == TYPE_KIND_UNKNOWN &&
+                node->var_decl.type_hint->type_name) {
+                log_verbose("VAR_DECL: Resolving type hint '%s' for variable '%s'", 
+                           node->var_decl.type_hint->type_name, node->var_decl.name);
+                TypeInfo* resolved = resolve_namespaced_type(node->var_decl.type_hint->type_name, symbols, type_ctx);
+                if (resolved) {
+                    log_verbose("VAR_DECL: Successfully resolved to type: %s", resolved->type_name);
+                    node->var_decl.type_hint = resolved;
+                } else {
+                    log_error("VAR_DECL: Failed to resolve type '%s'", node->var_decl.type_hint->type_name);
+                    TYPE_ERROR(diag, node->loc, "T101", 
+                        "Cannot resolve type '%s'", node->var_decl.type_hint->type_name);
+                    node->var_decl.type_hint = Type_Unknown;
+                }
+            }
+            
             // Evaluate const expression for array size
             if (node->var_decl.array_size_expr) {
                 EvalResult result = eval_const_expr_result(node->var_decl.array_size_expr, symbols);
@@ -1036,15 +1174,15 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 const char* func_name = node->call.callee->identifier.name;
                 const SymbolEntry* entry = symbol_table_lookup(symbols, func_name);
                 // no user function
-                if (!entry) {
-                	node->type_info = runtime_get_function_type(func_name);
-                } else {
+                if (entry) {
                     // For fully typed functions (including external), set return type from specialization
                     if (entry->type_info && entry->type_info->data.function.is_fully_typed) {
                         if (entry->type_info->data.function.specializations) {
                             node->type_info = entry->type_info->data.function.specializations->return_type_info;
                         }
                     }
+                } else {
+              		diagnostic_error(diag, node->loc, "E_UNDEFINED_FUNC", "Function not declared");
                 }
             }
             break;
@@ -1809,6 +1947,14 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                     if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
                         ASTNode* func_decl = exported->declaration;
 
+                        // Call validation callback if present
+                        if (func_decl->func_decl.validate_callback) {
+                            if (!func_decl->func_decl.validate_callback(node, diag)) {
+                                // Validation failed, error already reported
+                                break;
+                            }
+                        }
+
                         // Use mangled name for specialization
                         char* mangled_name = module_mangle_symbol(imported_module->module_prefix, member_name);
 
@@ -1833,6 +1979,18 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
 
                             if (!module_func_type) {
                                 log_warning("Function '%s' not found in module '%s' TypeContext", member_name, imported_module->relative_path);
+                                break;
+                            }
+
+                            // Skip specialization for variadic or external functions (no body)
+                            if (func_decl->func_decl.is_variadic || func_decl->func_decl.body == NULL) {
+                                // External/builtin functions don't need specialization
+                                // Just set the return type from the function declaration
+                                if (func_decl->func_decl.return_type_hint) {
+                                    node->type_info = func_decl->func_decl.return_type_hint;
+                                }
+                                free(arg_types);
+                                free(mangled_name);
                                 break;
                             }
 
@@ -2298,38 +2456,18 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     log_verbose("DEBUG: Found specialization for '%s'", func_name);
                     node->type_info = spec->return_type_info;
                 } else {
-                    log_verbose("DEBUG: No specialization found for '%s', checking runtime builtins", func_name);
-                    // Not a user function, check if it's a runtime builtin
-                    TypeInfo* runtime_type = runtime_get_function_type(func_name);
-                    if (!type_info_is_unknown(runtime_type)) {
-                        node->type_info = runtime_type;
-                    } else {
-                        // Unknown function - report error
-                        log_error("DEBUG: Function '%s' not found in specializations or runtime", func_name);
-                        if (diag) {
-                            diagnostic_error(diag, node->loc,
-                                "E_UNDEFINED_FUNC", "Undefined function: %s", func_name);
-                        }
-                        node->type_info = Type_Void;
+                    // Unknown function - report error
+                    if (diag) {
+                        diagnostic_error(diag, node->loc,
+                            "E_UNDEFINED_FUNC", "Undefined function: %s", func_name);
                     }
+                    node->type_info = Type_Void;
                 }
 
                 free(arg_types);
             } else if (node->call.callee->type == AST_MEMBER_ACCESS) {
-                // Handle member access (e.g., console.log)
-                ASTNode* obj = node->call.callee->member_access.object;
-                char* prop = node->call.callee->member_access.property;
-
-                if (obj->type == AST_IDENTIFIER) {
-                    char full_name[256];
-                    snprintf(full_name, sizeof(full_name), "%s.%s", obj->identifier.name, prop);
-                    TypeInfo* runtime_type = runtime_get_function_type(full_name);
-                    if (!type_info_is_unknown(runtime_type)) {
-                        // REMOVED: get_node_value_type(node) = runtime_type;
-                        break;
-                    }
-                }
-
+            		// TODO: We can infer alot more here, and do our job eaier in the next phases
+              //
                 // Default for member access
                 // REMOVED: get_node_value_type(node) = TYPE_VOID;
             }
@@ -2376,7 +2514,18 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
                         free(arg_types);
                     } else {
-                        node->type_info = Type_Unknown;
+                        // No specialization - check if this is an external/builtin function with return_type_hint
+                        ExportedSymbol* exported = module_find_export(imported_module, member_name);
+                        if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
+                            ASTNode* func_decl = exported->declaration;
+                            if (func_decl->func_decl.return_type_hint) {
+                                node->type_info = func_decl->func_decl.return_type_hint;
+                            } else {
+                                node->type_info = Type_Unknown;
+                            }
+                        } else {
+                            node->type_info = Type_Unknown;
+                        }
                     }
 
                     free(mangled_name);

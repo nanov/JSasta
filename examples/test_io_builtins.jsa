@@ -1,0 +1,23 @@
+import io from @io;
+
+// Test println - prints with newline
+io.println("=== Testing @io builtin module ===");
+io.println("");
+
+// Test print - prints without newline
+io.print("Hello ");
+io.print("from ");
+io.print("print!");
+io.println("");
+
+// Test format - returns formatted string
+var msg1 = io.format("JSasta Compiler");
+var msg2 = io.format("Builtin Module System");
+
+io.println(msg1);
+io.println(msg2);
+io.println("");
+
+// Combine multiple operations
+io.print("Status: ");
+io.println("All tests passed!");

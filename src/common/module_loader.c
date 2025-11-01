@@ -1,6 +1,7 @@
 #include "module_loader.h"
 #include "logger.h"
 #include "diagnostics.h"
+#include "format_string.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -78,9 +79,235 @@ void module_registry_free(ModuleRegistry* registry) {
     free(registry);
 }
 
+// === Builtin Module Functions ===
+
+// Validation callback for @io format functions (println, print, format)
+static bool io_format_validate(ASTNode* call_node, DiagnosticContext* diag) {
+    // Get function name from the call node
+    const char* func_name = call_node->method_call.method_name;
+    
+    // Validate format string (first argument must be string literal)
+    if (call_node->method_call.arg_count < 1) {
+        diagnostic_error(diag, call_node->loc, "E301", 
+            "%s requires at least one argument (format string)", func_name);
+        return false;
+    }
+
+    ASTNode* format_arg = call_node->method_call.args[0];
+    if (format_arg->type != AST_STRING) {
+        diagnostic_error(diag, format_arg->loc, "E302", 
+            "First argument to %s must be a string literal", func_name);
+        return false;
+    }
+
+    // Parse format string and validate placeholder count
+    FormatString* fs = format_string_parse(format_arg->string.value);
+    if (!fs) {
+        diagnostic_error(diag, format_arg->loc, "E303", 
+            "Invalid format string: unmatched braces");
+        return false;
+    }
+
+    int actual_args = call_node->method_call.arg_count - 1;  // Exclude format string
+    if (fs->placeholder_count != actual_args) {
+        if (actual_args > fs->placeholder_count) {
+            // More arguments than placeholders - warning (extra args are ignored)
+            diagnostic_warning(diag, call_node->loc, "W304",
+                "%s: format string has %d placeholder%s but %d argument%s provided (extra arguments will be ignored)",
+                func_name, 
+                fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
+                actual_args, actual_args == 1 ? "" : "s");
+        } else {
+            // Fewer arguments than placeholders - error
+            diagnostic_error(diag, call_node->loc, "E304",
+                "%s: format string has %d placeholder%s but only %d argument%s provided",
+                func_name, 
+                fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
+                actual_args, actual_args == 1 ? "" : "s");
+            format_string_free(fs);
+            return false;
+        }
+    }
+
+    format_string_free(fs);
+    return true;
+}
+
+// Codegen callbacks for @io functions (implemented in compiler layer)
+extern LLVMValueRef io_println_codegen(void* context, ASTNode* node);
+extern LLVMValueRef io_print_codegen(void* context, ASTNode* node);
+extern LLVMValueRef io_eprintln_codegen(void* context, ASTNode* node);
+extern LLVMValueRef io_eprint_codegen(void* context, ASTNode* node);
+extern LLVMValueRef io_format_codegen(void* context, ASTNode* node);
+
+// Create a synthetic AST node for a builtin function declaration
+static ASTNode* builtin_create_func_decl(const char* name, int param_count, char** params, 
+                                          TypeInfo** param_types, TypeInfo* return_type,
+                                          BuiltinValidateCallback validate_cb,
+                                          BuiltinCodegenCallback codegen_cb) {
+    ASTNode* func = (ASTNode*)calloc(1, sizeof(ASTNode));
+    func->type = AST_FUNCTION_DECL;
+    func->func_decl.name = strdup(name);
+    func->func_decl.param_count = param_count;
+    func->func_decl.params = params;
+    
+    // Allocate param_locs array (required by type inference)
+    func->func_decl.param_locs = (SourceLocation*)calloc(param_count, sizeof(SourceLocation));
+    for (int i = 0; i < param_count; i++) {
+        func->func_decl.param_locs[i].line = 0;
+        func->func_decl.param_locs[i].column = 0;
+        func->func_decl.param_locs[i].filename = "@io";
+    }
+    
+    func->func_decl.body = NULL;  // No body for builtin functions
+    func->func_decl.param_type_hints = param_types;
+    func->func_decl.return_type_hint = return_type;
+    func->func_decl.is_variadic = false;
+    func->type_info = return_type;
+    
+    // Set callbacks
+    func->func_decl.validate_callback = validate_cb;
+    func->func_decl.codegen_callback = codegen_cb;
+    
+    return func;
+}
+
+// Create the @io builtin module
+static Module* builtin_create_io_module(ModuleRegistry* registry) {
+    log_verbose("Creating @io builtin module");
+    
+    // Create module structure
+    Module* module = (Module*)calloc(1, sizeof(Module));
+    module->absolute_path = strdup("@io");
+    module->relative_path = strdup("@io");
+    module->module_prefix = strdup("io");
+    module->source_code = strdup("// Builtin @io module");
+    
+    // Create type context
+    module->type_ctx = type_context_create();
+    module->type_ctx->module_prefix = strdup("io");
+    module->diagnostics = registry->diagnostics;
+    
+    // Create synthetic AST program node
+    module->ast = (ASTNode*)calloc(1, sizeof(ASTNode));
+    module->ast->type = AST_PROGRAM;
+    module->ast->type_ctx = module->type_ctx;
+    module->ast->program.statements = NULL;
+    module->ast->program.count = 0;
+    
+    // Initialize module fields
+    module->exports = NULL;
+    module->export_count = 0;
+    module->dependencies = NULL;
+    module->dependency_count = 0;
+    module->is_loading = false;
+    module->is_parsed = true;  // Mark as parsed since we created it synthetically
+    module->next = NULL;
+    
+    // Create builtin functions
+    int func_count = 5;
+    module->ast->program.count = func_count;
+    module->ast->program.statements = (ASTNode**)malloc(sizeof(ASTNode*) * func_count);
+    
+    // 1. println(format: string, ...): void - print to stdout with newline
+    char** println_params = (char**)malloc(sizeof(char*) * 1);
+    println_params[0] = strdup("format");
+    TypeInfo** println_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    println_param_types[0] = Type_String;
+    ASTNode* println_func = builtin_create_func_decl("println", 1, println_params, println_param_types, Type_Void, io_format_validate, io_println_codegen);
+    println_func->func_decl.is_variadic = true;
+    module->ast->program.statements[0] = println_func;
+    module_add_export(module, "println", println_func);
+    
+    // 2. print(format: string, ...): void - print to stdout without newline
+    char** print_params = (char**)malloc(sizeof(char*) * 1);
+    print_params[0] = strdup("format");
+    TypeInfo** print_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    print_param_types[0] = Type_String;
+    ASTNode* print_func = builtin_create_func_decl("print", 1, print_params, print_param_types, Type_Void, io_format_validate, io_print_codegen);
+    print_func->func_decl.is_variadic = true;
+    module->ast->program.statements[1] = print_func;
+    module_add_export(module, "print", print_func);
+    
+    // 3. eprintln(format: string, ...): void - print to stderr with newline
+    char** eprintln_params = (char**)malloc(sizeof(char*) * 1);
+    eprintln_params[0] = strdup("format");
+    TypeInfo** eprintln_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    eprintln_param_types[0] = Type_String;
+    ASTNode* eprintln_func = builtin_create_func_decl("eprintln", 1, eprintln_params, eprintln_param_types, Type_Void, io_format_validate, io_eprintln_codegen);
+    eprintln_func->func_decl.is_variadic = true;
+    module->ast->program.statements[2] = eprintln_func;
+    module_add_export(module, "eprintln", eprintln_func);
+    
+    // 4. eprint(format: string, ...): void - print to stderr without newline
+    char** eprint_params = (char**)malloc(sizeof(char*) * 1);
+    eprint_params[0] = strdup("format");
+    TypeInfo** eprint_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    eprint_param_types[0] = Type_String;
+    ASTNode* eprint_func = builtin_create_func_decl("eprint", 1, eprint_params, eprint_param_types, Type_Void, io_format_validate, io_eprint_codegen);
+    eprint_func->func_decl.is_variadic = true;
+    module->ast->program.statements[3] = eprint_func;
+    module_add_export(module, "eprint", eprint_func);
+    
+    // 5. format(format: string, ...): string - return formatted string
+    char** format_params = (char**)malloc(sizeof(char*) * 1);
+    format_params[0] = strdup("format");
+    TypeInfo** format_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    format_param_types[0] = Type_String;
+    ASTNode* format_func = builtin_create_func_decl("format", 1, format_params, format_param_types, Type_String, io_format_validate, io_format_codegen);
+    format_func->func_decl.is_variadic = true;
+    module->ast->program.statements[4] = format_func;
+    module_add_export(module, "format", format_func);
+    
+    log_info("Created @io builtin module with %d exports", module->export_count);
+    
+    return module;
+}
+
+// Load a builtin module by name
+static Module* module_load_builtin(ModuleRegistry* registry, const char* builtin_name) {
+    log_verbose("Loading builtin: %s", builtin_name);
+    
+    // Check if already loaded
+    char full_path[256];
+    snprintf(full_path, sizeof(full_path), "@%s", builtin_name);
+    Module* existing = module_find(registry, full_path);
+    if (existing) {
+        log_verbose("Builtin module already loaded: @%s", builtin_name);
+        return existing;
+    }
+    
+    Module* module = NULL;
+    
+    // Create the appropriate builtin module
+    if (strcmp(builtin_name, "io") == 0) {
+        module = builtin_create_io_module(registry);
+    } else {
+        log_error("Unknown builtin module: @%s", builtin_name);
+        return NULL;
+    }
+    
+    if (!module) {
+        return NULL;
+    }
+    
+    // Add to registry
+    module->next = registry->modules;
+    registry->modules = module;
+    registry->module_count++;
+    
+    return module;
+}
+
 // === Module Loading Functions ===
 
 Module* module_load(ModuleRegistry* registry, const char* path, Module* current_module) {
+    // Check if this is a builtin module (starts with @)
+    if (path && path[0] == '@') {
+        const char* builtin_name = path + 1;  // Skip the '@'
+        return module_load_builtin(registry, builtin_name);
+    }
+    
     // Resolve the path
     char* absolute_path = module_resolve_path(registry, path, current_module);
     
@@ -382,6 +609,14 @@ ExportedSymbol* module_find_export(Module* module, const char* name) {
         }
     }
     return NULL;
+}
+
+// Register a codegen callback for a builtin function (called from compiler layer)
+void module_register_codegen_callback(Module* module, const char* func_name, BuiltinCodegenCallback callback) {
+    ExportedSymbol* exported = module_find_export(module, func_name);
+    if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
+        exported->declaration->func_decl.codegen_callback = callback;
+    }
 }
 
 // === Path Resolution ===

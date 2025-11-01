@@ -817,4 +817,34 @@ void traits_register_builtin_impls(TraitRegistry* registry) {
     REGISTER_INT_ARITHMETIC(Trait_DivAssign, "div_assign", NULL, NULL, NULL, intrinsic_int_div_assign, NULL);
     // double /= double
     REGISTER_BINARY_OP(Trait_DivAssign, double_type, double_type, double_type, "div_assign", intrinsic_double_div_assign);
+
+    // === Display Trait ===
+    // Display trait implementations for builtin types
+    // These call external C functions in runtime/display.c
+    
+    #define REGISTER_DISPLAY(type_info, external_fn_name) \
+        do { \
+            MethodImpl impl; \
+            impl.method_name = "fmt"; \
+            impl.signature = NULL; \
+            impl.kind = METHOD_EXTERNAL; \
+            impl.codegen = NULL; \
+            impl.function_ptr = NULL; \
+            impl.external_name = external_fn_name; \
+            trait_impl_simple(Trait_Display, type_info, &impl, 1); \
+        } while(0)
+    
+    REGISTER_DISPLAY(Type_I32, "display_i32");
+    REGISTER_DISPLAY(Type_I64, "display_i64");
+    REGISTER_DISPLAY(Type_I8, "display_i8");
+    REGISTER_DISPLAY(Type_I16, "display_i16");
+    REGISTER_DISPLAY(Type_U32, "display_u32");
+    REGISTER_DISPLAY(Type_U64, "display_u64");
+    REGISTER_DISPLAY(Type_U8, "display_u8");
+    REGISTER_DISPLAY(Type_U16, "display_u16");
+    REGISTER_DISPLAY(Type_Bool, "display_bool");
+    REGISTER_DISPLAY(Type_String, "display_string");
+    REGISTER_DISPLAY(Type_Double, "display_f64");
+    
+    #undef REGISTER_DISPLAY
 }

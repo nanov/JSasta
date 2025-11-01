@@ -173,26 +173,55 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
     }
 
     if (!type_info) {
-        // Try identifier for struct types
+        // Try identifier for struct types or namespace.path.TypeName
         if (!parser_match(parser, TOKEN_IDENTIFIER)) {
             log_error("Expected type name after ':'");
             return NULL;
         }
-        const char* type_name = parser->current_token->value;
-        // Try to look up struct type from TypeContext
-        if (parser->type_ctx) {
-            type_info = type_context_find_struct_type(parser->type_ctx, type_name);
-            if (!type_info) {
-                PARSE_ERROR(parser, "E101", "Unknown type '%s'", type_name);
+        
+        // Build up the full type path (might be "Type" or "namespace.Type" or "a.b.c.Type")
+        char type_path[512] = {0};
+        strncpy(type_path, parser->current_token->value, sizeof(type_path) - 1);
+        parser_advance(parser);  // consume first identifier
+        
+        // Check for namespace path (one or more .identifier)
+        while (parser_match(parser, TOKEN_DOT)) {
+            parser_advance(parser);  // consume '.'
+            
+            if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                PARSE_ERROR(parser, "E205", "Expected identifier after '.' in type name");
+                return Type_Unknown;
+            }
+            
+            // Append .identifier to the path
+            strncat(type_path, ".", sizeof(type_path) - strlen(type_path) - 1);
+            strncat(type_path, parser->current_token->value, sizeof(type_path) - strlen(type_path) - 1);
+            parser_advance(parser);  // consume identifier
+        }
+        
+        // Now we have the full type path
+        // If it contains a dot, it's a namespaced type (resolve during type inference)
+        // If not, try to look it up in the current TypeContext
+        if (strchr(type_path, '.')) {
+            // Namespaced type - create unresolved type for later resolution
+            type_info = type_info_create(TYPE_KIND_UNKNOWN, type_path);
+            type_info->type_name = strdup(type_path);
+        } else {
+            // Direct type - try to look up in TypeContext
+            if (parser->type_ctx) {
+                type_info = type_context_find_struct_type(parser->type_ctx, type_path);
+                if (!type_info) {
+                    PARSE_ERROR(parser, "E101", "Unknown type '%s'", type_path);
+                    type_info = Type_Unknown;
+                }
+            } else {
+                PARSE_ERROR(parser, "E101", "Unknown type '%s'", type_path);
                 type_info = Type_Unknown;
             }
-        } else {
-            PARSE_ERROR(parser, "E101", "Unknown type '%s'", type_name);
-            type_info = Type_Unknown;
         }
+    } else {
+        parser_advance(parser);  // consume type token
     }
-
-    parser_advance(parser);  // consume type name
 
     // Check for array syntax [size] - but don't consume it here
     // The caller (parse_struct_declaration) will handle the array size
@@ -1561,13 +1590,27 @@ static ASTNode* parse_import_declaration(Parser* parser) {
     }
     parser_advance(parser);
 
-    // Expect string literal (module path)
-    if (parser->current_token->type != TOKEN_STRING) {
-        PARSE_ERROR(parser, "E232", "Expected string literal for module path");
+    // Expect string literal (module path) or @identifier (builtin module)
+    if (parser->current_token->type == TOKEN_AT) {
+        // Builtin module: @identifier
+        parser_advance(parser);
+        if (parser->current_token->type != TOKEN_IDENTIFIER) {
+            PARSE_ERROR(parser, "E232", "Expected identifier after '@' for builtin module");
+            return node;
+        }
+        // Store as "@name" to distinguish from file paths
+        char builtin_path[256];
+        snprintf(builtin_path, sizeof(builtin_path), "@%s", parser->current_token->value);
+        node->import_decl.module_path = strdup(builtin_path);
+        parser_advance(parser);
+    } else if (parser->current_token->type == TOKEN_STRING) {
+        // File module: "path"
+        node->import_decl.module_path = strdup(parser->current_token->value);
+        parser_advance(parser);
+    } else {
+        PARSE_ERROR(parser, "E232", "Expected string literal or @builtin for module path");
         return node;
     }
-    node->import_decl.module_path = strdup(parser->current_token->value);
-    parser_advance(parser);
 
     // Expect semicolon
     parser_expect(parser, TOKEN_SEMICOLON);

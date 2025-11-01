@@ -1,0 +1,19 @@
+
+// termios.h on osx
+const NCCS = 20;
+const TCSANOW = 0;
+
+export struct termios_t {
+	c_iflag: u64;
+	c_oflag: u64;
+	c_cflag: u64;
+	c_lflag: u64;
+	cc_cc: u8[NCCS];
+	c_ispeed: u64;
+	c_ospeed: u64;
+}
+
+// termios.h
+export external tcgetattr(fd:int, termios_p:ref termios_t):int;
+export external tcsetattr(fd:int, optional_actions:int, termios_p:ref termios_t):int;
+export external isatty(fd:int):int;

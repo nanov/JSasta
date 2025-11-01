@@ -7,11 +7,14 @@
 		"label": "Debug native binary",
 		"build": {
 			"command": "make",
-			"args": ["-j8"],
+			"args": ["-j8", "-B"],
+			"env": {
+				"DEBUG": "1"
+			},
 			"cwd": "$ZED_WORKTREE_ROOT"
 		},
 		"program": "$ZED_WORKTREE_ROOT/build/jsastac",
-		"args": ["./examples/math/test_add.js"],
+		"args": ["tests/compiler/test-features/01-default-and-capture.jsa"],
 		"request": "launch",
 		"adapter": "CodeLLDB"
 	}

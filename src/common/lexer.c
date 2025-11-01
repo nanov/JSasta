@@ -1,4 +1,5 @@
 #include "jsasta_compiler.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -273,6 +274,7 @@ Token* lexer_next_token(Lexer* lexer) {
             case ']': return token_create(TOKEN_RBRACKET, "]", line, col);
             case ';': return token_create(TOKEN_SEMICOLON, ";", line, col);
             case ',': return token_create(TOKEN_COMMA, ",", line, col);
+            case '@': return token_create(TOKEN_AT, "@", line, col);
             case '.':
                 // Check for ... (ellipsis)
                 if (lexer->current == '.' && lexer->source[lexer->position + 1] == '.') {

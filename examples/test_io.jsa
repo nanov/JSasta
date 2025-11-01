@@ -1,0 +1,9 @@
+import io from "@io";
+
+var x: i32 = 42;
+var y: i32 = 100;
+
+io.println("Hello from JSasta!");
+io.println("x = {}, y = {}", x, y);
+io.print("x + y = {}", x + y);
+io.println("");

@@ -77,6 +77,7 @@
     X(TOKEN_SEMICOLON, ";") \
     X(TOKEN_COMMA, ",") \
     X(TOKEN_DOT, ".") \
+    X(TOKEN_AT, "@") \
     X(TOKEN_ELLIPSIS, "...") \
     X(TOKEN_AND, "&&") \
     X(TOKEN_OR, "||") \
@@ -100,6 +101,7 @@ typedef struct {
     size_t line;
     size_t column;
 } Token;
+
 
 // AST Node types
 typedef enum {
@@ -144,6 +146,18 @@ typedef struct FunctionSpecialization FunctionSpecialization;
 typedef struct ASTNode ASTNode;
 typedef struct SymbolTable SymbolTable;
 typedef struct SymbolEntry SymbolEntry;
+typedef struct DiagnosticContext DiagnosticContext;
+
+// Builtin function callbacks
+// Validation callback: called during type inference to validate call arguments
+// Returns true if validation passed, false otherwise
+typedef bool (*BuiltinValidateCallback)(ASTNode* call_node, DiagnosticContext* diag);
+
+// Codegen callback: called during code generation to emit custom LLVM IR
+// Returns the LLVM value representing the result of the call
+// context is a void* to CodeGen (to keep common/compiler layers separate)
+typedef LLVMValueRef (*BuiltinCodegenCallback)(void* context, ASTNode* call_node);
+
 
 // Type kind for categorizing types
 typedef enum {
@@ -256,6 +270,11 @@ struct FunctionSpecialization {
     struct FunctionSpecialization* next;  // Linked list
 };
 
+inline static bool function_specialization_is_external(FunctionSpecialization* s) {
+	return !s->specialized_body;
+}
+
+
 struct ASTNode {
     ASTNodeType type;
     TypeInfo* type_info;           // Unified type representation
@@ -290,6 +309,10 @@ struct ASTNode {
             TypeInfo** param_type_hints;  // Optional for user functions, required for external
             TypeInfo* return_type_hint;   // Optional for user functions, required for external
             bool is_variadic;             // Variable arguments support (... in parameter list)
+            
+            // Builtin function callbacks (NULL for regular user functions)
+            BuiltinValidateCallback validate_callback;  // Custom validation logic
+            BuiltinCodegenCallback codegen_callback;    // Custom codegen logic
         } func_decl;
 
         struct {
@@ -816,10 +839,9 @@ void codegen_free(CodeGen* gen);
 void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module);
 void codegen_emit_llvm_ir(CodeGen* gen, const char* filename);
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node);
+LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info);
 
 // Runtime function registration
-void codegen_register_runtime_function(CodeGen* gen, const char* name, TypeInfo* return_type,
-                                       LLVMValueRef (*handler)(CodeGen*, ASTNode*));
 TypeInfo* codegen_get_runtime_function_type(CodeGen* gen, const char* name);
 LLVMValueRef codegen_call_runtime_function(CodeGen* gen, const char* name, ASTNode* call_node);
 
@@ -831,7 +853,7 @@ TypeInfo* runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);
-void compile_file(const char* input_file, const char* output_file, bool enable_debug);
+int compile_file(const char* input_file, const char* output_file, bool enable_debug);
 
 
 FunctionSpecialization* s;

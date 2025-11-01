@@ -119,6 +119,7 @@ extern Trait* Trait_DivAssign;
 extern Trait* Trait_Index;
 extern Trait* Trait_RefIndex;
 extern Trait* Trait_Length;
+extern Trait* Trait_Display;
 
 // === Core Trait Registry Functions ===
 

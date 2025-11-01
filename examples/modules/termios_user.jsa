@@ -1,0 +1,4 @@
+import termios from "./termios.jsa";
+
+
+var t: termios.termios_t;

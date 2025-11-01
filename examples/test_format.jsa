@@ -1,0 +1,17 @@
+import io from @io;
+
+// Test multiple placeholders
+var x = 42;
+var y = 100;
+io.println("x = {}, y = {}", x, y);
+
+// Test bool
+var flag = true;
+io.println("Flag: {}", flag);
+
+// Test string
+var name = "Alice";
+io.println("Hello, {}!", name);
+
+// Test mixed types
+io.println("Name: {}, Age: {}, Active: {}", "Bob", 25, false);

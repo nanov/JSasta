@@ -1,0 +1,9 @@
+// jastat-summary: Verifies a program can be expected to fail with any non-zero code.
+// jastat: expect-exit-code=!0
+
+external printf(string, ...): void;
+external exit(int): void;
+
+// This test has no output, which is also a valid case.
+printf("42 is the meaning of life\n");
+exit(42); // The specific number doesn't matter, as long as it's not 0.

@@ -1,0 +1,5 @@
+// jastat-summary: Checks compiler mode for a basic syntax error.
+// jastat: mode=compiler
+
+let x = 1
+a+x // T301: Undefined variable: a

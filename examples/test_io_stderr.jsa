@@ -1,0 +1,13 @@
+import io from "@io";
+
+var x: i32 = 42;
+var y: i32 = 100;
+
+// Test stdout
+io.println("stdout: x = {}, y = {}", x, y);
+io.print("stdout: partial line");
+
+// Test stderr
+io.eprintln("stderr: This is an error message!");
+io.eprint("stderr: x = {}", x);
+io.eprintln(" (continued on same line)");

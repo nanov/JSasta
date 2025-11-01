@@ -1,0 +1,11 @@
+// jastat-summary: Checks the default behavior: mode=run, capture=all, exit-code=0.
+// This test prints to both stdout and stderr. Both should be captured.
+
+external printf(string, ...): int;
+external dprintf(int, string, ...): int; // no way to import stderr still
+
+const stderr:int = 2;
+
+
+printf("Hello from stdout!\n");
+dprintf(stderr, "Warning from stderr!\n");

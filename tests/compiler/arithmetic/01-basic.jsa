@@ -1,0 +1,6 @@
+external printf(string, ...): int;
+
+const a:i32 = 9;
+const b:i32 = 60;
+
+printf("%d\n", a+b);

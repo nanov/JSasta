@@ -1,0 +1,4 @@
+import io from "@io";
+
+// Test invalid format string (unmatched braces)
+io.println("Invalid {format string", 42);
