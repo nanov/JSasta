@@ -1,0 +1,23 @@
+# .clang-format
+---
+# Start with a base style, like LLVM, Google, or WebKit
+BasedOnStyle: LLVM
+
+# --- Indentation Settings ---
+# Use tabs for indentation.
+# UseTab: ForIndentation will use tabs for indentation and spaces for alignment.
+# UseTab: Always will use tabs for everything, which can mess up alignment.
+UseTab: ForIndentation
+
+# The width of a tab character.
+# This helps clang-format calculate alignment correctly.
+TabWidth: 2
+
+# The number of columns to use for indentation.
+# Should match TabWidth when using tabs.
+IndentWidth: 2
+
+
+# --- Other Style Settings ---
+# Allow short case labels to be on a single line
+AllowShortCaseLabelsOnASingleLine: true

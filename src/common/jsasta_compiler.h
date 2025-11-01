@@ -404,6 +404,7 @@ struct ASTNode {
         struct {
             ASTNode* object;
             char* property;
+            SourceLocation property_loc;  // Location of the property name (for go-to-definition)
             SymbolEntry* symbol_entry;  // Symbol entry if object is identifier (resolved during type inference)
             int property_index;         // Index of property in struct (-1 if not applicable, resolved during type inference)
         } member_access;
@@ -503,9 +504,11 @@ typedef struct SymbolEntry {
     LLVMValueRef value;
     ASTNode* node;           // For regular symbols: the declaration node
                              // For namespace symbols: the AST_IMPORT_DECL node
+                             // For function parameters: the function declaration node
     LLVMTypeRef llvm_type;   // For objects, stores the struct type
     TypeInfo* type_info;     // For objects and complex types, stores metadata
     int array_size;          // For arrays, stores the size (0 if not an array)
+    int param_index;         // For function parameters: the parameter index (-1 for non-parameters)
     struct SymbolEntry* next;
 } SymbolEntry;
 

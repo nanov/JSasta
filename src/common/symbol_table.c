@@ -40,6 +40,7 @@ void symbol_table_insert(SymbolTable* table, const char* name, TypeInfo* type_in
     entry->node = NULL;
     entry->llvm_type = NULL;
     entry->array_size = 0;
+    entry->param_index = -1;  // Not a function parameter
     entry->next = table->head;
     table->head = entry;
 }
@@ -63,6 +64,7 @@ void symbol_table_insert_var_declaration(SymbolTable* table, const char* name, T
     entry->node = var_decl_node;  // Store the AST node for looking up object properties
     entry->llvm_type = NULL;  // Will be set during codegen for objects
     entry->array_size = var_decl_node ? var_decl_node->var_decl.array_size : 0;  // Store array size from AST
+    entry->param_index = -1;  // Not a function parameter (unless set otherwise)
     entry->next = table->head;
     table->head = entry;
 }
@@ -86,6 +88,7 @@ void symbol_table_insert_func_declaration(SymbolTable* table, const char* name, 
     entry->node = node;
     entry->llvm_type = NULL;
     entry->array_size = 0;
+    entry->param_index = -1;  // Not a function parameter
     entry->next = table->head;
     table->head = entry;
 }
@@ -109,6 +112,7 @@ void symbol_table_insert_namespace(SymbolTable* table, const char* name, ASTNode
     entry->node = import_node;  // Store the AST_IMPORT_DECL node
     entry->llvm_type = NULL;
     entry->array_size = 0;
+    entry->param_index = -1;  // Not a function parameter
     entry->next = table->head;
     table->head = entry;
 }

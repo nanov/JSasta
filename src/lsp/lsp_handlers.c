@@ -1,3 +1,4 @@
+#include "lsp/tmp_protocol.h"
 #include "lsp_server.h"
 #include "lsp_protocol.h"
 #include "lsp_json.h"
@@ -22,7 +23,7 @@
 
 // === LSP Request Handlers ===
 
-char* lsp_handle_initialize(LSPServer* server, const char* params) {
+char* lsp_handle_initialize(LSPServer* server, LspJsonInitializeParams* params) {
     (void)params; // TODO: Parse initialize params
 
     server->initialized = true;
@@ -35,7 +36,7 @@ char* lsp_handle_shutdown(LSPServer* server) {
     return strdup("null");
 }
 
-char* lsp_handle_hover(LSPServer* server, const char* params) {
+char* lsp_handle_hover(LSPServer* server, LspJsonHoverParams* params) {
     // TODO: Parse params to get URI and position
     (void)server;
     (void)params;
@@ -44,7 +45,7 @@ char* lsp_handle_hover(LSPServer* server, const char* params) {
     return strdup("null");
 }
 
-char* lsp_handle_completion(LSPServer* server, const char* params) {
+char* lsp_handle_completion(LSPServer* server, LspJsonCompletionParams* params) {
     // TODO: Parse params and provide completions
     (void)server;
     (void)params;
@@ -53,43 +54,14 @@ char* lsp_handle_completion(LSPServer* server, const char* params) {
     return strdup("[]");
 }
 
-char* lsp_handle_definition(LSPServer* server, const char* params) {
-    LSP_LOG("definition request: %s", params);
+char* lsp_handle_definition(LSPServer* server, LspJsonTextDocumentPositionParams* params) {
 
-    // Parse params
-    JSONValue* root = json_parse(params);
-    if (!root) {
-        LSP_LOG("Failed to parse definition params");
-        return strdup("null");
-    }
-
-    // Extract URI and position
-    JSONValue* text_document = json_object_get(root, "textDocument");
-    JSONValue* position = json_object_get(root, "position");
-
-    if (!text_document || !position) {
-        LSP_LOG("Missing textDocument or position");
-        json_value_free(root);
-        return strdup("null");
-    }
-
-    const char* uri = json_get_string(json_object_get(text_document, "uri"));
-    int line = (int)json_get_number(json_object_get(position, "line"));
-    int character = (int)json_get_number(json_object_get(position, "character"));
-
-    if (!uri) {
-        LSP_LOG("No URI in definition request");
-        json_value_free(root);
-        return strdup("null");
-    }
-
-    LSP_LOG("Finding definition at %s:%d:%d", uri, line, character);
+    LSP_LOG("Finding definition at %s:%zU:%zU", params->textDocument.uri, params->position.line, params->position.character);
 
     // Find the document
-    LSPDocument* doc = lsp_server_find_document(server, uri);
+    LSPDocument* doc = lsp_server_find_document(server, params->textDocument.uri);
     if (!doc) {
         LSP_LOG("Document not found");
-        json_value_free(root);
         return strdup("null");
     }
 
@@ -97,26 +69,22 @@ char* lsp_handle_definition(LSPServer* server, const char* params) {
     CodeIndex* code_index = lsp_document_get_code_index(doc);
     if (!code_index) {
         LSP_LOG("Code index not built");
-        json_value_free(root);
         return strdup("null");
     }
 
     // Convert URI to filename
-    char* filename = lsp_uri_to_path(uri);
+    char* filename = lsp_uri_to_path(params->textDocument.uri);
     if (!filename) {
         LSP_LOG("Failed to convert URI to path");
-        json_value_free(root);
         return strdup("null");
     }
 
     // Use CodeIndex to find position (LSP uses 0-based, we use 1-based)
-    PositionEntry* entry = code_index_find_at_position(code_index, filename,
-                                                       (size_t)line + 1, (size_t)character + 1);
+    PositionEntry* entry = code_index_find_at_position(code_index, filename, params->position.line + 1, params->position.character + 1);
     free(filename);
 
     if (!entry || !entry->code_info) {
         LSP_LOG("No code element found at position");
-        json_value_free(root);
         return strdup("null");
     }
 
@@ -154,60 +122,17 @@ char* lsp_handle_definition(LSPServer* server, const char* params) {
     char* response = json_builder_to_string(builder);
     json_builder_free(builder);
     free(def_uri);
-    json_value_free(root);
 
     LSP_LOG("Returning definition: %s", response);
     return response;
 }
 
-char* lsp_handle_references(LSPServer* server, const char* params) {
-    LSP_LOG("references request: %s", params);
-
-    // Parse params
-    JSONValue* root = json_parse(params);
-    if (!root) {
-        LSP_LOG("Failed to parse references params");
-        return strdup("[]");
-    }
-
-    // Extract URI and position
-    JSONValue* text_document = json_object_get(root, "textDocument");
-    JSONValue* position = json_object_get(root, "position");
-    JSONValue* context = json_object_get(root, "context");
-
-    if (!text_document || !position) {
-        LSP_LOG("Missing textDocument or position");
-        json_value_free(root);
-        return strdup("[]");
-    }
-
-    const char* uri = json_get_string(json_object_get(text_document, "uri"));
-    int line = (int)json_get_number(json_object_get(position, "line"));
-    int character = (int)json_get_number(json_object_get(position, "character"));
-
-    // Check if we should include the declaration
-    bool include_declaration = false;
-    if (context) {
-        JSONValue* include_decl = json_object_get(context, "includeDeclaration");
-        if (include_decl) {
-            include_declaration = json_get_bool(include_decl);
-        }
-    }
-
-    if (!uri) {
-        LSP_LOG("No URI in references request");
-        json_value_free(root);
-        return strdup("[]");
-    }
-
-    LSP_LOG("Finding references at %s:%d:%d (includeDeclaration: %d)",
-            uri, line, character, include_declaration);
+char* lsp_handle_references(LSPServer* server, LspJsonTextDocumentPositionParams* params) {
 
     // Find the document
-    LSPDocument* doc = lsp_server_find_document(server, uri);
+    LSPDocument* doc = lsp_server_find_document(server, params->textDocument.uri);
     if (!doc) {
         LSP_LOG("Document not found");
-        json_value_free(root);
         return strdup("[]");
     }
 
@@ -215,26 +140,22 @@ char* lsp_handle_references(LSPServer* server, const char* params) {
     CodeIndex* code_index = lsp_document_get_code_index(doc);
     if (!code_index) {
         LSP_LOG("Code index not built");
-        json_value_free(root);
         return strdup("[]");
     }
 
     // Convert URI to filename
-    char* filename = lsp_uri_to_path(uri);
+    char* filename = lsp_uri_to_path(params->textDocument.uri);
     if (!filename) {
         LSP_LOG("Failed to convert URI to path");
-        json_value_free(root);
         return strdup("[]");
     }
 
     // Use CodeIndex to find position (LSP uses 0-based, we use 1-based)
-    PositionEntry* entry = code_index_find_at_position(code_index, filename,
-                                                       (size_t)line + 1, (size_t)character + 1);
+    PositionEntry* entry = code_index_find_at_position(code_index, filename,(size_t)params->position.line + 1, (size_t)params->position.character + 1);
     free(filename);
 
     if (!entry || !entry->code_info) {
         LSP_LOG("No code element found at position");
-        json_value_free(root);
         return strdup("[]");
     }
 
@@ -245,7 +166,7 @@ char* lsp_handle_references(LSPServer* server, const char* params) {
     json_start_array(builder);
 
     // Add the definition if requested
-    if (include_declaration) {
+    if (true) {
         SourceRange def_range = entry->code_info->definition;
         char* def_uri = lsp_path_to_uri(def_range.filename);
 
@@ -312,7 +233,6 @@ char* lsp_handle_references(LSPServer* server, const char* params) {
 
     char* response = json_builder_to_string(builder);
     json_builder_free(builder);
-    json_value_free(root);
 
     LSP_LOG("Returning references: %s", response);
     return response;
@@ -338,55 +258,62 @@ void lsp_handle_exit(LSPServer* server) {
     server->shutdown_requested = true;
 }
 
-void lsp_handle_did_open(LSPServer* server, const char* params) {
+/*
+typedef struct {
+	char* uri;
+	char* language_id;
+	int version;
+	char* text;
+} DidOpenParams;
+
+static int parse_did_open_params(const char* path, const JSONRawValue* raw_value, void* opaque) {
+	DidOpenParams* params = (DidOpenParams*) opaque;
+	if (strcmp(".textDocument.uri", path) == 0) {
+		params->uri = json_raw_value_get_escaped_string(raw_value);
+	} else 	if (strcmp(".textDocument.languageId", path) == 0) {
+		params->language_id = json_raw_value_get_escaped_string(raw_value);
+	} else 	if (strcmp(".textDocument.version", path) == 0) {
+		params->version = json_raw_value_get_number_string(raw_value);
+	} else 	if (strcmp(".textDocument.text", path) == 0) {
+		params->text = json_raw_value_get_escaped_string(raw_value);
+	}
+	return 0;
+}
+*/
+
+void lsp_handle_did_open(LSPServer* server, LspJsonDidOpenTextDocumentParams* params) {
+		lsp_document_open(server,
+			params->textDocument.uri,
+			params->textDocument.languageId,
+			params->textDocument.version,
+			params->textDocument.text);
+    /*
+
     LSP_LOG("didOpen called with params: %s", params);
 
-    // Parse params
-    JSONValue* root = json_parse(params);
-    if (!root) {
+    DidOpenParams parsed_params = {0};
+    if (json_parse_fast(params, parse_did_open_params, &parsed_params) != 0) {
         LSP_LOG("Failed to parse didOpen params");
         fprintf(stderr, "[LSP] Failed to parse didOpen params\n");
         return;
     }
 
-    LSP_LOG("Parsed JSON, type: %d", root->type);
-
-    JSONValue* text_document = json_object_get(root, "textDocument");
-    if (!text_document) {
-        LSP_LOG("No textDocument in params, root type is: %d", root->type);
-        if (root->type == JSON_OBJECT) {
-            LSP_LOG("Object has %d entries", root->object_value.count);
-            for (int i = 0; i < root->object_value.count; i++) {
-                LSP_LOG("  Key %d: %s", i, root->object_value.keys[i]);
-            }
-        }
-        json_value_free(root);
-        return;
-    }
-
-    const char* uri = json_get_string(json_object_get(text_document, "uri"));
-    const char* language_id = json_get_string(json_object_get(text_document, "languageId"));
-    int version = (int)json_get_number(json_object_get(text_document, "version"));
-    const char* text = json_get_string(json_object_get(text_document, "text"));
-
-    if (!uri || !text) {
+    if (!parsed_params.uri || !parsed_params.text)
         LSP_LOG("Missing uri or text in didOpen");
-        json_value_free(root);
-        return;
-    }
 
-    LSP_LOG("Document opened: %s (version %d, language: %s)", uri, version, language_id ? language_id : "unknown");
+    LSP_LOG("Document opened: %s (version %d, language: %s)", parsed_params.uri, parsed_params.version, parsed_params.language_id ? parsed_params.language_id : "unknown");
 
     // Open document
-    lsp_document_open(server, uri, language_id, version, text);
+    lsp_document_open(server, parsed_params.uri, parsed_params.language_id, parsed_params.version, parsed_params.text);
     LSP_LOG("Document opened successfully");
+    */
 
-    // Don't send diagnostics here - worker thread will send them after type inference
-
-    json_value_free(root);
 }
 
-void lsp_handle_did_change(LSPServer* server, const char* params) {
+void lsp_handle_did_change(LSPServer* server, LspJsonDidChangeTextDocumentParams* params) {
+	lsp_document_update(server, params);
+
+	/*
     // Parse params
     JSONValue* root = json_parse(params);
     if (!root) {
@@ -414,28 +341,28 @@ void lsp_handle_did_change(LSPServer* server, const char* params) {
     JSONValue* change = content_changes->array_value.elements[0];
     JSONValue* range_obj = json_object_get(change, "range");
     const char* change_text = json_get_string(json_object_get(change, "text"));
-    
+
     if (!change_text) {
         json_value_free(root);
         return;
     }
-    
+
     // Parse range if present (incremental update)
     TextRange range_value;
     TextRange* range_ptr = NULL;
-    
+
     if (range_obj) {
         JSONValue* start = json_object_get(range_obj, "start");
         JSONValue* end = json_object_get(range_obj, "end");
-        
+
         if (start && end) {
             range_value.start.line = (size_t)json_get_number(json_object_get(start, "line"));
             range_value.start.character = (size_t)json_get_number(json_object_get(start, "character"));
             range_value.end.line = (size_t)json_get_number(json_object_get(end, "line"));
             range_value.end.character = (size_t)json_get_number(json_object_get(end, "character"));
             range_ptr = &range_value;
-            
-            LSP_LOG("Document changed: %s (version %d) - incremental update [%zu:%zu - %zu:%zu]", 
+
+            LSP_LOG("Document changed: %s (version %d) - incremental update [%zu:%zu - %zu:%zu]",
                     uri, version, range_value.start.line, range_value.start.character,
                     range_value.end.line, range_value.end.character);
         }
@@ -446,9 +373,12 @@ void lsp_handle_did_change(LSPServer* server, const char* params) {
     lsp_document_update(server, uri, version, range_ptr, change_text);
     // Diagnostics will be sent after the debounced parse completes
     json_value_free(root);
+    */
 }
 
-void lsp_handle_did_close(LSPServer* server, const char* params) {
+void lsp_handle_did_close(LSPServer* server, LspJsonDidCloseTextDocumentParams* params) {
+	lsp_document_close(server, params->textDocument.uri);
+	/*
     // Parse params
     JSONValue* root = json_parse(params);
     if (!root) {
@@ -470,12 +400,13 @@ void lsp_handle_did_close(LSPServer* server, const char* params) {
 
     LSP_LOG("Document closed: %s", uri);
 
-    lsp_document_close(server, uri);
+    lsp_document_close(server, params->textDocument.uri);
 
     json_value_free(root);
+    */
 }
 
-void lsp_handle_did_save(LSPServer* server, const char* params) {
+void lsp_handle_did_save(LSPServer* server, LspJsonDidSaveTextDocumentParams* params) {
     LSP_LOG("Document saved");
     (void)server;
     (void)params;

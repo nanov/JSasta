@@ -162,8 +162,6 @@ static LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     // But we resolve here as a safety measure for types from other sources
     type_info = type_info_resolve_alias(type_info);
 
-    TypeContext* ctx = gen->type_ctx;
-
     // Check integer types by bit width
     if (type_info_is_integer(type_info)) {
         int bit_width = type_info_get_int_width(type_info);
@@ -1226,32 +1224,32 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 // Check if this is a namespace member access (e.g., math.add)
                 if (obj->type == AST_IDENTIFIER) {
                     SymbolEntry* obj_entry = node->call.callee->member_access.symbol_entry;
-                    
+
                     // If the object is a namespace (imported module)
                     if (symbol_is_namespace(obj_entry)) {
                         Module* imported_module = symbol_get_imported_module(obj_entry);
-                        
+
                         // Find the exported symbol
                         ExportedSymbol* exported = module_find_export(imported_module, prop);
                         if (exported && exported->declaration && exported->declaration->type == AST_FUNCTION_DECL) {
                             // Use the mangled function name
                             char* mangled_name = module_mangle_symbol(imported_module->module_prefix, prop);
-                            
+
                             // Fall through to regular function call logic with the mangled name
                             // We'll handle this by treating it as a regular identifier call
                             // Create a temporary identifier node with the mangled name
                             ASTNode temp_callee = *node->call.callee;
                             temp_callee.type = AST_IDENTIFIER;
                             temp_callee.identifier.name = mangled_name;
-                            
+
                             // Temporarily replace the callee
                             node->call.callee = &temp_callee;
-                            
+
                             // Fall through to regular call handling below
                             goto handle_regular_call;
                         }
                     }
-                    
+
                     // Not a namespace, try runtime function
                     char full_name[256];
                     snprintf(full_name, sizeof(full_name), "%s.%s",
@@ -1269,7 +1267,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         prop);
                 return NULL;
             }
-            
+
         handle_regular_call:
 
             // Regular function call (identifier only)
@@ -1438,47 +1436,47 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 // First check if this is a namespace member call (e.g., math.add())
                 if (node->method_call.object->type == AST_IDENTIFIER) {
                     SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->method_call.object->identifier.name);
-                    
+
                     // Check if this is a namespace
                     if (symbol_is_namespace(entry)) {
                         // This is a namespace call! Handle it as a regular function call
                         Module* imported_module = symbol_get_imported_module(entry);
-                        
+
                         // Find the specialization in the module's TypeContext
                         TypeContext* module_type_ctx = imported_module->ast->type_ctx;
                         const char* member_name = node->method_call.method_name;
                         TypeInfo* func_type = type_context_find_function_type(module_type_ctx, member_name);
-                        
+
                         if (!func_type) {
-                            log_error_at(&node->loc, "Function '%s' not found in module '%s'", 
+                            log_error_at(&node->loc, "Function '%s' not found in module '%s'",
                                         member_name, imported_module->relative_path);
                             return NULL;
                         }
-                        
+
                         // Get argument types for specialization lookup
                         TypeInfo** arg_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->method_call.arg_count);
                         for (int i = 0; i < node->method_call.arg_count; i++) {
                             arg_types[i] = node->method_call.args[i]->type_info;
                         }
-                        
+
                         // Find the specialization
                         FunctionSpecialization* spec = specialization_context_find_by_type_info(
                             module_type_ctx, member_name, arg_types, node->method_call.arg_count);
                         free(arg_types);
-                        
+
                         if (!spec) {
-                            log_error_at(&node->loc, "No specialization found for %s.%s", 
+                            log_error_at(&node->loc, "No specialization found for %s.%s",
                                         imported_module->relative_path, member_name);
                             return NULL;
                         }
-                        
+
                         // Get the function from the module
                         LLVMValueRef func = LLVMGetNamedFunction(gen->module, spec->specialized_name);
                         if (!func) {
                             log_error_at(&node->loc, "Function '%s' not generated", spec->specialized_name);
                             return NULL;
                         }
-                        
+
                         // Generate arguments
                         LLVMValueRef* args = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * node->method_call.arg_count);
                         for (int i = 0; i < node->method_call.arg_count; i++) {
@@ -1488,16 +1486,16 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                                 return NULL;
                             }
                         }
-                        
+
                         // Call the function
-                        LLVMValueRef result = LLVMBuildCall2(gen->builder, 
-                            LLVMGlobalGetValueType(func), func, args, node->method_call.arg_count, 
+                        LLVMValueRef result = LLVMBuildCall2(gen->builder,
+                            LLVMGlobalGetValueType(func), func, args, node->method_call.arg_count,
                             "namespace_call");
-                        
+
                         free(args);
                         return result;
                     }
-                    
+
                     // Not a namespace - regular instance method call
                     if (!entry || !entry->value) {
                         log_error_at(&node->loc, "Undefined variable: %s", node->method_call.object->identifier.name);
@@ -2315,14 +2313,14 @@ static void codegen_initialize_types(CodeGen* gen) {
                     entry = entry->next;
                     continue;
                 }
-                
+
                 // Skip if struct has no properties (empty struct - just create opaque type)
                 if (type->data.object.property_count == 0) {
                     // Create empty named struct for structs with no properties (only methods)
                     LLVMTypeRef struct_type = LLVMStructCreateNamed(gen->context, type->type_name);
                     LLVMStructSetBody(struct_type, NULL, 0, 0);
                     entry->llvm_type = struct_type;
-                    
+
                     log_verbose("Pre-generated empty LLVM struct type '%s' (0 fields)", type->type_name);
                     progress = true;
                     entry = entry->next;
@@ -2502,7 +2500,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
     // Only create wrapper main function for entry module
     LLVMValueRef main_func = NULL;
     LLVMBasicBlockRef entry = NULL;
-    
+
     if (is_entry_module) {
         // Create main function
         LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), NULL, 0, 0);
@@ -2644,7 +2642,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
             // Construct the mangled main function name
             char mangled_main[256];
             snprintf(mangled_main, 256, "%s__main", gen->type_ctx->module_prefix);
-            
+
             // Look up the function
             LLVMValueRef entry_main = LLVMGetNamedFunction(gen->module, mangled_main);
             if (entry_main) {
@@ -2652,7 +2650,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
                 LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(entry_main), entry_main, NULL, 0, "");
             }
         }
-        
+
         // Add return 0 if not present
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
             LLVMBuildRet(gen->builder, LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0));

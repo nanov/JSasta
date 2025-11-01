@@ -37,13 +37,13 @@ typedef struct {
     const char* method_name;       // Name of the method
     TypeInfo* signature;           // Function type signature
     MethodKind kind;               // How to invoke this method
-    
+
     // For METHOD_INTRINSIC: direct LLVM codegen
     LLVMValueRef (*codegen)(CodeGen* gen, LLVMValueRef* args, int arg_count);
-    
+
     // For METHOD_FUNCTION: compiled JSasta function
     void* function_ptr;
-    
+
     // For METHOD_EXTERNAL: external C function
     const char* external_name;
 } MethodImpl;
@@ -51,23 +51,23 @@ typedef struct {
 // Trait definition
 struct Trait {
     const char* name;
-    
+
     // Generic type parameters (e.g., [Rhs] for Add<Rhs>)
     TraitTypeParam* type_params;
     int type_param_count;
-    
+
     // Associated types (e.g., [Output] for Add)
     TraitAssocType* assoc_types;
     int assoc_type_count;
-    
+
     // Method signatures required by this trait
     const char** method_names;
     TypeInfo** method_signatures;
     int method_count;
-    
+
     // Linked list of implementations
     TraitImpl* first_impl;
-    
+
     struct Trait* next;
 };
 
@@ -75,19 +75,19 @@ struct Trait {
 struct TraitImpl {
     Trait* trait;
     TypeInfo* impl_type;                // Type implementing trait (e.g., int)
-    
+
     // Type parameter bindings (e.g., [double] for Add<double>)
     TypeInfo** type_param_bindings;
     int type_param_count;
-    
+
     // Associated type bindings (e.g., [double] for Output)
     TypeInfo** assoc_type_bindings;
     int assoc_type_count;
-    
+
     // Method implementations
     MethodImpl* methods;
     int method_count;
-    
+
     struct TraitImpl* next;
 };
 
@@ -256,10 +256,10 @@ MethodImpl* trait_get_unary_method(
 // === Built-in Trait Initialization ===
 
 // Initialize all built-in traits (Add, Sub, Mul, etc.)
-void traits_init_builtins(TraitRegistry* registry, TypeContext* type_ctx);
+void traits_init_builtins(TraitRegistry* registry);
 
 // Register all built-in type implementations
-void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ctx);
+void traits_register_builtin_impls(TraitRegistry* registry);
 
 // === On-Demand Trait Implementation for Builtins ===
 
@@ -267,12 +267,12 @@ void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ct
 // Implements on-demand for generic builtin types that can't be registered upfront
 // For arrays: implements Index<i32> -> ElementType
 // User-defined types must implement Index explicitly
-void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx);
+void trait_ensure_index_impl(TypeInfo* type);
 
 // Ensure RefIndex<Idx> is implemented for builtin indexable types (arrays, strings, etc.)
-void trait_ensure_ref_index_impl(TypeInfo* type, TypeContext* type_ctx);
+void trait_ensure_ref_index_impl(TypeInfo* type);
 
 // Ensure Length is implemented for builtin types with length (arrays, strings, etc.)
-void trait_ensure_length_impl(TypeInfo* type, TypeContext* type_ctx);
+void trait_ensure_length_impl(TypeInfo* type);
 
 #endif // JSASTA_TRAITS_H

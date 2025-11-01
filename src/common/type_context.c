@@ -127,8 +127,8 @@ TypeContext* type_context_create() {
     // Initialize trait registry with built-in traits
     // Each TypeContext gets its own trait registry, but all reference the same global types
     ctx->trait_registry = trait_registry_create();
-    traits_init_builtins(ctx->trait_registry, ctx);
-    traits_register_builtin_impls(ctx->trait_registry, ctx);
+    traits_init_builtins(ctx->trait_registry);
+    traits_register_builtin_impls(ctx->trait_registry);
 
     return ctx;
 }
@@ -493,25 +493,25 @@ static bool type_arrays_match(TypeInfo** types1, TypeInfo** types2, int count) {
     for (int i = 0; i < count; i++) {
         TypeInfo* t1 = types1[i];
         TypeInfo* t2 = types2[i];
-        
+
         // Exact match
         if (t1 == t2) continue;
-        
+
         // Resolve aliases on both sides
         t1 = type_info_resolve_alias(t1);
         t2 = type_info_resolve_alias(t2);
-        
+
         // Check again after alias resolution
         if (t1 == t2) continue;
-        
+
         // Check for implicit ref conversion: T <-> ref<T>
         // Unwrap one level of ref on both sides (returns the type itself if not a ref)
         // Then compare: this allows counter_t to match ref<counter_t>
-        if (type_info_resolve_alias(type_info_get_ref_target(t1)) == 
+        if (type_info_resolve_alias(type_info_get_ref_target(t1)) ==
             type_info_resolve_alias(type_info_get_ref_target(t2))) {
             continue;
         }
-        
+
         return false;
     }
     return true;

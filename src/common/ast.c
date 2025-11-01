@@ -515,6 +515,7 @@ ASTNode* ast_clone(ASTNode* node) {
         case AST_MEMBER_ACCESS:
             clone->member_access.object = ast_clone(node->member_access.object);
             clone->member_access.property = strdup(node->member_access.property);
+            clone->member_access.property_loc = node->member_access.property_loc;
             break;
 
         case AST_MEMBER_ASSIGNMENT:

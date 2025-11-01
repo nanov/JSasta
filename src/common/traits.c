@@ -360,8 +360,7 @@ MethodImpl* trait_get_unary_method(
 
 // === Built-in Trait Initialization ===
 
-void traits_init_builtins(TraitRegistry* registry, TypeContext* type_ctx) {
-		(void) type_ctx;
+void traits_init_builtins(TraitRegistry* registry) {
     // Add<Rhs> { type Output; fn add(self, rhs: Rhs) -> Output }
     TraitTypeParam add_type_params[] = {
         { .name = "Rhs", .default_type = NULL, .constraint = NULL }
@@ -683,7 +682,7 @@ static LLVMValueRef intrinsic_array_index(CodeGen* gen, LLVMValueRef* args, int 
 
 // === On-Demand Trait Implementation for Builtins ===
 
-void trait_ensure_index_impl(TypeInfo* type, TypeContext* type_ctx) {
+void trait_ensure_index_impl(TypeInfo* type) {
     if (!type || !Trait_Index) {
         return; // Nothing to do
     }
@@ -770,7 +769,7 @@ static LLVMValueRef intrinsic_array_ref_index(CodeGen* gen, LLVMValueRef* args, 
     return NULL;
 }
 
-void trait_ensure_ref_index_impl(TypeInfo* type, TypeContext* type_ctx) {
+void trait_ensure_ref_index_impl(TypeInfo* type) {
     if (!type || !Trait_RefIndex) {
         return; // Nothing to do
     }
@@ -826,7 +825,7 @@ static LLVMValueRef intrinsic_array_length(CodeGen* gen, LLVMValueRef* args, int
     return NULL;
 }
 
-void trait_ensure_length_impl(TypeInfo* type, TypeContext* type_ctx) {
+void trait_ensure_length_impl(TypeInfo* type) {
     if (!type || !Trait_Length) {
         return; // Nothing to do
     }

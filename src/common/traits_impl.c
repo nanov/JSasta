@@ -11,15 +11,15 @@
 static void promote_int_operands(CodeGen* gen, LLVMValueRef* left, LLVMValueRef* right) {
     LLVMTypeRef left_type = LLVMTypeOf(*left);
     LLVMTypeRef right_type = LLVMTypeOf(*right);
-    
+
     // If types are the same, no conversion needed
     if (left_type == right_type) {
         return;
     }
-    
+
     unsigned left_width = LLVMGetIntTypeWidth(left_type);
     unsigned right_width = LLVMGetIntTypeWidth(right_type);
-    
+
     // Promote to the larger width
     if (left_width < right_width) {
         // Extend left to match right (use sign extend for now, could be improved)
@@ -354,30 +354,30 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
     if (left == right) {
         return left;
     }
-    
+
     // Handle double promotions (any int + double -> double)
     if (type_info_is_double(left)) return left;
     if (type_info_is_double(right)) return right;
-    
+
     // Both are integers - apply C# integer promotion rules
     if (type_info_is_integer(left) && type_info_is_integer(right)) {
         int left_width = type_info_get_int_width(left);
         int right_width = type_info_get_int_width(right);
         bool left_signed = type_info_is_signed_int(left);
         bool right_signed = type_info_is_signed_int(right);
-        
+
         // Promote to the larger width
         if (left_width > right_width) return left;
         if (right_width > left_width) return right;
-        
+
         // Same width: unsigned wins in C#
         if (!left_signed) return left;
         if (!right_signed) return right;
-        
+
         // Both signed, same width
         return left;
     }
-    
+
     // Default: return left
     return left;
 }
@@ -674,16 +674,15 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
 
 // === Register All Built-in Type Implementations ===
 
-void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ctx) {
+void traits_register_builtin_impls(TraitRegistry* registry) {
     (void)registry; // Traits are already defined
-    (void)type_ctx; // Not needed anymore - use global types directly
-    
+
     TypeInfo* int_type = Type_I32;
     TypeInfo* double_type = Type_Double;
     TypeInfo* bool_type = Type_Bool;
-    
+
     // === Add Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_Add, "add", intrinsic_int_add, NULL, NULL, NULL, NULL);
     // int + double -> double
@@ -692,9 +691,9 @@ void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ct
     REGISTER_BINARY_OP(Trait_Add, double_type, int_type, double_type, "add", intrinsic_double_int_add);
     // double + double -> double
     REGISTER_BINARY_OP(Trait_Add, double_type, double_type, double_type, "add", intrinsic_double_add);
-    
+
     // === Sub Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_Sub, "sub", NULL, intrinsic_int_sub, NULL, NULL, NULL);
     // int - double -> double
@@ -703,9 +702,9 @@ void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ct
     REGISTER_BINARY_OP(Trait_Sub, double_type, int_type, double_type, "sub", intrinsic_double_int_sub);
     // double - double -> double
     REGISTER_BINARY_OP(Trait_Sub, double_type, double_type, double_type, "sub", intrinsic_double_sub);
-    
+
     // === Mul Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_Mul, "mul", NULL, NULL, intrinsic_int_mul, NULL, NULL);
     // int * double -> double
@@ -714,9 +713,9 @@ void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ct
     REGISTER_BINARY_OP(Trait_Mul, double_type, int_type, double_type, "mul", intrinsic_double_int_mul);
     // double * double -> double
     REGISTER_BINARY_OP(Trait_Mul, double_type, double_type, double_type, "mul", intrinsic_double_mul);
-    
+
     // === Div Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_Div, "div", NULL, NULL, NULL, intrinsic_int_div, NULL);
     // int / double -> double
@@ -725,95 +724,95 @@ void traits_register_builtin_impls(TraitRegistry* registry, TypeContext* type_ct
     REGISTER_BINARY_OP(Trait_Div, double_type, int_type, double_type, "div", intrinsic_double_int_div);
     // double / double -> double
     REGISTER_BINARY_OP(Trait_Div, double_type, double_type, double_type, "div", intrinsic_double_div);
-    
+
     // === Rem Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_Rem, "rem", NULL, NULL, NULL, NULL, intrinsic_int_rem);
-    
+
     // === BitAnd Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_BITWISE_ALL(Trait_BitAnd, "bitand", intrinsic_int_bitand);
     // bool & bool -> bool
     REGISTER_BINARY_OP(Trait_BitAnd, bool_type, bool_type, bool_type, "bitand", intrinsic_bool_bitand);
-    
+
     // === BitOr Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_BITWISE_ALL(Trait_BitOr, "bitor", intrinsic_int_bitor);
     // bool | bool -> bool
     REGISTER_BINARY_OP(Trait_BitOr, bool_type, bool_type, bool_type, "bitor", intrinsic_bool_bitor);
-    
+
     // === BitXor Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_BITWISE_ALL(Trait_BitXor, "bitxor", intrinsic_int_bitxor);
     // bool ^ bool -> bool
     REGISTER_BINARY_OP(Trait_BitXor, bool_type, bool_type, bool_type, "bitxor", intrinsic_bool_bitxor);
-    
+
     // === Shl Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_SHIFT_ALL(Trait_Shl, "shl", intrinsic_int_shl, NULL);
-    
+
     // === Shr Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_SHIFT_ALL(Trait_Shr, "shr", NULL, intrinsic_int_shr);
-    
+
     // === Eq Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_EQUALITY_ALL(Trait_Eq);
     REGISTER_EQUALITY_OPS(Trait_Eq, int_type, double_type);
     REGISTER_EQUALITY_OPS(Trait_Eq, double_type, int_type);
     REGISTER_EQUALITY_OPS(Trait_Eq, double_type, double_type);
     REGISTER_EQUALITY_OPS(Trait_Eq, bool_type, bool_type);
-    
+
     // === Ord Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_COMPARISONS_ALL(Trait_Ord);
     REGISTER_COMPARISON_OPS(Trait_Ord, int_type, double_type);
     REGISTER_COMPARISON_OPS(Trait_Ord, double_type, int_type);
     REGISTER_COMPARISON_OPS(Trait_Ord, double_type, double_type);
-    
+
     // === Not Trait ===
-    
+
     // !bool -> bool
     REGISTER_UNARY_OP(Trait_Not, bool_type, bool_type, "not", intrinsic_bool_not);
-    
+
     // === Neg Trait ===
-    
+
     // All integer types
     REGISTER_INT_UNARY_ALL(Trait_Neg, "neg", intrinsic_int_neg);
     // -double -> double
     REGISTER_UNARY_OP(Trait_Neg, double_type, double_type, "neg", intrinsic_double_neg);
-    
+
     // === AddAssign Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_AddAssign, "add_assign", intrinsic_int_add_assign, NULL, NULL, NULL, NULL);
     // double += double
     REGISTER_BINARY_OP(Trait_AddAssign, double_type, double_type, double_type, "add_assign", intrinsic_double_add_assign);
-    
+
     // === SubAssign Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_SubAssign, "sub_assign", NULL, intrinsic_int_sub_assign, NULL, NULL, NULL);
     // double -= double
     REGISTER_BINARY_OP(Trait_SubAssign, double_type, double_type, double_type, "sub_assign", intrinsic_double_sub_assign);
-    
+
     // === MulAssign Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_MulAssign, "mul_assign", NULL, NULL, intrinsic_int_mul_assign, NULL, NULL);
     // double *= double
     REGISTER_BINARY_OP(Trait_MulAssign, double_type, double_type, double_type, "mul_assign", intrinsic_double_mul_assign);
-    
+
     // === DivAssign Trait ===
-    
+
     // All integer type combinations
     REGISTER_INT_ARITHMETIC(Trait_DivAssign, "div_assign", NULL, NULL, NULL, intrinsic_int_div_assign, NULL);
     // double /= double

@@ -4,6 +4,7 @@
 #include "../common/jsasta_compiler.h"
 #include "../common/diagnostics.h"
 #include "../common/string_utils.h"
+#include "lsp/tmp_protocol.h"
 #include "lsp_protocol.h"
 #include <stdbool.h>
 #include <stdatomic.h>
@@ -22,29 +23,29 @@ typedef struct SourceRange {
 // Information about a code element for LSP features
 typedef struct CodeInfo {
     char* name;
-    
+
     enum {
         CODE_TYPE,        // struct/type definition
-        CODE_FUNCTION,    
+        CODE_FUNCTION,
         CODE_VARIABLE,
         CODE_PARAMETER,
         CODE_NAMESPACE,
         CODE_MEMBER       // struct member
     } kind;
-    
+
     TypeInfo* type_info;
     SourceRange definition;
-    
+
     char* description;  // For hover
-    
+
     // Key: Use ASTNode* declaration as identifier
     ASTNode* decl_node;
-    
+
     // Temporary storage during traversal - converted to positions array later
     SourceRange* temp_references;
     int temp_reference_count;
     int temp_reference_capacity;
-    
+
     struct CodeInfo* next;
 } CodeInfo;
 
@@ -84,21 +85,21 @@ struct LSPDocument {
     char* filename;          // Filesystem path (for AST location info)
     JsaStringBuilder* content;  // Current document content (mutable for incremental updates)
     int version;             // Document version (incremented on changes)
-    
+
     // Code index for LSP features (Go to Definition, Hover, References, etc)
     // Only accessed by main thread, no synchronization needed
     CodeIndex* code_index;
-    
+
     // Per-document work queue for type inference
     AnalysisWork* pending_work;  // NULL if no work, otherwise work for this document (protected by work_mutex)
-    
+
     // Completed type inference work with typed AST for code index rebuild
     // Worker thread stores completed work here, main thread consumes it
     // If not NULL, code index needs to be rebuilt with type information
     _Atomic(AnalysisWork*) completed_work;  // Atomic pointer, no mutex needed
-    
+
     bool needs_reparse;      // Flag to track if document needs reparsing
-    
+
     // Debouncing for document changes
     void* debounce_timer;    // Platform-specific timer (timer_t on POSIX)
     bool timer_active;       // Whether a timer is currently scheduled
@@ -111,22 +112,22 @@ typedef struct {
     int client_pid;
     char* root_uri;
     char* client_name;
-    
+
     // Server state
     bool initialized;
     bool shutdown_requested;
-    
+
     // Documents
     LSPDocument** documents;
     int document_count;
     int document_capacity;
-    
+
     // Server capabilities
     LSPServerCapabilities capabilities;
-    
+
     // Mutex for stdout writes (worker threads send diagnostics)
     pthread_mutex_t write_mutex;
-    
+
     // Work queue for type inference worker
     pthread_mutex_t work_mutex;        // Protects access to all documents' pending_work
     pthread_cond_t work_available;     // Condition variable to signal when work is ready
@@ -153,7 +154,7 @@ LSPDocument* lsp_document_open(LSPServer* server, const char* uri, const char* l
 // Update a document (didChange notification)
 // If range is NULL, it's a full document sync (text replaces everything)
 // If range is provided, it's an incremental update (text replaces the range)
-void lsp_document_update(LSPServer* server, const char* uri, int version, const TextRange* range, const char* text);
+void lsp_document_update(LSPServer* server, LspJsonDidChangeTextDocumentParams* params); //  const char* uri, int version, const TextRange* range, const char* text);
 
 // Close a document (didClose notification)
 void lsp_document_close(LSPServer* server, const char* uri);
@@ -171,22 +172,22 @@ void lsp_document_get_diagnostics(AnalysisWork* work, LSPDiagnostic** out_diagno
 // === LSP Request Handlers ===
 
 // Handle initialize request
-char* lsp_handle_initialize(LSPServer* server, const char* params);
+char* lsp_handle_initialize(LSPServer* server, LspJsonInitializeParams* params);
 
 // Handle shutdown request
 char* lsp_handle_shutdown(LSPServer* server);
 
 // Handle textDocument/hover request
-char* lsp_handle_hover(LSPServer* server, const char* params);
+char* lsp_handle_hover(LSPServer* server, LspJsonHoverParams* params);
 
 // Handle textDocument/completion request
-char* lsp_handle_completion(LSPServer* server, const char* params);
+char* lsp_handle_completion(LSPServer* server, LspJsonCompletionParams* params);
 
 // Handle textDocument/definition request
-char* lsp_handle_definition(LSPServer* server, const char* params);
+char* lsp_handle_definition(LSPServer* server, LspJsonTextDocumentPositionParams* params);
 
 // Handle textDocument/references request
-char* lsp_handle_references(LSPServer* server, const char* params);
+char* lsp_handle_references(LSPServer* server, LspJsonTextDocumentPositionParams* params);
 
 // Handle textDocument/documentSymbol request
 char* lsp_handle_document_symbol(LSPServer* server, const char* params);
@@ -200,16 +201,16 @@ void lsp_handle_initialized(LSPServer* server);
 void lsp_handle_exit(LSPServer* server);
 
 // Handle textDocument/didOpen notification
-void lsp_handle_did_open(LSPServer* server, const char* params);
+void lsp_handle_did_open(LSPServer* server, LspJsonDidOpenTextDocumentParams* params);
 
 // Handle textDocument/didChange notification
-void lsp_handle_did_change(LSPServer* server, const char* params);
+void lsp_handle_did_change(LSPServer* server, LspJsonDidChangeTextDocumentParams* params);
 
 // Handle textDocument/didClose notification
-void lsp_handle_did_close(LSPServer* server, const char* params);
+void lsp_handle_did_close(LSPServer* server, LspJsonDidCloseTextDocumentParams* params);
 
 // Handle textDocument/didSave notification
-void lsp_handle_did_save(LSPServer* server, const char* params);
+void lsp_handle_did_save(LSPServer* server, LspJsonDidSaveTextDocumentParams* params);
 
 // === Helper Functions ===
 
@@ -220,10 +221,10 @@ char* lsp_uri_to_path(const char* uri);
 char* lsp_path_to_uri(const char* path);
 
 // Find symbol at position in document
-SymbolEntry* lsp_find_symbol_at_position(LSPDocument* doc, LSPPosition pos);
+SymbolEntry* lsp_find_symbol_at_position(LSPDocument* doc, TextPosition pos);
 
 // Find node at position in AST
-ASTNode* lsp_find_node_at_position(ASTNode* ast, LSPPosition pos);
+ASTNode* lsp_find_node_at_position(ASTNode* ast, TextPosition pos);
 
 // Find identifier at position (line, character are 0-based)
 ASTNode* lsp_find_identifier_at_position(ASTNode* ast, int line, int character);
@@ -251,14 +252,14 @@ CodeIndex* code_index_create(void);
 void code_index_free(CodeIndex* index);
 
 // Add a definition to the code index
-void code_index_add_definition(CodeIndex* index, ASTNode* decl_node, const char* name, 
+void code_index_add_definition(CodeIndex* index, ASTNode* decl_node, const char* name,
                                 int kind, TypeInfo* type_info, SourceRange range);
 
 // Add a reference to an existing code item
 void code_index_add_reference(CodeIndex* index, ASTNode* decl_node, SourceRange range);
 
 // Find code info at a specific position (returns NULL if nothing found)
-PositionEntry* code_index_find_at_position(CodeIndex* index, const char* filename, 
+PositionEntry* code_index_find_at_position(CodeIndex* index, const char* filename,
                                            size_t line, size_t column);
 
 // Build code index from AST (called after type inference)

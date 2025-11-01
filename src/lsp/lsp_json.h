@@ -2,10 +2,12 @@
 #define LSP_JSON_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // Simple JSON builder for LSP responses
 // This is a minimal implementation to avoid external dependencies like json-c
+
 
 typedef struct JSONBuilder JSONBuilder;
 
@@ -62,7 +64,7 @@ struct JSONValue {
     union {
         bool bool_value;
         int64_t number_value;
-        char* string_value;
+	      char* string_value;
         struct {
             JSONValue** elements;
             int count;
@@ -75,8 +77,25 @@ struct JSONValue {
     };
 };
 
+typedef struct {
+    const char* input;
+    char _path_buffer[128];
+    char* previous_path;
+    size_t pos;
+    size_t length;
+} JSONParser;
+
+typedef int (JSONParserObjectCallback)(JSONParser* parser, const char* key, void* user_data);
+typedef int (JSONParserArrayCallback)(JSONParser* parser, int index, void* user_data);
+
 // Parse JSON string to JSONValue tree
 JSONValue* json_parse(const char* json);
+// fast iterative appraoch
+JSONParser json_parser_create(const char* json, size_t size);
+int json_parse_fast_object(JSONParser* parser, JSONParserObjectCallback* callback, void* user_data);
+int json_parse_fast_array(JSONParser* parser, JSONParserArrayCallback* callback, void* user_data);
+int json_get_fast_string(JSONParser* parser, char** target);
+int json_get_fast_integer(JSONParser* parser, int64_t* target);
 
 // Free JSONValue tree
 void json_value_free(JSONValue* value);

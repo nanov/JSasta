@@ -1,8 +1,9 @@
-#ifndef LSP_PROTOCOL_H
-#define LSP_PROTOCOL_H
+#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "common/string_utils.h"
+#include "tmp_protocol.h"
 
 // JSON-RPC message types
 typedef enum {
@@ -11,52 +12,10 @@ typedef enum {
     LSP_MSG_NOTIFICATION
 } LSPMessageType;
 
-// LSP message structure (abstract)
-typedef struct {
-    LSPMessageType type;
-    char* jsonrpc;  // Always "2.0"
-    union {
-        struct {
-            int64_t id;      // Request ID (can be number or string, we use number)
-            char* method;
-            char* params;    // JSON string
-        } request;
-        struct {
-            int64_t id;
-            char* result;    // JSON string (NULL if error)
-            char* error;     // JSON string (NULL if success)
-        } response;
-        struct {
-            char* method;
-            char* params;    // JSON string
-        } notification;
-    };
-} LSPMessage;
-
-// LSP Initialization options
-typedef struct {
-    int process_id;
-    char* root_uri;
-    char* client_name;
-    char* client_version;
-} LSPInitializeParams;
-
-// LSP Position (line and character)
-typedef struct {
-    int line;       // 0-based
-    int character;  // 0-based (UTF-16 code units)
-} LSPPosition;
-
-// LSP Range
-typedef struct {
-    LSPPosition start;
-    LSPPosition end;
-} LSPRange;
-
 // LSP Location
 typedef struct {
     char* uri;
-    LSPRange range;
+    TextRange range;
 } LSPLocation;
 
 // Diagnostic severity
@@ -69,7 +28,7 @@ typedef enum {
 
 // LSP Diagnostic
 typedef struct {
-    LSPRange range;
+    TextRange range;
     LSPDiagnosticSeverity severity;
     char* code;
     char* source;
@@ -92,13 +51,13 @@ typedef struct {
 // Text document position params (for hover, completion, etc.)
 typedef struct {
     LSPTextDocumentIdentifier text_document;
-    LSPPosition position;
+    TextPosition position;
 } LSPTextDocumentPositionParams;
 
 // Hover result
 typedef struct {
     char* contents;  // Markdown string
-    LSPRange* range; // Optional
+    TextRange* range; // Optional
 } LSPHover;
 
 // Completion item
@@ -128,18 +87,11 @@ typedef struct {
 int lsp_check_stdin(int timeout_ms);
 
 // Read a message from stdin (reads Content-Length header and body)
-LSPMessage* lsp_read_message(void);
+// LSPMessage* lsp_read_message(void);
+int lsp_read_json_message(LspJsonMessage* message);
 
 // Write a message to stdout
 void lsp_write_message(const char* json_content);
-
-// Free an LSP message
-void lsp_message_free(LSPMessage* msg);
-
-// === JSON Parsing/Serialization ===
-
-// Parse JSON-RPC message from string
-LSPMessage* lsp_parse_message(const char* json);
 
 // Serialize response to JSON
 char* lsp_serialize_response(int64_t id, const char* result);
@@ -166,5 +118,3 @@ char* lsp_create_completion_response(LSPCompletionItem* items, int count);
 
 // Create locations response JSON (for definition, references)
 char* lsp_create_locations_response(LSPLocation* locations, int count);
-
-#endif // LSP_PROTOCOL_H

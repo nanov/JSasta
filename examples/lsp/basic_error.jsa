@@ -1,9 +1,14 @@
 external prinf(string, ...): void;
 
 
-printf("ss");
+prinf("mitko");
 
-function a(name) {
+
+
+function a(name, dd) {
   name = "dd";
-
+  dd = 1;
 }
+
+
+a()

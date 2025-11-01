@@ -1,3 +1,4 @@
+#include "common/string_utils.h"
 #include "jsasta_compiler.h"
 #include "traits.h"
 #include "operator_utils.h"
@@ -546,9 +547,7 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
                 ASTNode* method = node->struct_decl.methods[i];
 
                 // Create mangled name: struct_name.method_name
-                char* mangled_name = (char*)malloc(strlen(struct_name) + strlen(method->func_decl.name) + 2);
-                sprintf(mangled_name, "%s.%s", struct_name, method->func_decl.name);
-
+                char* mangled_name = str_format("%s.%s", struct_name, method->func_decl.name);
                 // Update the method's name to the mangled name
                 free(method->func_decl.name);
                 method->func_decl.name = mangled_name;
@@ -603,6 +602,9 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                 // Store the function declaration node in the TypeInfo
                 func_type->data.function.func_decl_node = node;
 
+                // Store the type info on the node for LSP and other uses
+                node->type_info = func_type;
+
                 log_verbose("Created %sfunction type: %s", body ? "" : "external ", func_type->type_name);
 
                 // If fully typed (external functions have no body and are always fully typed)
@@ -628,14 +630,21 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                             // Create symbol table with parameters
                             SymbolTable* temp_symbols = symbol_table_create(symbols);
                             for (int i = 0; i < param_count; i++) {
+                                // Pass the function node as the declaration node for parameters
+                                // This allows LSP to find the parameter definitions
                                 symbol_table_insert_var_declaration(temp_symbols,
                                                   node->func_decl.params[i],
                                                   param_type_hints[i], false, node);
+                                // Set param_index for LSP go-to-definition
+                                SymbolEntry* param_entry = symbol_table_lookup(temp_symbols, node->func_decl.params[i]);
+                                if (param_entry) {
+                                    param_entry->param_index = i;
+                                }
                             }
 
                             // Store the symbol table in the cloned body
                             cloned_body->symbol_table = temp_symbols;
-                            
+
                             // Run infer_literal_types to set up the structure
                             infer_literal_types(cloned_body, temp_symbols, type_ctx, diag);
 
@@ -1303,8 +1312,8 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             TypeInfo* index_target_type = type_info_get_ref_target(object_type);
 
             // For builtin indexable types (arrays), auto-implement Index and RefIndex traits
-            trait_ensure_index_impl(index_target_type, type_ctx);
-            trait_ensure_ref_index_impl(index_target_type, type_ctx);
+            trait_ensure_index_impl(index_target_type);
+            trait_ensure_ref_index_impl(index_target_type);
 
             // Look up Index<IndexType> trait implementation on the target type
             TypeInfo* type_param_bindings[] = { index_type };
@@ -1350,7 +1359,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             TypeInfo* index_target_type = type_info_get_ref_target(object_type);
 
             // For builtin indexable types (arrays), auto-implement RefIndex trait
-            trait_ensure_ref_index_impl(index_target_type, type_ctx);
+            trait_ensure_ref_index_impl(index_target_type);
 
             // Look up RefIndex<IndexType> trait implementation on the target type
             TypeInfo* type_param_bindings[] = { index_type };
@@ -1474,7 +1483,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Check for trait-based properties (like "length")
             if (strcmp(node->member_access.property, "length") == 0) {
                 // Ensure Length trait is implemented
-                trait_ensure_length_impl(target_type_info, type_ctx);
+                trait_ensure_length_impl(target_type_info);
 
                 // Look up Length trait implementation
                 TraitImpl* trait_impl = trait_find_impl(Trait_Length, target_type_info, NULL, 0);
@@ -1540,6 +1549,13 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
     // Insert parameters with their concrete types AND TypeInfo for objects
     for (int i = 0; i < spec->param_count; i++) {
         symbol_table_insert(temp_symbols, original_func_node->func_decl.params[i], spec->param_type_info[i], NULL, false);
+
+        // Set param_index and node for LSP go-to-definition
+        SymbolEntry* param_entry = symbol_table_lookup(temp_symbols, original_func_node->func_decl.params[i]);
+        if (param_entry) {
+            param_entry->param_index = i;
+            param_entry->node = original_func_node;  // Point to the function declaration
+        }
 
         // TypeInfo is already set by symbol_table_insert if param_type_info is available
         if (type_info_is_object(arg_types[i]) && spec->param_type_info[i]) {
@@ -2181,8 +2197,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             TypeInfo* index_target_type = type_info_get_ref_target(object_type);
 
             // For builtin indexable types (arrays), auto-implement Index and RefIndex traits
-            trait_ensure_index_impl(index_target_type, ctx);
-            trait_ensure_ref_index_impl(index_target_type, ctx);
+            trait_ensure_index_impl(index_target_type);
+            trait_ensure_ref_index_impl(index_target_type);
 
             // Look up Index<IndexType> trait implementation on the target type
             TypeInfo* type_param_bindings[] = { index_type };
@@ -2228,7 +2244,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             TypeInfo* index_target_type = type_info_get_ref_target(object_type);
 
             // For builtin indexable types (arrays), auto-implement RefIndex trait
-            trait_ensure_ref_index_impl(index_target_type, ctx);
+            trait_ensure_ref_index_impl(index_target_type);
 
             // Look up RefIndex<IndexType> trait implementation on the target type
             TypeInfo* type_param_bindings[] = { index_type };
@@ -2548,7 +2564,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // Check for trait-based properties (like "length")
             if (strcmp(node->member_access.property, "length") == 0) {
                 // Ensure Length trait is implemented
-                trait_ensure_length_impl(target_type_info, ctx);
+                trait_ensure_length_impl(target_type_info);
 
                 // Look up Length trait implementation
                 TraitImpl* trait_impl = trait_find_impl(Trait_Length, target_type_info, NULL, 0);

@@ -470,6 +470,10 @@ static ASTNode* parse_call(Parser* parser) {
             ASTNode* member = AST_NODE(parser, AST_MEMBER_ACCESS);
             member->member_access.object = node;
             member->member_access.property = strdup(parser->current_token->value);
+            // Capture property location for go-to-definition
+            member->member_access.property_loc.filename = parser->filename;
+            member->member_access.property_loc.line = parser->current_token->line;
+            member->member_access.property_loc.column = parser->current_token->column;
             parser_advance(parser);
 
             node = member;
@@ -564,6 +568,10 @@ static ASTNode* parse_unary(Parser* parser) {
                 ASTNode* member = AST_NODE(parser, AST_MEMBER_ACCESS);
                 member->member_access.object = target;
                 member->member_access.property = strdup(parser->current_token->value);
+                // Capture property location for go-to-definition
+                member->member_access.property_loc.filename = parser->filename;
+                member->member_access.property_loc.line = parser->current_token->line;
+                member->member_access.property_loc.column = parser->current_token->column;
                 parser_advance(parser);
                 target = member;
             } else if (parser_match(parser, TOKEN_LBRACKET)) {
