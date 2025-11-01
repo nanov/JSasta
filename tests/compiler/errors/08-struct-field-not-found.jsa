@@ -1,0 +1,10 @@
+// jastat-summary: Error on accessing non-existent struct field
+// jastat: mode=compiler, capture=stderr
+
+struct Point {
+    x: i32,
+    y: i32
+}
+
+let p = Point { x: 10, y: 20 };
+let z = p.z;  // Field 'z' does not exist

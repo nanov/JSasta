@@ -1,0 +1,9 @@
+// jastat-summary: Logical OR operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+io.println("true || true = {}", true || true);
+io.println("true || false = {}", true || false);
+io.println("false || true = {}", false || true);
+io.println("false || false = {}", false || false);

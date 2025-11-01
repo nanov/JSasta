@@ -1,0 +1,15 @@
+// jastat-summary: Function with multiple parameters of different types
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function compute(a: i32, b: i32, multiply: bool): i32 {
+    if (multiply) {
+        return a * b;
+    } else {
+        return a + b;
+    }
+}
+
+io.println("compute(5, 3, true) = {}", compute(5, 3, true));
+io.println("compute(5, 3, false) = {}", compute(5, 3, false));

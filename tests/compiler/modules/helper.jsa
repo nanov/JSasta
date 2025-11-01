@@ -1,0 +1,11 @@
+// Helper module for module tests
+
+export function double(x: i32): i32 {
+    return x * 2;
+}
+
+export function triple(x: i32): i32 {
+    return x * 3;
+}
+
+export const PI: i32 = 314;

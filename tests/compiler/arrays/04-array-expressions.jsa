@@ -1,0 +1,12 @@
+// jastat-summary: Using array elements in expressions
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let arr: i32[3] = {10, 20, 30};
+
+let sum: i32 = arr[0] + arr[1] + arr[2];
+let product: i32 = arr[0] * arr[1];
+
+io.println("sum = {}", sum);
+io.println("product = {}", product);

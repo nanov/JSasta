@@ -1,0 +1,11 @@
+// jastat-summary: Display trait with multiple format arguments
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let x: i32 = 10;
+let y: i32 = 20;
+let z: i32 = 30;
+
+io.println("x={}, y={}, z={}", x, y, z);
+io.println("Sum: {} + {} + {} = {}", x, y, z, x + y + z);

@@ -1,0 +1,10 @@
+// jastat-summary: Not equal operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 10;
+let b: i32 = 20;
+
+io.println("{} != {} is {}", a, b, a != b);
+io.println("{} != {} is {}", a, a, a != a);

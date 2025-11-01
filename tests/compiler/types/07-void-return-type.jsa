@@ -1,0 +1,10 @@
+// jastat-summary: Void return type for functions
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function print_hello(): void {
+    io.println("Hello from void function");
+}
+
+print_hello();

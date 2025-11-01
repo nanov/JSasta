@@ -1,0 +1,5 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa...
+[error:E100] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:7:1: Expected ;, got }
+[error:E202] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:9:18: Unexpected token in expression: :
+[ERROR]   Failed to parse module: 08-struct-field-not-found
+[ERROR]   Failed to load entry module

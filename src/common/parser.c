@@ -466,10 +466,11 @@ static ASTNode* parse_primary(Parser* parser) {
             element_type = Type_Int;
             parser_advance(parser);
         } else if (parser_match(parser, TOKEN_IDENTIFIER)) {
-            // Could be a struct type - we'll resolve it during type inference
+            // Could be a struct type or non-tokenized primitive (bool, string, double)
+            // We'll resolve it during type inference
             char* type_name = strdup(parser->current_token->value);
             element_type = type_info_create(TYPE_KIND_UNKNOWN, type_name);
-            free(type_name);
+            // Don't free type_name - it's owned by the TypeInfo now
             parser_advance(parser);
         } else {
             PARSE_ERROR(parser, "E210", "Expected type after 'new'");

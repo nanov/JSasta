@@ -1,0 +1,13 @@
+// jastat-summary: Module namespacing prevents name collisions
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+import helper from "./helper.jsa";
+
+// Local function with same name as imported one
+function double(x: i32): i32 {
+    return x * 2 + 1;
+}
+
+io.println("local double(5) = {}", double(5));
+io.println("helper.double(5) = {}", helper.double(5));

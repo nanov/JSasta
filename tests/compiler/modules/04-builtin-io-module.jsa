@@ -1,0 +1,9 @@
+// jastat-summary: Using builtin @io module
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+io.println("Testing println");
+io.print("Testing print without newline");
+io.println("");
+io.println("Done");

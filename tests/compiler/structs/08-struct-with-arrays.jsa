@@ -1,0 +1,21 @@
+// jastat-summary: Struct with array fields
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct ArrayHolder {
+    values: ref i32[]
+}
+
+let arr = new i32[3];
+arr[0] = 1;
+arr[1] = 2;
+arr[2] = 3;
+
+let holder = ArrayHolder { values: arr };
+
+io.println("holder.values[0] = {}", holder.values[0]);
+io.println("holder.values[1] = {}", holder.values[1]);
+io.println("holder.values[2] = {}", holder.values[2]);
+
+delete arr;

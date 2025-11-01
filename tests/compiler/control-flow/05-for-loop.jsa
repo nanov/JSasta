@@ -1,0 +1,8 @@
+// jastat-summary: Basic for loop
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+for (let i: i32 = 0; i < 5; i = i + 1) {
+    io.println("i = {}", i);
+}

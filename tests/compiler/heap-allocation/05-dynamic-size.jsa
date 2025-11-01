@@ -1,0 +1,18 @@
+// jastat-summary: Heap allocation with dynamic size expression
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let size: i32 = 5;
+let arr = new i32[size];
+
+arr[0] = 1;
+arr[1] = 2;
+arr[2] = 3;
+arr[3] = 4;
+arr[4] = 5;
+
+io.println("Allocated array of size {}", size);
+io.println("Values: {}, {}, {}, {}, {}", arr[0], arr[1], arr[2], arr[3], arr[4]);
+
+delete arr;

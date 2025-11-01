@@ -1,0 +1,22 @@
+// jastat-summary: Nested struct declarations and access
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Point {
+    x: i32,
+    y: i32
+}
+
+struct Rectangle {
+    top_left: Point,
+    bottom_right: Point
+}
+
+let rect = Rectangle {
+    top_left: Point { x: 0, y: 0 },
+    bottom_right: Point { x: 100, y: 50 }
+};
+
+io.println("Top-left: ({}, {})", rect.top_left.x, rect.top_left.y);
+io.println("Bottom-right: ({}, {})", rect.bottom_right.x, rect.bottom_right.y);

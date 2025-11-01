@@ -1,0 +1,6 @@
+// jastat-summary: Error on calling undefined function
+// jastat: mode=compiler, capture=stderr
+
+import io from @io;
+
+nonexistent_function(42);  // T301: Undefined variable (function)

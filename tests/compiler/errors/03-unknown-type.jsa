@@ -1,0 +1,4 @@
+// jastat-summary: Error on unknown type in variable declaration
+// jastat: mode=compiler, capture=stderr
+
+let x: UnknownType = 42;  // T311: Unknown type

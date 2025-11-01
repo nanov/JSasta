@@ -1,0 +1,10 @@
+// jastat-summary: Division operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 20;
+let b: i32 = 4;
+let quotient: i32 = a / b;
+
+io.println("{} / {} = {}", a, b, quotient);

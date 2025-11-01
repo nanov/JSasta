@@ -1,0 +1,15 @@
+// jastat-summary: Function specialization with different parameter types
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function print_value(val: i32): void {
+    io.println("Integer: {}", val);
+}
+
+function print_value(val: bool): void {
+    io.println("Boolean: {}", val);
+}
+
+print_value(42);
+print_value(true);

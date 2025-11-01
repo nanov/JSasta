@@ -1,0 +1,14 @@
+// jastat-summary: Basic struct declaration and initialization
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Point {
+    x: i32,
+    y: i32
+}
+
+let p = Point { x: 10, y: 20 };
+
+io.println("p.x = {}", p.x);
+io.println("p.y = {}", p.y);

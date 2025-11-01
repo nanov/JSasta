@@ -1,0 +1,16 @@
+// jastat-summary: Array reference vs value semantics
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let arr1 = new i32[2];
+arr1[0] = 10;
+arr1[1] = 20;
+
+let arr2 = arr1;  // Reference copy
+arr2[0] = 99;     // Modifies arr1 as well
+
+io.println("arr1[0] = {}", arr1[0]);
+io.println("arr2[0] = {}", arr2[0]);
+
+delete arr1;

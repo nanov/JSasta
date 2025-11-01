@@ -1,0 +1,12 @@
+// jastat-summary: Operator precedence
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let result1: i32 = 2 + 3 * 4;
+let result2: i32 = (2 + 3) * 4;
+let result3: i32 = 10 - 5 + 2;
+
+io.println("2 + 3 * 4 = {}", result1);
+io.println("(2 + 3) * 4 = {}", result2);
+io.println("10 - 5 + 2 = {}", result3);

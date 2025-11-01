@@ -1,0 +1,10 @@
+// jastat-summary: Multiplication operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 7;
+let b: i32 = 6;
+let product: i32 = a * b;
+
+io.println("{} * {} = {}", a, b, product);

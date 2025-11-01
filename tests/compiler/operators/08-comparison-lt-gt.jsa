@@ -1,0 +1,12 @@
+// jastat-summary: Less than and greater than operators
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 10;
+let b: i32 = 20;
+
+io.println("{} < {} is {}", a, b, a < b);
+io.println("{} > {} is {}", a, b, a > b);
+io.println("{} < {} is {}", b, a, b < a);
+io.println("{} > {} is {}", b, a, b > a);

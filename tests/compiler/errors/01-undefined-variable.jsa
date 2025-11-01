@@ -1,0 +1,6 @@
+// jastat-summary: Error on undefined variable reference
+// jastat: mode=compiler, capture=stderr
+
+import io from @io;
+
+io.println("Value: {}", undefined_var);  // T301: Undefined variable

@@ -1655,11 +1655,27 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Infer type of size expression
             infer_literal_types(node->new_expr.size_expr, symbols, type_ctx, diag);
             
-            // Resolve element type if it's unknown (could be a struct type)
+            // Resolve element type if it's unknown (could be a struct type or primitive)
             if (node->new_expr.element_type->kind == TYPE_KIND_UNKNOWN) {
                 const char* type_name = node->new_expr.element_type->type_name;
-                TypeInfo* resolved = type_context_find_struct_type(type_ctx, type_name);
+                TypeInfo* resolved = NULL;
+                
+                // Try primitives first
+                if (strcmp(type_name, "bool") == 0) {
+                    resolved = Type_Bool;
+                } else if (strcmp(type_name, "string") == 0) {
+                    resolved = Type_String;
+                } else if (strcmp(type_name, "double") == 0) {
+                    resolved = Type_Double;
+                } else {
+                    // Try to find struct type in context
+                    resolved = type_context_find_struct_type(type_ctx, type_name);
+                }
+                
                 if (resolved) {
+                    // Free the temporary unknown type and use the resolved one
+                    free((char*)node->new_expr.element_type->type_name);
+                    free(node->new_expr.element_type);
                     node->new_expr.element_type = resolved;
                 } else {
                     TYPE_ERROR(diag, node->loc, "T311", "Unknown type '%s' in new expression", type_name);
@@ -2789,11 +2805,27 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // Infer type of size expression
             infer_with_specializations(node->new_expr.size_expr, symbols, ctx, diag);
             
-            // Resolve element type if it's unknown (could be a struct type)
+            // Resolve element type if it's unknown (could be a struct type or primitive)
             if (node->new_expr.element_type->kind == TYPE_KIND_UNKNOWN) {
                 const char* type_name = node->new_expr.element_type->type_name;
-                TypeInfo* resolved = type_context_find_struct_type(ctx, type_name);
+                TypeInfo* resolved = NULL;
+                
+                // Try primitives first
+                if (strcmp(type_name, "bool") == 0) {
+                    resolved = Type_Bool;
+                } else if (strcmp(type_name, "string") == 0) {
+                    resolved = Type_String;
+                } else if (strcmp(type_name, "double") == 0) {
+                    resolved = Type_Double;
+                } else {
+                    // Try to find struct type in context
+                    resolved = type_context_find_struct_type(ctx, type_name);
+                }
+                
                 if (resolved) {
+                    // Free the temporary unknown type and use the resolved one
+                    free((char*)node->new_expr.element_type->type_name);
+                    free(node->new_expr.element_type);
                     node->new_expr.element_type = resolved;
                 } else {
                     TYPE_ERROR(diag, node->loc, "T311", "Unknown type '%s' in new expression", type_name);

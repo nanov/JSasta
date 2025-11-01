@@ -1,0 +1,14 @@
+// jastat-summary: Early return from function
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function abs(n: i32): i32 {
+    if (n < 0) {
+        return -n;
+    }
+    return n;
+}
+
+io.println("abs(-5) = {}", abs(-5));
+io.println("abs(5) = {}", abs(5));

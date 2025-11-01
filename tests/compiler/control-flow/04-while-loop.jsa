@@ -1,0 +1,11 @@
+// jastat-summary: Basic while loop
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let i: i32 = 0;
+
+while (i < 5) {
+    io.println("i = {}", i);
+    i = i + 1;
+}

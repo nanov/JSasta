@@ -1,0 +1,18 @@
+// jastat-summary: Struct field assignment and modification
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Counter {
+    value: i32
+}
+
+let c = Counter { value: 0 };
+
+io.println("Initial: {}", c.value);
+
+c.value = 10;
+io.println("After assignment: {}", c.value);
+
+c.value = c.value + 5;
+io.println("After increment: {}", c.value);

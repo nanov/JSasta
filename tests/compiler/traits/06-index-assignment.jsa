@@ -1,0 +1,12 @@
+// jastat-summary: Index trait for assignment (IndexMut behavior)
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let arr: i32[3] = {0, 0, 0};
+
+arr[0] = 111;
+arr[1] = 222;
+arr[2] = 333;
+
+io.println("After assignment: {}, {}, {}", arr[0], arr[1], arr[2]);

@@ -1,0 +1,7 @@
+// jastat-summary: External function declaration and usage
+// jastat: mode=run, capture=stdout
+
+external printf(string, ...): i32;
+
+printf("Hello from external function\n");
+printf("Number: %d\n", 42);

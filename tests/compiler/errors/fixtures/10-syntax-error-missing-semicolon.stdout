@@ -1,0 +1,5 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/10-syntax-error-missing-semicolon.jsa...
+[INFO]    Loaded module: 10-syntax-error-missing-semicolon (0 exports, 0 dependencies)
+[INFO]    Code generation complete
+[INFO]    LLVM IR written to tests/compiler//errors/10-syntax-error-missing-semicolon.tmp.ll
+[INFO]    No diagnostics

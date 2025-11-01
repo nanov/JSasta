@@ -1,0 +1,18 @@
+// jastat-summary: All primitive types can be declared and used
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let i8_val: i8 = 127;
+let i16_val: i16 = 32767;
+let i32_val: i32 = 2147483647;
+let i64_val: i64 = 9223372036854775807;
+let u8_val: u8 = 255;
+let u16_val: u16 = 65535;
+let u32_val: u32 = 4294967295;
+let bool_val: bool = true;
+
+io.println("i8: {}", i8_val);
+io.println("i16: {}", i16_val);
+io.println("i32: {}", i32_val);
+io.println("bool: {}", bool_val);

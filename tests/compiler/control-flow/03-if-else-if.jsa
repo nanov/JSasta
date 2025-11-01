@@ -1,0 +1,14 @@
+// jastat-summary: If-else-if chain
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let x: i32 = 15;
+
+if (x < 10) {
+    io.println("x is less than 10");
+} else if (x < 20) {
+    io.println("x is between 10 and 19");
+} else {
+    io.println("x is 20 or greater");
+}

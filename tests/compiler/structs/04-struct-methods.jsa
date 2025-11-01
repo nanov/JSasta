@@ -1,0 +1,23 @@
+// jastat-summary: Struct methods and self parameter
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Counter {
+    value: i32
+}
+
+function increment(self: ref Counter): void {
+    self.value = self.value + 1;
+}
+
+function get_value(self: Counter): i32 {
+    return self.value;
+}
+
+let c = Counter { value: 0 };
+
+increment(ref c);
+increment(ref c);
+
+io.println("Counter value: {}", get_value(c));

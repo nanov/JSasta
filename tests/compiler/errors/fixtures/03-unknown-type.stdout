@@ -1,0 +1,4 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/03-unknown-type.jsa...
+[error:E101] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/03-unknown-type.jsa:4:20: Unknown type 'UnknownType'
+[ERROR]   Failed to parse module: 03-unknown-type
+[ERROR]   Failed to load entry module

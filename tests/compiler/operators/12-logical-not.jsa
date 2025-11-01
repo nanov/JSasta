@@ -1,0 +1,7 @@
+// jastat-summary: Logical NOT operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+io.println("!true = {}", !true);
+io.println("!false = {}", !false);

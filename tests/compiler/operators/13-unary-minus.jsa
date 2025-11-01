@@ -1,0 +1,11 @@
+// jastat-summary: Unary minus operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 42;
+let b: i32 = -a;
+
+io.println("a = {}", a);
+io.println("-a = {}", b);
+io.println("-(-a) = {}", -b);

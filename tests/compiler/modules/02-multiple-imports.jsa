@@ -1,0 +1,8 @@
+// jastat-summary: Import multiple functions from a module
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+import helper from "./helper.jsa";
+
+io.println("double(5) = {}", helper.double(5));
+io.println("triple(5) = {}", helper.triple(5));

@@ -1,0 +1,5 @@
+// jastat-summary: Error on type mismatch in assignment
+// jastat: mode=compiler, capture=stderr
+
+let x: i32 = 42;
+let y: bool = x;  // Type error: cannot assign i32 to bool

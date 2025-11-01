@@ -1,0 +1,8 @@
+// jastat-summary: Basic module import and function call
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+import helper from "./helper.jsa";
+
+let result = helper.double(21);
+io.println("double(21) = {}", result);

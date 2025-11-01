@@ -1,0 +1,7 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/11-array-initialization-mismatch.jsa...
+[error:E201] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/11-array-initialization-mismatch.jsa:4:20: Expected property name in object literal
+[error:E202] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/11-array-initialization-mismatch.jsa:4:21: Unexpected token in expression: ,
+[error:E202] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/11-array-initialization-mismatch.jsa:4:24: Unexpected token in expression: }
+[error:E229] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/11-array-initialization-mismatch.jsa:4:24: Stuck on token }, value '}'
+[ERROR]   Failed to parse module: 11-array-initialization-mismatch
+[ERROR]   Failed to load entry module

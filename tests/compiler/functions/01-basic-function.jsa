@@ -1,0 +1,11 @@
+// jastat-summary: Basic function declaration and call
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function add(a: i32, b: i32): i32 {
+    return a + b;
+}
+
+let result = add(10, 20);
+io.println("10 + 20 = {}", result);

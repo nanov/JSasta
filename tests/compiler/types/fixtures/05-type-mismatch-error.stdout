@@ -1,0 +1,5 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/types/05-type-mismatch-error.jsa...
+[INFO]    Loaded module: 05-type-mismatch-error (0 exports, 0 dependencies)
+[INFO]    Code generation complete
+[INFO]    LLVM IR written to tests/compiler//types/05-type-mismatch-error.tmp.ll
+[INFO]    No diagnostics

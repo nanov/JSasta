@@ -1,0 +1,7 @@
+// jastat-summary: Import constants from modules
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+import helper from "./helper.jsa";
+
+io.println("PI = {}", helper.PI);

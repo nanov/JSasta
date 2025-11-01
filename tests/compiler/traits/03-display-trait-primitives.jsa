@@ -1,0 +1,14 @@
+// jastat-summary: Display trait for primitive types
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let i: i32 = 42;
+let b: bool = true;
+let i8_val: i8 = 127;
+let i64_val: i64 = 9223372036854775807;
+
+io.println("i32: {}", i);
+io.println("bool: {}", b);
+io.println("i8: {}", i8_val);
+io.println("i64: {}", i64_val);

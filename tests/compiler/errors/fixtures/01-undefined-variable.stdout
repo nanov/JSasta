@@ -1,0 +1,8 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/01-undefined-variable.jsa...
+[INFO]    Created @io builtin module with 5 exports
+[INFO]    Loaded module: 01-undefined-variable (0 exports, 1 dependencies)
+[error:T301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/01-undefined-variable.jsa:6:25: Undefined variable: undefined_var
+
+=== Diagnostic Summary ===
+  Errors: 1
+

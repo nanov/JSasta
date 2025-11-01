@@ -1,0 +1,14 @@
+// jastat-summary: Recursive function (factorial)
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function factorial(n: i32): i32 {
+    if (n <= 1) {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+io.println("factorial(5) = {}", factorial(5));
+io.println("factorial(0) = {}", factorial(0));

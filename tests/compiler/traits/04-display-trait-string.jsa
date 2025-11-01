@@ -1,0 +1,7 @@
+// jastat-summary: Display trait for string type
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let s: string = "Hello, World!";
+io.println("String: {}", s);

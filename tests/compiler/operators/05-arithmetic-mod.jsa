@@ -1,0 +1,10 @@
+// jastat-summary: Modulo operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 17;
+let b: i32 = 5;
+let remainder: i32 = a % b;
+
+io.println("{} % {} = {}", a, b, remainder);

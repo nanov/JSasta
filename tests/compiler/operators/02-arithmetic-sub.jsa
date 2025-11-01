@@ -1,0 +1,10 @@
+// jastat-summary: Subtraction operator
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a: i32 = 30;
+let b: i32 = 12;
+let diff: i32 = a - b;
+
+io.println("{} - {} = {}", a, b, diff);

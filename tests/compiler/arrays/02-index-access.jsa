@@ -1,0 +1,12 @@
+// jastat-summary: Array index access with different types
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let int_arr: i32[3] = {1, 2, 3};
+let bool_arr: bool[2] = {true, false};
+
+io.println("int_arr[0] = {}", int_arr[0]);
+io.println("int_arr[2] = {}", int_arr[2]);
+io.println("bool_arr[0] = {}", bool_arr[0]);
+io.println("bool_arr[1] = {}", bool_arr[1]);

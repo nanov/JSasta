@@ -1,0 +1,16 @@
+// jastat-summary: Mutating struct through reference
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Value {
+    n: i32
+}
+
+let v1 = Value { n: 10 };
+let v2 = ref v1;  // Reference
+
+v2.n = 20;
+
+io.println("v1.n = {}", v1.n);
+io.println("v2.n = {}", v2.n);

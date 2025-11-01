@@ -1,0 +1,10 @@
+// jastat-summary: Empty struct (unit-like struct)
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Empty {}
+
+let e = Empty {};
+
+io.println("Empty struct created");

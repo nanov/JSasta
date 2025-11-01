@@ -1,0 +1,11 @@
+// jastat-summary: Void function with no return value
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function greet(name: string): void {
+    io.println("Hello, {}!", name);
+}
+
+greet("World");
+greet("JSasta");

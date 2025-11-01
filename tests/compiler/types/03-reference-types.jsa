@@ -1,0 +1,15 @@
+// jastat-summary: Reference type creation and dereferencing
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let x: i32 = 42;
+let r = ref x;  // ref i32
+
+io.println("x = {}", x);
+io.println("r = {}", r);
+
+r = 100;  // Modifies x through reference
+
+io.println("After r = 100:");
+io.println("x = {}", x);

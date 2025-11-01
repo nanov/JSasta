@@ -1,0 +1,14 @@
+// jastat-summary: Type inference from literals and expressions
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let a = 42;           // Inferred as i32
+let b = true;         // Inferred as bool
+let c = a + 10;       // Inferred as i32
+let d = b && false;   // Inferred as bool
+
+io.println("a = {}", a);
+io.println("b = {}", b);
+io.println("c = {}", c);
+io.println("d = {}", d);

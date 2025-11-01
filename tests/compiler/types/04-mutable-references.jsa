@@ -1,0 +1,15 @@
+// jastat-summary: Mutable reference semantics
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let x: i32 = 10;
+let r = ref x;
+
+io.println("Initial x = {}", x);
+
+r = 20;
+io.println("After r = 20: x = {}", x);
+
+r = 30;
+io.println("After r = 30: x = {}", x);

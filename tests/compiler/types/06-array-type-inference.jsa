@@ -1,0 +1,15 @@
+// jastat-summary: Array types are properly inferred
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+let stack_arr: i32[2] = {10, 20};  // Type: i32[2]
+let heap_arr = new i32[2];          // Type: ref i32[]
+
+heap_arr[0] = 30;
+heap_arr[1] = 40;
+
+io.println("stack_arr[0] = {}", stack_arr[0]);
+io.println("heap_arr[0] = {}", heap_arr[0]);
+
+delete heap_arr;

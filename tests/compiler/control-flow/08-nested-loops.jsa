@@ -1,0 +1,10 @@
+// jastat-summary: Nested loops
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+for (let i: i32 = 0; i < 3; i = i + 1) {
+    for (let j: i32 = 0; j < 2; j = j + 1) {
+        io.println("i={}, j={}", i, j);
+    }
+}
