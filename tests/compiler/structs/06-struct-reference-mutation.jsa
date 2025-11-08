@@ -4,11 +4,12 @@
 import io from @io;
 
 struct Value {
-    n: i32
+    n: i32;
 }
 
-let v1 = Value { n: 10 };
-let v2 = ref v1;  // Reference
+var v1: Value;
+v1.n = 10;
+var v2 = ref v1;  // Reference
 
 v2.n = 20;
 

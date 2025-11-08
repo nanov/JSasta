@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -266,10 +267,10 @@ void ast_free(ASTNode* node) {
 // Helper to clone a symbol table (clones entries but not parent - parent will be set later)
 static SymbolTable* symbol_table_clone(SymbolTable* table) {
     if (!table) return NULL;
-    
+
     // Create new table with NULL parent (will be set up properly later)
     SymbolTable* clone = symbol_table_create(NULL);
-    
+
     // Clone all entries
     SymbolEntry* current = table->head;
     while (current) {
@@ -285,7 +286,7 @@ static SymbolTable* symbol_table_clone(SymbolTable* table) {
         clone->head = entry;
         current = current->next;
     }
-    
+
     return clone;
 }
 
@@ -382,16 +383,16 @@ ASTNode* ast_clone(ASTNode* node) {
             } else {
                 clone->struct_decl.default_values = NULL;
             }
-            
+
             // Copy array sizes
             if (node->struct_decl.property_array_sizes) {
                 clone->struct_decl.property_array_sizes = (int*)malloc(sizeof(int) * node->struct_decl.property_count);
-                memcpy(clone->struct_decl.property_array_sizes, node->struct_decl.property_array_sizes, 
+                memcpy(clone->struct_decl.property_array_sizes, node->struct_decl.property_array_sizes,
                        sizeof(int) * node->struct_decl.property_count);
             } else {
                 clone->struct_decl.property_array_sizes = NULL;
             }
-            
+
             // Clone array size expressions
             if (node->struct_decl.property_array_size_exprs) {
                 clone->struct_decl.property_array_size_exprs = (ASTNode**)malloc(sizeof(ASTNode*) * node->struct_decl.property_count);
@@ -401,7 +402,7 @@ ASTNode* ast_clone(ASTNode* node) {
             } else {
                 clone->struct_decl.property_array_size_exprs = NULL;
             }
-            
+
             // Clone methods
             clone->struct_decl.method_count = node->struct_decl.method_count;
             if (node->struct_decl.methods && node->struct_decl.method_count > 0) {

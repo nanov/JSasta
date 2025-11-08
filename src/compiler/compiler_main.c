@@ -26,10 +26,13 @@ char* read_file(const char* filename) {
     return content;
 }
 
-int compile_file(const char* input_file, const char* output_file, bool enable_debug) {
+int compile_file(const char* input_file, const char* output_file, bool enable_debug_symbols, bool enable_debug) {
     log_info("Compiling %s...", input_file);
-    if (enable_debug) {
+    if (enable_debug_symbols) {
         log_verbose("Debug symbols enabled");
+    }
+    if (enable_debug) {
+        log_verbose("Debug mode enabled");
     }
 
     // Create module registry
@@ -127,8 +130,9 @@ int compile_file(const char* input_file, const char* output_file, bool enable_de
     // Code generation
     log_section("Code Generation");
     CodeGen* gen = codegen_create("js_module");
-    gen->enable_debug = enable_debug;  // Set debug flag
-    if (enable_debug) {
+    gen->enable_debug_symbols = enable_debug_symbols;  // Set debug symbols flag
+    gen->enable_debug = enable_debug;  // Set debug mode flag
+    if (enable_debug_symbols) {
         gen->source_filename = input_file;
     }
 
@@ -159,9 +163,11 @@ int compile_file(const char* input_file, const char* output_file, bool enable_de
 }
 
 void print_usage(const char* program_name) {
-    fprintf(stderr, "Usage: %s [options] <input.js> [output.ll]\n", program_name);
+    fprintf(stderr, "Usage: %s [options] <input.js>\n", program_name);
     fprintf(stderr, "\nOptions:\n");
-    fprintf(stderr, "  -g, --debug        Generate debug symbols\n");
+    fprintf(stderr, "  -o <file>          Output file (default: output.ll)\n");
+    fprintf(stderr, "  -g, --debug        Generate debug symbols (DWARF)\n");
+    fprintf(stderr, "  -d, --debug-mode   Enable debug mode (enables debug.assert)\n");
     fprintf(stderr, "  -v, --verbose      Enable verbose output\n");
     fprintf(stderr, "  -q, --quiet        Suppress info messages (warnings and errors only)\n");
     fprintf(stderr, "  -h, --help         Show this help message\n");
@@ -172,21 +178,30 @@ int main(int argc, char** argv) {
     type_system_init_global_types();
 
     LogLevel log_level = LOG_INFO;
+    bool enable_debug_symbols = false;
     bool enable_debug = false;
+    const char* output_file = "output.ll";
 
     // Parse command-line options
     static struct option long_options[] = {
-        {"debug",   no_argument, 0, 'g'},
-        {"verbose", no_argument, 0, 'v'},
-        {"quiet",   no_argument, 0, 'q'},
-        {"help",    no_argument, 0, 'h'},
+        {"debug",      no_argument, 0, 'g'},
+        {"debug-mode", no_argument, 0, 'd'},
+        {"verbose",    no_argument, 0, 'v'},
+        {"quiet",      no_argument, 0, 'q'},
+        {"help",       no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "gvqh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "o:gdvqh", long_options, NULL)) != -1) {
         switch (opt) {
+            case 'o':
+                output_file = optarg;
+                break;
             case 'g':
+                enable_debug_symbols = true;
+                break;
+            case 'd':
                 enable_debug = true;
                 break;
             case 'v':
@@ -215,7 +230,6 @@ int main(int argc, char** argv) {
     }
 
     const char* input_file = argv[optind];
-    const char* output_file = (optind + 1 < argc) ? argv[optind + 1] : "output.ll";
 
-    return compile_file(input_file, output_file, enable_debug);
+    return compile_file(input_file, output_file, enable_debug_symbols, enable_debug);
 }

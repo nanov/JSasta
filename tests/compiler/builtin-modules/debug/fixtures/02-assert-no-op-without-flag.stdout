@@ -1,0 +1,2 @@
+Before assert
+After assert - should print because assertions are disabled

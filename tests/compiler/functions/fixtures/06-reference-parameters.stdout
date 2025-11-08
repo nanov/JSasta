@@ -1,0 +1,3 @@
+Before: x = 10
+After increment: x = 10
+After second increment: x = 10

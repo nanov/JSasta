@@ -1,0 +1,11 @@
+// jastat-summary: Test assertions with complex expressions
+// jastat: mode=run, capture=assert
+
+import test from @test;
+
+var x: i32 = 10;
+var y: i32 = 20;
+
+test.assert(x < y);
+test.assert(x + y == 30);
+test.assert(y - x == 10);

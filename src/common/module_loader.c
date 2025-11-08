@@ -139,6 +139,8 @@ extern LLVMValueRef io_print_codegen(void* context, ASTNode* node);
 extern LLVMValueRef io_eprintln_codegen(void* context, ASTNode* node);
 extern LLVMValueRef io_eprint_codegen(void* context, ASTNode* node);
 extern LLVMValueRef io_format_codegen(void* context, ASTNode* node);
+extern LLVMValueRef debug_assert_codegen(void* context, ASTNode* node);
+extern LLVMValueRef test_assert_codegen(void* context, ASTNode* node);
 
 // Create a synthetic AST node for a builtin function declaration
 static ASTNode* builtin_create_func_decl(const char* name, int param_count, char** params, 
@@ -264,6 +266,108 @@ static Module* builtin_create_io_module(ModuleRegistry* registry) {
     return module;
 }
 
+// Create the @debug builtin module
+static Module* builtin_create_debug_module(ModuleRegistry* registry) {
+    log_verbose("Creating @debug builtin module");
+    
+    // Create module structure
+    Module* module = (Module*)calloc(1, sizeof(Module));
+    module->absolute_path = strdup("@debug");
+    module->relative_path = strdup("@debug");
+    module->module_prefix = strdup("debug");
+    module->source_code = strdup("// Builtin @debug module");
+    
+    // Create type context
+    module->type_ctx = type_context_create();
+    module->type_ctx->module_prefix = strdup("debug");
+    module->diagnostics = registry->diagnostics;
+    
+    // Create synthetic AST program node
+    module->ast = (ASTNode*)calloc(1, sizeof(ASTNode));
+    module->ast->type = AST_PROGRAM;
+    module->ast->type_ctx = module->type_ctx;
+    module->ast->program.statements = NULL;
+    module->ast->program.count = 0;
+    
+    // Initialize module fields
+    module->exports = NULL;
+    module->export_count = 0;
+    module->dependencies = NULL;
+    module->dependency_count = 0;
+    module->is_loading = false;
+    module->is_parsed = true;  // Mark as parsed since we created it synthetically
+    module->next = NULL;
+    
+    // Create builtin functions
+    int func_count = 1;
+    module->ast->program.count = func_count;
+    module->ast->program.statements = (ASTNode**)malloc(sizeof(ASTNode*) * func_count);
+    
+    // assert(condition: bool): void - assert that condition is true, exit if false
+    char** assert_params = (char**)malloc(sizeof(char*) * 1);
+    assert_params[0] = strdup("condition");
+    TypeInfo** assert_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    assert_param_types[0] = Type_Bool;
+    ASTNode* assert_func = builtin_create_func_decl("assert", 1, assert_params, assert_param_types, Type_Void, NULL, debug_assert_codegen);
+    module->ast->program.statements[0] = assert_func;
+    module_add_export(module, "assert", assert_func);
+    
+    log_info("Created @debug builtin module with %d exports", module->export_count);
+    
+    return module;
+}
+
+// Create the @test builtin module
+static Module* builtin_create_test_module(ModuleRegistry* registry) {
+    log_verbose("Creating @test builtin module");
+    
+    // Create module structure
+    Module* module = (Module*)calloc(1, sizeof(Module));
+    module->absolute_path = strdup("@test");
+    module->relative_path = strdup("@test");
+    module->module_prefix = strdup("test");
+    module->source_code = strdup("// Builtin @test module");
+    
+    // Create type context
+    module->type_ctx = type_context_create();
+    module->type_ctx->module_prefix = strdup("test");
+    module->diagnostics = registry->diagnostics;
+    
+    // Create synthetic AST program node
+    module->ast = (ASTNode*)calloc(1, sizeof(ASTNode));
+    module->ast->type = AST_PROGRAM;
+    module->ast->type_ctx = module->type_ctx;
+    module->ast->program.statements = NULL;
+    module->ast->program.count = 0;
+    
+    // Initialize module fields
+    module->exports = NULL;
+    module->export_count = 0;
+    module->dependencies = NULL;
+    module->dependency_count = 0;
+    module->is_loading = false;
+    module->is_parsed = true;  // Mark as parsed since we created it synthetically
+    module->next = NULL;
+    
+    // Create builtin functions
+    int func_count = 1;
+    module->ast->program.count = func_count;
+    module->ast->program.statements = (ASTNode**)malloc(sizeof(ASTNode*) * func_count);
+    
+    // assert(condition: bool): void - assert that condition is true, exit if false (always active)
+    char** assert_params = (char**)malloc(sizeof(char*) * 1);
+    assert_params[0] = strdup("condition");
+    TypeInfo** assert_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    assert_param_types[0] = Type_Bool;
+    ASTNode* assert_func = builtin_create_func_decl("assert", 1, assert_params, assert_param_types, Type_Void, NULL, test_assert_codegen);
+    module->ast->program.statements[0] = assert_func;
+    module_add_export(module, "assert", assert_func);
+    
+    log_info("Created @test builtin module with %d exports", module->export_count);
+    
+    return module;
+}
+
 // Load a builtin module by name
 static Module* module_load_builtin(ModuleRegistry* registry, const char* builtin_name) {
     log_verbose("Loading builtin: %s", builtin_name);
@@ -282,6 +386,10 @@ static Module* module_load_builtin(ModuleRegistry* registry, const char* builtin
     // Create the appropriate builtin module
     if (strcmp(builtin_name, "io") == 0) {
         module = builtin_create_io_module(registry);
+    } else if (strcmp(builtin_name, "debug") == 0) {
+        module = builtin_create_debug_module(registry);
+    } else if (strcmp(builtin_name, "test") == 0) {
+        module = builtin_create_test_module(registry);
     } else {
         log_error("Unknown builtin module: @%s", builtin_name);
         return NULL;

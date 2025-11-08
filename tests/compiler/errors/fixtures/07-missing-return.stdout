@@ -3,5 +3,5 @@
 [ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/07-missing-return.jsa:9:20: Undefined function: get_value
 [ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/07-missing-return.jsa:9:20: Undefined function: get_value
 [INFO]    Code generation complete
-[INFO]    LLVM IR written to tests/compiler//errors/07-missing-return.tmp.ll
+[INFO]    LLVM IR written to ./tests/compiler/errors/07-missing-return.tmp.ll
 [INFO]    No diagnostics

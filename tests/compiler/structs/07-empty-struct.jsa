@@ -5,6 +5,6 @@ import io from @io;
 
 struct Empty {}
 
-let e = Empty {};
+var e: Empty;
 
 io.println("Empty struct created");

@@ -1,2 +1,1 @@
-JIT session error: Symbols not found: [ _get_stdin, _get_stdout, _get_stderr ]
-lli: Failed to materialize symbols: { (main, { ___jsasta_stderr, ___jsasta_stdout, ___jsasta_stdin, _a, _b, _main }) }
+69

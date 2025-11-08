@@ -842,7 +842,8 @@ typedef struct CodeGen {
     LLVMBasicBlockRef entry_block;              // Entry block of current function for allocas
 
     // Debug information
-    bool enable_debug;                          // Whether to generate debug info
+    bool enable_debug_symbols;                  // Whether to generate debug symbols (DWARF)
+    bool enable_debug;                          // Whether to enable debug mode (for debug.assert, etc.)
     const char* source_filename;                // Source file name for debug info
     LLVMDIBuilderRef di_builder;                // Debug info builder
     LLVMMetadataRef di_compile_unit;            // Compile unit for debug info
@@ -869,7 +870,7 @@ TypeInfo* runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);
-int compile_file(const char* input_file, const char* output_file, bool enable_debug);
+int compile_file(const char* input_file, const char* output_file, bool enable_debug_symbols, bool enable_debug);
 
 
 FunctionSpecialization* s;

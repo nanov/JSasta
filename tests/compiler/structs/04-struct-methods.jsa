@@ -4,7 +4,7 @@
 import io from @io;
 
 struct Counter {
-    value: i32
+    value: i32;
 }
 
 function increment(self: ref Counter): void {
@@ -15,7 +15,8 @@ function get_value(self: Counter): i32 {
     return self.value;
 }
 
-let c = Counter { value: 0 };
+var c: Counter;
+c.value = 0;
 
 increment(ref c);
 increment(ref c);

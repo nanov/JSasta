@@ -1,0 +1,9 @@
+// jastat-summary: Assert is no-op when debug mode disabled
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+import debug from @debug;
+
+io.println("Before assert");
+debug.assert(false);
+io.println("After assert - should print because assertions are disabled");

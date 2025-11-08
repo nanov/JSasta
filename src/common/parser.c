@@ -377,60 +377,119 @@ static ASTNode* parse_primary(Parser* parser) {
 
         parser_expect(parser, TOKEN_RBRACKET);
     } else if (parser_match(parser, TOKEN_LBRACE)) {
-        // Object literal { key: value, key2: value2 }
+        // Could be object literal { key: value } or array initializer { val, val }
+        // Look ahead to distinguish between them
         parser_advance(parser);
-        node = AST_NODE(parser, AST_OBJECT_LITERAL);
+        
+        // Empty braces - treat as empty object literal
+        if (parser_match(parser, TOKEN_RBRACE)) {
+            node = AST_NODE(parser, AST_OBJECT_LITERAL);
+            node->object_literal.keys = NULL;
+            node->object_literal.values = NULL;
+            node->object_literal.count = 0;
+            parser_advance(parser);
+        }
+        // Check if this is an object literal (identifier/string followed by colon)
+        else if ((parser_match(parser, TOKEN_IDENTIFIER) || parser_match(parser, TOKEN_STRING))) {
+            // Save current position to potentially backtrack
+            Token* saved_token = parser->current_token;
+            parser->current_token = NULL;
+            Token* next_token = lexer_next_token(parser->lexer);
+            
+            bool is_object_literal = (next_token->type == TOKEN_COLON);
+            
+            // Restore position
+            token_free(next_token);
+            parser->current_token = saved_token;
+            
+            if (is_object_literal) {
+                // Object literal { key: value, key2: value2 }
+                node = AST_NODE(parser, AST_OBJECT_LITERAL);
 
-        int capacity = 4;
-        node->object_literal.keys = (char**)malloc(sizeof(char*) * capacity);
-        node->object_literal.values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
-        node->object_literal.count = 0;
-        // Type info will be set during type inference in node->type_info
+                int capacity = 4;
+                node->object_literal.keys = (char**)malloc(sizeof(char*) * capacity);
+                node->object_literal.values = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+                node->object_literal.count = 0;
 
-        if (!parser_match(parser, TOKEN_RBRACE)) {
-            do {
-                if (node->object_literal.count >= capacity) {
-                    capacity *= 2;
-                    node->object_literal.keys = (char**)realloc(
-                        node->object_literal.keys, sizeof(char*) * capacity);
-                    node->object_literal.values = (ASTNode**)realloc(
-                        node->object_literal.values, sizeof(ASTNode*) * capacity);
-                }
+                do {
+                    if (node->object_literal.count >= capacity) {
+                        capacity *= 2;
+                        node->object_literal.keys = (char**)realloc(
+                            node->object_literal.keys, sizeof(char*) * capacity);
+                        node->object_literal.values = (ASTNode**)realloc(
+                            node->object_literal.values, sizeof(ASTNode*) * capacity);
+                    }
 
-                // Parse property name (must be an identifier or string)
-                if (!parser_match(parser, TOKEN_IDENTIFIER) && !parser_match(parser, TOKEN_STRING)) {
-                    PARSE_ERROR(parser, "E201", "Expected property name in object literal");
-                    return node;
-                }
+                    // Parse property name (must be an identifier or string)
+                    if (!parser_match(parser, TOKEN_IDENTIFIER) && !parser_match(parser, TOKEN_STRING)) {
+                        PARSE_ERROR(parser, "E201", "Expected property name in object literal");
+                        return node;
+                    }
 
-                node->object_literal.keys[node->object_literal.count] = strdup(parser->current_token->value);
-                parser_advance(parser);
-
-                // Expect colon
-                parser_expect(parser, TOKEN_COLON);
-
-                // Parse value
-                node->object_literal.values[node->object_literal.count] = parse_expression(parser);
-                node->object_literal.count++;
-
-                // Check for comma (allows trailing comma)
-                if (parser_match(parser, TOKEN_COMMA)) {
+                    node->object_literal.keys[node->object_literal.count] = strdup(parser->current_token->value);
                     parser_advance(parser);
-                    // If closing brace follows comma, break (trailing comma)
-                    if (parser_match(parser, TOKEN_RBRACE)) {
+
+                    // Expect colon
+                    parser_expect(parser, TOKEN_COLON);
+
+                    // Parse value
+                    node->object_literal.values[node->object_literal.count] = parse_expression(parser);
+                    node->object_literal.count++;
+
+                    // Check for comma (allows trailing comma)
+                    if (parser_match(parser, TOKEN_COMMA)) {
+                        parser_advance(parser);
+                        // If closing brace follows comma, break (trailing comma)
+                        if (parser_match(parser, TOKEN_RBRACE)) {
+                            break;
+                        }
+                    } else {
+                        // No comma, must be end of object
                         break;
                     }
-                } else {
-                    // No comma, must be end of object
-                    break;
+
+                } while (true);
+
+                parser_expect(parser, TOKEN_RBRACE);
+                // NOTE: TypeInfo will be created during type inference with structural sharing
+            } else {
+                // Array initializer { val, val, val }
+                node = AST_NODE(parser, AST_ARRAY_LITERAL);
+
+                int capacity = 4;
+                node->array_literal.elements = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+                node->array_literal.count = 0;
+
+                do {
+                    if (node->array_literal.count >= capacity) {
+                        capacity *= 2;
+                        node->array_literal.elements = (ASTNode**)realloc(
+                            node->array_literal.elements, sizeof(ASTNode*) * capacity);
+                    }
+                    node->array_literal.elements[node->array_literal.count++] = parse_expression(parser);
+                } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+
+                parser_expect(parser, TOKEN_RBRACE);
+            }
+        } else {
+            // Not identifier/string, so must be array initializer { 10, 20, 30 }
+            node = AST_NODE(parser, AST_ARRAY_LITERAL);
+
+            int capacity = 4;
+            node->array_literal.elements = (ASTNode**)malloc(sizeof(ASTNode*) * capacity);
+            node->array_literal.count = 0;
+
+            do {
+                if (node->array_literal.count >= capacity) {
+                    capacity *= 2;
+                    node->array_literal.elements = (ASTNode**)realloc(
+                        node->array_literal.elements, sizeof(ASTNode*) * capacity);
                 }
+                node->array_literal.elements[node->array_literal.count++] = parse_expression(parser);
+            } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
 
-            } while (true);
+            parser_expect(parser, TOKEN_RBRACE);
         }
-
-        parser_expect(parser, TOKEN_RBRACE);
-
-        // NOTE: TypeInfo will be created during type inference with structural sharing
     } else if (parser_match(parser, TOKEN_NEW)) {
         // new T[size] - heap allocation
         parser_advance(parser);
@@ -1176,7 +1235,45 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
             param_loc.line = parser->current_token->line;
             param_loc.column = parser->current_token->column;
 
-            if (parser->current_token->type == TOKEN_IDENTIFIER) {
+            // Check if it's a type keyword token (int, i32, i64, etc.)
+            bool is_type_keyword = (parser->current_token->type == TOKEN_INT ||
+                                   parser->current_token->type == TOKEN_I8 ||
+                                   parser->current_token->type == TOKEN_I16 ||
+                                   parser->current_token->type == TOKEN_I32 ||
+                                   parser->current_token->type == TOKEN_I64 ||
+                                   parser->current_token->type == TOKEN_U8 ||
+                                   parser->current_token->type == TOKEN_U16 ||
+                                   parser->current_token->type == TOKEN_U32 ||
+                                   parser->current_token->type == TOKEN_U64);
+
+            if (is_type_keyword) {
+                // It's a type keyword - parse it using the type system
+                if (parser->current_token->type == TOKEN_INT) {
+                    param_type = Type_Int;
+                } else if (parser->current_token->type == TOKEN_I8) {
+                    param_type = Type_I8;
+                } else if (parser->current_token->type == TOKEN_I16) {
+                    param_type = Type_I16;
+                } else if (parser->current_token->type == TOKEN_I32) {
+                    param_type = Type_I32;
+                } else if (parser->current_token->type == TOKEN_I64) {
+                    param_type = Type_I64;
+                } else if (parser->current_token->type == TOKEN_U8) {
+                    param_type = Type_U8;
+                } else if (parser->current_token->type == TOKEN_U16) {
+                    param_type = Type_U16;
+                } else if (parser->current_token->type == TOKEN_U32) {
+                    param_type = Type_U32;
+                } else if (parser->current_token->type == TOKEN_U64) {
+                    param_type = Type_U64;
+                }
+                parser_advance(parser);
+                
+                // Generate a placeholder name for the parameter
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "param%d", node->func_decl.param_count);
+                param_name = strdup(buffer);
+            } else if (parser->current_token->type == TOKEN_IDENTIFIER) {
                 char* first_identifier = strdup(parser->current_token->value);
                 parser_advance(parser);
 
@@ -1442,11 +1539,22 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         }
 
         // If prop_type is already an array type (from parse_type_annotation returning array)
-        // but we don't have array_size or array_size_expr, that means it's like "arr: i32[]" which we don't support
+        // but we don't have array_size or array_size_expr, that means it's like "arr: i32[]"
+        // This is only allowed if wrapped in a ref: "arr: ref i32[]"
         if (array_size == 0 && !array_size_expr && type_info_is_array(prop_type)) {
-            PARSE_ERROR(parser, "E227", "Array fields in structs must have explicit size (e.g., arr: i32[12]). Generic array types i32[] are not supported yet.");
+            PARSE_ERROR(parser, "E227", "Array fields in structs must have explicit size (e.g., arr: i32[12]) or be a reference (e.g., arr: ref i32[]).");
             free(member_name);
             return node;
+        }
+        
+        // Also check if it's a ref to an array without size - this is allowed
+        // e.g., "arr: ref i32[]" - reference to dynamically-sized array
+        if (array_size == 0 && !array_size_expr && type_info_is_ref(prop_type)) {
+            TypeInfo* target_type = type_info_get_ref_target(prop_type);
+            if (target_type && type_info_is_array(target_type)) {
+                // ref to array is allowed - it can point to heap or stack arrays
+                // No error needed
+            }
         }
 
         // Check for default value (optional)

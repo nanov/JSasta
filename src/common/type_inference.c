@@ -886,6 +886,26 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             }
 
             if (node->var_decl.init) {
+                // Special case: if we have an array type hint and object literal (empty {}),
+                // convert the object literal to an array literal
+                bool is_array_init = (node->var_decl.type_hint &&
+                                     type_info_is_array(node->var_decl.type_hint) &&
+                                     node->var_decl.init->type == AST_OBJECT_LITERAL &&
+                                     node->var_decl.init->object_literal.count == 0);
+                
+                if (is_array_init) {
+                    // Convert empty object literal to empty array literal
+                    node->var_decl.init->type = AST_ARRAY_LITERAL;
+                    free(node->var_decl.init->object_literal.keys);
+                    free(node->var_decl.init->object_literal.values);
+                    node->var_decl.init->array_literal.elements = NULL;
+                    node->var_decl.init->array_literal.count = 0;
+                    // Set type info to match the declared array type
+                    node->var_decl.init->type_info = node->var_decl.type_hint;
+                    log_verbose("Converted empty object literal to array literal for '%s'", 
+                               node->var_decl.name);
+                }
+                
                 // Special case: if we have a struct type hint and object literal,
                 // skip normal type inference to avoid creating anonymous types
                 bool is_struct_literal = (node->var_decl.type_hint &&
@@ -893,7 +913,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                          node->var_decl.type_hint->data.object.struct_decl_node &&
                                          node->var_decl.init->type == AST_OBJECT_LITERAL);
 
-                if (!is_struct_literal) {
+                if (!is_struct_literal && !is_array_init) {
                     infer_literal_types(node->var_decl.init, symbols, type_ctx, diag);
                 }
 
@@ -1072,10 +1092,16 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 }
 
                 // If initializing with an array literal, set the array size from the literal
+                // But only if array_size wasn't already explicitly set from type hint
                 if (node->var_decl.init->type == AST_ARRAY_LITERAL && type_info_is_array(node->type_info)) {
-                    node->var_decl.array_size = node->var_decl.init->array_literal.count;
-                    log_verbose("[VAR_DECL] %s: array size set to %d from literal",
-                               node->var_decl.name, node->var_decl.array_size);
+                    if (node->var_decl.array_size == 0) {
+                        node->var_decl.array_size = node->var_decl.init->array_literal.count;
+                        log_verbose("[VAR_DECL] %s: array size set to %d from literal",
+                                   node->var_decl.name, node->var_decl.array_size);
+                    } else {
+                        log_verbose("[VAR_DECL] %s: array size already set to %d from type hint",
+                                   node->var_decl.name, node->var_decl.array_size);
+                    }
                 }
 
                 // Special case: if assigning a function identifier, copy the function's node reference

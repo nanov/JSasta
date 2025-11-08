@@ -1,0 +1,16 @@
+// jastat-summary: Function returning struct
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function make_point(x: i32, y: i32): Point {
+    return Point { x: x, y: y };
+}
+
+let p = make_point(5, 10);
+io.println("Point: ({}, {})", p.x, p.y);

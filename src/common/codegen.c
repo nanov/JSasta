@@ -119,6 +119,7 @@ CodeGen* codegen_create(const char* module_name) {
     gen->entry_block = NULL;          // Initialize entry block for allocas
 
     // Initialize debug info (will be configured later if -g is passed)
+    gen->enable_debug_symbols = false;
     gen->enable_debug = false;
     gen->source_filename = NULL;
     gen->di_builder = NULL;
@@ -997,17 +998,46 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 if (existing && existing->value) {
                     // Variable already declared in PASS 0.5, now initialize it with non-constant value
                     if (node->var_decl.init) {
-                        init_value = codegen_node(gen, node->var_decl.init);
+                        // Special handling for array literals with fixed-size arrays
+                        if (var_type_info && type_info_is_array(var_type_info) && 
+                            node->var_decl.array_size > 0 &&
+                            node->var_decl.init->type == AST_ARRAY_LITERAL) {
+                            
+                            ASTNode* array_lit = node->var_decl.init;
+                            LLVMTypeRef array_type = existing->llvm_type;
+                            
+                            for (int i = 0; i < array_lit->array_literal.count; i++) {
+                                // Generate code for the element value
+                                LLVMValueRef elem_value = codegen_node(gen, array_lit->array_literal.elements[i]);
+                                if (!elem_value) {
+                                    log_error_at(&node->loc, "Failed to generate code for array element %d", i);
+                                    continue;
+                                }
 
-                        // For struct types, if init_value is a pointer (from identifier),
-                        // we need to load it for value semantics (copy)
-                        if (var_type_info && type_info_is_object(var_type_info) &&
-                            LLVMGetTypeKind(LLVMTypeOf(init_value)) == LLVMPointerTypeKind) {
-                            init_value = LLVMBuildLoad2(gen->builder, var_llvm_type, init_value, "struct_copy");
-                        }
+                                // Get pointer to array element using GEP
+                                LLVMValueRef indices[] = {
+                                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),
+                                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0)
+                                };
+                                LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, array_type, existing->value,
+                                                                       indices, 2, "elem_ptr");
 
-                        if (init_value) {
-                            LLVMBuildStore(gen->builder, init_value, existing->value);
+                                // Store the value
+                                LLVMBuildStore(gen->builder, elem_value, elem_ptr);
+                            }
+                        } else {
+                            init_value = codegen_node(gen, node->var_decl.init);
+
+                            // For struct types, if init_value is a pointer (from identifier),
+                            // we need to load it for value semantics (copy)
+                            if (var_type_info && type_info_is_object(var_type_info) &&
+                                LLVMGetTypeKind(LLVMTypeOf(init_value)) == LLVMPointerTypeKind) {
+                                init_value = LLVMBuildLoad2(gen->builder, var_llvm_type, init_value, "struct_copy");
+                            }
+
+                            if (init_value) {
+                                LLVMBuildStore(gen->builder, init_value, existing->value);
+                            }
                         }
                     }
                     return existing->value;
@@ -1027,11 +1057,18 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     }
                 }
 
-                // For arrays, create a pointer type global
+                // For arrays with fixed size, create an array type; otherwise pointer type
                 if (var_type_info && type_info_is_array(var_type_info) && !var_llvm_type) {
                     TypeInfo* elem_type = var_type_info->data.array.element_type;
                     LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
-                    var_llvm_type = LLVMPointerType(elem_llvm_type, 0);
+                    
+                    if (node->var_decl.array_size > 0) {
+                        // Fixed-size array - use array type
+                        var_llvm_type = LLVMArrayType2(elem_llvm_type, node->var_decl.array_size);
+                    } else {
+                        // Dynamic array - use pointer type
+                        var_llvm_type = LLVMPointerType(elem_llvm_type, 0);
+                    }
                 }
 
                 // Create global variable
@@ -1055,6 +1092,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size > 0) {
                     // Use the array type created earlier (var_llvm_type)
                     LLVMTypeRef array_type = var_llvm_type;
+                    TypeInfo* elem_type = var_type_info->data.array.element_type;
+                    LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
 
                     // Allocate on stack (in entry block)
                     LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, array_type, node->var_decl.name);
@@ -1062,6 +1101,30 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     // Zero-initialize the array
                     LLVMValueRef zero = LLVMConstNull(array_type);
                     LLVMBuildStore(gen->builder, zero, alloca);
+
+                    // If there's an array literal initializer, initialize each element
+                    if (node->var_decl.init && node->var_decl.init->type == AST_ARRAY_LITERAL) {
+                        ASTNode* array_lit = node->var_decl.init;
+                        for (int i = 0; i < array_lit->array_literal.count; i++) {
+                            // Generate code for the element value
+                            LLVMValueRef elem_value = codegen_node(gen, array_lit->array_literal.elements[i]);
+                            if (!elem_value) {
+                                log_error_at(&node->loc, "Failed to generate code for array element %d", i);
+                                continue;
+                            }
+
+                            // Get pointer to array element using GEP
+                            LLVMValueRef indices[] = {
+                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),  // Dereference array pointer
+                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0)   // Index into array
+                            };
+                            LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, array_type, alloca, 
+                                                                   indices, 2, "elem_ptr");
+
+                            // Store the value
+                            LLVMBuildStore(gen->builder, elem_value, elem_ptr);
+                        }
+                    }
 
                     // Update the symbol entry (created during type inference) with LLVM value and type
                     if (node->var_decl.symbol_entry) {
@@ -1391,6 +1454,17 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     args[i] = codegen_member_access_ptr(gen, arg_node);
                 } else {
                     args[i] = codegen_node(gen, arg_node);
+                    
+                    // If parameter is NOT ref but argument is an object identifier, we need to load the struct value
+                    // because codegen_node for object identifiers returns a pointer, but the function expects a value
+                    if (!param_is_ref && arg_node->type == AST_IDENTIFIER && 
+                        arg_node->type_info && type_info_is_object(arg_node->type_info)) {
+                        // Get the struct type and load the value
+                        LLVMTypeRef struct_type = codegen_lookup_object_type(gen, arg_node->type_info);
+                        if (struct_type) {
+                            args[i] = LLVMBuildLoad2(gen->builder, struct_type, args[i], "struct_byval");
+                        }
+                    }
                 }
 
                 // For variadic functions (like printf), promote bool (i1) to i32 for proper printing
@@ -2565,7 +2639,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
     gen->symbols = ast->symbol_table;
 
     // Initialize debug info if enabled
-    if (gen->enable_debug && gen->source_filename) {
+    if (gen->enable_debug_symbols && gen->source_filename) {
         gen->di_builder = LLVMCreateDIBuilder(gen->module);
 
         // Create debug info file

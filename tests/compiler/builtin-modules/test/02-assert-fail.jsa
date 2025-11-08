@@ -1,0 +1,6 @@
+// jastat-summary: Test assertion with false condition fails
+// jastat: mode=run, capture=stderr, expect-exit-code=!0
+
+import test from @test;
+
+test.assert(false);

@@ -1,0 +1,8 @@
+// jastat-summary: Assert with true condition passes
+// jastat: mode=run, capture=assert
+
+import debug from @debug;
+
+debug.assert(true);
+debug.assert(1 + 1 == 2);
+debug.assert(5 > 3);

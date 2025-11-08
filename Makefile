@@ -10,9 +10,11 @@ CC = cc
 ifdef DEBUG
 	OPT_FLAGS = -O0 -g -fsanitize=address
 	DEBUG_INFO = Debug build with sanitizers enabled
+	BUILD_MODE = debug
 else
 	OPT_FLAGS = -O2 -g
 	DEBUG_INFO = Release build
+	BUILD_MODE = release
 endif
 
 # Common flags
@@ -21,7 +23,7 @@ LDFLAGS = $(shell llvm-config --ldflags --libs core)
 LDLIBS = $(shell llvm-config --system-libs)
 
 # test-runner
-TEST_RUNNER_CFLAGS = -Wall -Wextra -O3
+TEST_RUNNER_CFLAGS = -Wall -Wextra -O3 -DCOMPILER_PATH=\"$(COMPILER_TARGET)\" -DRUNTIME_PATH=\"$(BUILD_DIR)/runtime\"
 
 ifdef DEBUG
 	LDFLAGS += -fsanitize=address
@@ -33,7 +35,7 @@ COMPILER_DIR = src/compiler
 LSP_DIR = src/lsp
 RUNTIME_DIR = src/runtime
 TESET_RUNNER_DIR = src/test-runner
-BUILD_DIR = build
+BUILD_DIR = build/$(BUILD_MODE)
 
 # Targets
 COMPILER_TARGET = $(BUILD_DIR)/$(COMPILER_NAME)
@@ -88,8 +90,10 @@ info:
 	@echo "================================================"
 	@echo "  Mode:           $(DEBUG_INFO)"
 	@echo "  Optimization:   $(OPT_FLAGS)"
+	@echo "  Build dir:      $(BUILD_DIR)"
 	@echo "  Compiler:       $(COMPILER_TARGET)"
 	@echo "  LSP Daemon:     $(LSP_TARGET)"
+	@echo "  Test Runner:    $(TEST_RUNNER_TARGET)"
 	@echo "================================================"
 	@echo
 
@@ -156,8 +160,8 @@ $(BUILD_DIR)/runtime/%.o: $(RUNTIME_DIR)/%.c | $(BUILD_DIR)
 # Clean build artifacts
 #
 clean:
-	rm -rf $(BUILD_DIR) *.ll
-	@echo "Cleaned build directory"
+	rm -rf build *.ll
+	@echo "Cleaned build directories"
 
 # Test targets (using compiler)
 test: $(COMPILER_TARGET)

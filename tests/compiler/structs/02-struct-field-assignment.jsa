@@ -4,10 +4,11 @@
 import io from @io;
 
 struct Counter {
-    value: i32
+    value: i32;
 }
 
-let c = Counter { value: 0 };
+var c: Counter;
+c.value = 0;
 
 io.println("Initial: {}", c.value);
 

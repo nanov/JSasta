@@ -9,10 +9,16 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/wait.h>
+#include <sys/sysctl.h>
 
 // --- Definitions and Globals ---
 #define MAX_PATH 1024
-#define COMPILER_PATH "build/jsastac"
+#ifndef COMPILER_PATH
+#define COMPILER_PATH "build/release/jsastac"
+#endif
+#ifndef RUNTIME_PATH
+#define RUNTIME_PATH "build/release/runtime"
+#endif
 #define MAX_ENTRIES_PER_DIR 256
 #define READ_BUF_SIZE 4096
 
@@ -29,12 +35,13 @@
 
 bool g_update_fixtures = false;
 bool g_verbose_mode = false;
+int g_max_parallel_jobs = 1;  // Default: sequential
 
 typedef enum { TEST_PASS, TEST_FAIL, TEST_ERROR } test_status_t;
 
 // --- Data structures for test configuration ---
 typedef enum { MODE_RUN, MODE_COMPILER } TestMode;
-typedef enum { CAPTURE_ALL, CAPTURE_STDOUT, CAPTURE_STDERR } CaptureStream;
+typedef enum { CAPTURE_ALL, CAPTURE_STDOUT, CAPTURE_STDERR, CAPTURE_ASSERT } CaptureStream;
 
 typedef struct {
     TestMode mode;
@@ -137,7 +144,16 @@ int execute_and_capture_streams(const char* command, char** stdout_buf, char** s
 
     int status;
     waitpid(pid, &status, 0);
-    return WEXITSTATUS(status);
+    
+    // Handle both normal exits and signal termination
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        // Process was terminated by a signal (e.g., SIGABRT from abort())
+        // Return 128 + signal number (common convention)
+        return 128 + WTERMSIG(status);
+    }
+    return -1; // Should not reach here
 }
 
 void trim_trailing_whitespace(char* str) {
@@ -181,6 +197,7 @@ void parse_test_config(const char* source_path, TestConfig* config) {
                     } else if (strncmp(token, "capture=", 8) == 0) {
                         if (strcmp(token + 8, "stdout") == 0) config->capture_stream = CAPTURE_STDOUT;
                         else if (strcmp(token + 8, "stderr") == 0) config->capture_stream = CAPTURE_STDERR;
+                        else if (strcmp(token + 8, "assert") == 0) config->capture_stream = CAPTURE_ASSERT;
                     } else if (strncmp(token, "expect-exit-code=", 17) == 0) {
                         char* value = token + 17;
                         if (strcmp(value, "!0") == 0) {
@@ -228,7 +245,7 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
     const char* spinner = "|/-\\"; for (int i=0; i<4; ++i) { printf("\b%c", spinner[i]); fflush(stdout); usleep(100000); } printf("\b");
 
     test_status_t status = TEST_FAIL;
-    snprintf(command, sizeof(command), "./%s %s %s", COMPILER_PATH, absolute_source_path, temp_executable_path);
+    snprintf(command, sizeof(command), "./%s -o %s %s", COMPILER_PATH, temp_executable_path, absolute_source_path);
     char* compiler_stdout = NULL, *compiler_stderr = NULL;
     int compiler_exit_code = execute_and_capture_streams(command, &compiler_stdout, &compiler_stderr);
 
@@ -253,15 +270,27 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                 content_to_write = compiler_stderr;
             } else { // MODE_RUN
                 if (compiler_exit_code == 0) {
-                    char* runtime_stdout = NULL, *runtime_stderr = NULL;
-                    snprintf(command, sizeof(command), "lli %s", temp_executable_path);
-                    execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
+                    // CAPTURE_ASSERT mode: no fixture to update, just mark as pass
+                    if (config.capture_stream == CAPTURE_ASSERT) {
+                        status = TEST_PASS;
+                    } else {
+                        char* runtime_stdout = NULL, *runtime_stderr = NULL;
+                        // Compile and link with runtime instead of using lli
+                        char temp_exe[MAX_PATH];
+                        snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
+                        snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null", 
+                                 temp_executable_path, temp_exe);
+                        system(command);
+                        snprintf(command, sizeof(command), "%s", temp_exe);
+                        execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
+                        remove(temp_exe);
 
-                    if (config.capture_stream == CAPTURE_STDOUT) { asprintf(&content_to_write, "%s", runtime_stdout); }
-                    else if (config.capture_stream == CAPTURE_STDERR) { asprintf(&content_to_write, "%s", runtime_stderr); }
-                    else { asprintf(&content_to_write, "%s%s", runtime_stdout, runtime_stderr); }
+                        if (config.capture_stream == CAPTURE_STDOUT) { asprintf(&content_to_write, "%s", runtime_stdout); }
+                        else if (config.capture_stream == CAPTURE_STDERR) { asprintf(&content_to_write, "%s", runtime_stderr); }
+                        else { asprintf(&content_to_write, "%s%s", runtime_stdout, runtime_stderr); }
 
-                    free(runtime_stdout); free(runtime_stderr);
+                        free(runtime_stdout); free(runtime_stderr);
+                    }
                 } else {
                     asprintf(&failure_reason, "Cannot update fixture, compilation failed.");
                     actual_output_for_display = strdup(compiler_stderr);
@@ -298,8 +327,15 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
             if (compiler_exit_code != 0) { asprintf(&failure_reason, "Compilation failed unexpectedly (exit code %d).", compiler_exit_code); actual_output_for_display = strdup(compiler_stderr); status = TEST_FAIL; }
             else {
                 char* runtime_stdout = NULL, *runtime_stderr = NULL;
-                snprintf(command, sizeof(command), "lli %s", temp_executable_path);
+                // Compile and link with runtime instead of using lli
+                char temp_exe[MAX_PATH];
+                snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
+                snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null", 
+                         temp_executable_path, temp_exe);
+                system(command);
+                snprintf(command, sizeof(command), "%s", temp_exe);
                 int runtime_exit_code = execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
+                remove(temp_exe);
 
                 bool exit_code_ok; char expected_code_str[50];
                 if (config.expect_non_zero_exit_code) { exit_code_ok = (runtime_exit_code != 0); snprintf(expected_code_str, sizeof(expected_code_str), "non-zero");
@@ -307,21 +343,26 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
 
                 if (!exit_code_ok) { asprintf(&failure_reason, "Program exited with code %d, but expected %s.", runtime_exit_code, expected_code_str); status = TEST_FAIL; }
                 else {
-                    char* capture_target = NULL;
-                    if (config.capture_stream == CAPTURE_STDOUT) { capture_target = strdup(runtime_stdout); }
-                    else if (config.capture_stream == CAPTURE_STDERR) { capture_target = strdup(runtime_stderr); }
-                    else { asprintf(&capture_target, "%s%s", runtime_stdout, runtime_stderr); }
+                    // CAPTURE_ASSERT mode: only check exit code, don't compare output
+                    if (config.capture_stream == CAPTURE_ASSERT) {
+                        status = TEST_PASS;
+                    } else {
+                        char* capture_target = NULL;
+                        if (config.capture_stream == CAPTURE_STDOUT) { capture_target = strdup(runtime_stdout); }
+                        else if (config.capture_stream == CAPTURE_STDERR) { capture_target = strdup(runtime_stderr); }
+                        else { asprintf(&capture_target, "%s%s", runtime_stdout, runtime_stderr); }
 
-                    if (!capture_target) { asprintf(&failure_reason, "Memory allocation failed for capture buffer."); status = TEST_ERROR; }
-                    else {
-                        char* expected_out = read_file_contents(fixture_path);
-                        if (!expected_out) { asprintf(&failure_reason, "Fixture not found: %s", fixture_path); status = TEST_ERROR; }
+                        if (!capture_target) { asprintf(&failure_reason, "Memory allocation failed for capture buffer."); status = TEST_ERROR; }
                         else {
-                            if (strcmp(capture_target, expected_out) == 0) { status = TEST_PASS; }
-                            else { asprintf(&failure_reason, "Program output (%s) did not match fixture.", config.capture_stream == CAPTURE_STDOUT ? "STDOUT" : (config.capture_stream == CAPTURE_STDERR ? "STDERR" : "ALL")); actual_output_for_display = strdup(capture_target); expected_output_for_display = strdup(expected_out); status = TEST_FAIL; }
-                            free(expected_out);
+                            char* expected_out = read_file_contents(fixture_path);
+                            if (!expected_out) { asprintf(&failure_reason, "Fixture not found: %s", fixture_path); status = TEST_ERROR; }
+                            else {
+                                if (strcmp(capture_target, expected_out) == 0) { status = TEST_PASS; }
+                                else { asprintf(&failure_reason, "Program output (%s) did not match fixture.", config.capture_stream == CAPTURE_STDOUT ? "STDOUT" : (config.capture_stream == CAPTURE_STDERR ? "STDERR" : "ALL")); actual_output_for_display = strdup(capture_target); expected_output_for_display = strdup(expected_out); status = TEST_FAIL; }
+                                free(expected_out);
+                            }
+                            free(capture_target);
                         }
-                        free(capture_target);
                     }
                 }
                 free(runtime_stdout); free(runtime_stderr);
@@ -382,10 +423,61 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
         const char* suite_display_name = current_dir + strlen(root_dir);
         if (*suite_display_name == '/') suite_display_name++;
         printf("\nRunning Suite: %s\n", *suite_display_name ? suite_display_name : ".");
-        for (int i = 0; i < test_file_count; i++) {
-            test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
-            if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
-            free(test_files[i]);
+        
+        if (g_max_parallel_jobs == 1) {
+            // Sequential execution
+            for (int i = 0; i < test_file_count; i++) {
+                test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
+                if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
+                free(test_files[i]);
+            }
+        } else {
+            // Parallel execution
+            int active_processes = 0;
+            int next_test = 0;
+            
+            while (next_test < test_file_count || active_processes > 0) {
+                // Spawn new processes up to the limit
+                while (active_processes < g_max_parallel_jobs && next_test < test_file_count) {
+                    pid_t pid = fork();
+                    if (pid == 0) {
+                        // Child process - run test and exit
+                        test_status_t status = run_test_case(suite_display_name, current_dir, test_files[next_test]);
+                        exit(status == TEST_PASS ? 0 : 1);
+                    } else if (pid > 0) {
+                        // Parent process
+                        active_processes++;
+                        next_test++;
+                    } else {
+                        // Fork failed - fall back to sequential
+                        fprintf(stderr, "Warning: fork() failed, falling back to sequential execution\n");
+                        for (int i = next_test; i < test_file_count; i++) {
+                            test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
+                            if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
+                        }
+                        goto cleanup_files;
+                    }
+                }
+                
+                // Wait for any child to complete
+                if (active_processes > 0) {
+                    int status;
+                    pid_t finished = wait(&status);
+                    if (finished > 0) {
+                        active_processes--;
+                        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                            (*success_count)++;
+                        } else {
+                            (*error_count)++;
+                        }
+                    }
+                }
+            }
+            
+cleanup_files:
+            for (int i = 0; i < test_file_count; i++) {
+                free(test_files[i]);
+            }
         }
     }
 
@@ -397,21 +489,47 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
     }
 }
 
+int get_cpu_count() {
+    int count;
+    size_t size = sizeof(count);
+    if (sysctlbyname("hw.ncpu", &count, &size, NULL, 0) == 0) {
+        return count;
+    }
+    return 1;  // fallback
+}
+
 void print_usage(const char* prog_name) {
     fprintf(stderr, "Usage: %s [options] <tests_directory>\n", prog_name);
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -u, --update-fixtures   Create or update fixture files.\n");
     fprintf(stderr, "  -v, --verbose           Print full compiler output for every test.\n");
+    fprintf(stderr, "  -j, --jobs <N>          Run N tests in parallel (default: cores/2, use -j1 for sequential).\n");
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 2) { print_usage(argv[0]); return 1; }
 
+    // Set default parallel jobs to cores/2
+    g_max_parallel_jobs = get_cpu_count() / 2;
+    if (g_max_parallel_jobs < 1) g_max_parallel_jobs = 1;
+
     const char* root_tests_dir = NULL;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-u")==0 || strcmp(argv[i], "--update-fixtures")==0) g_update_fixtures = true;
-        else if (strcmp(argv[i], "-v")==0 || strcmp(argv[i], "--verbose")==0) g_verbose_mode = true;
-        else if (argv[i][0] != '-') root_tests_dir = argv[i];
+        if (strcmp(argv[i], "-u")==0 || strcmp(argv[i], "--update-fixtures")==0) {
+            g_update_fixtures = true;
+        }
+        else if (strcmp(argv[i], "-v")==0 || strcmp(argv[i], "--verbose")==0) {
+            g_verbose_mode = true;
+        }
+        else if (strcmp(argv[i], "-j")==0 || strcmp(argv[i], "--jobs")==0) {
+            if (i + 1 < argc) {
+                g_max_parallel_jobs = atoi(argv[++i]);
+                if (g_max_parallel_jobs < 1) g_max_parallel_jobs = 1;
+            }
+        }
+        else if (argv[i][0] != '-') {
+            root_tests_dir = argv[i];
+        }
     }
 
     if (!root_tests_dir) { print_usage(argv[0]); return 1; }
