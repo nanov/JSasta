@@ -1,0 +1,22 @@
+// Test pattern matching with unit variants
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Color {
+    red;
+    green;
+    blue;
+}
+
+let c = Color.red;
+
+if (c is Color.red) {
+    io.println("Color is red");
+}
+
+if (c is Color.green) {
+    io.println("Color is green");
+} else {
+    io.println("Color is not green");
+}

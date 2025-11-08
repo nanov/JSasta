@@ -3,12 +3,11 @@ set -e
 
 script=$( realpath $1 )
 filename=$( basename $script )
-output=compiled/${filename%.*}
-output_ll=${filename%.*}.ll
+output_name=${filename%.*}
 
 DEBUG=1 make compiler
 mkdir -p compiled
 cd compiled
-../build/debug/jsastac $script $output_ll
-clang -Wno-override-module -O3 -o ${output} ${output_ll}
-./$output
+# Use -d for debug mode instead of -DDEBUG (which is a C preprocessor flag)
+../build/debug/jsastac -O0 -g -d -o $output_name $script
+./$output_name

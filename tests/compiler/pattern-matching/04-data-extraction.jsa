@@ -1,0 +1,21 @@
+// Test pattern matching with data extraction
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Message {
+    quit;
+    move(x: i32, y: i32);
+}
+
+let msg = Message.move{x: 10, y: 20};
+
+if (msg is Message.move(let x, let y)) {
+    io.println("Move to x={}, y={}", x, y);
+}
+
+if (msg is Message.quit) {
+    io.println("Quit");
+} else {
+    io.println("Not quit");
+}

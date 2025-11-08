@@ -513,6 +513,117 @@ TypeInfo* type_context_find_struct_type(TypeContext* ctx, const char* struct_nam
     return NULL;
 }
 
+// Create and register an enum type
+TypeInfo* type_context_create_enum_type(TypeContext* ctx, const char* enum_name,
+                                         char** variant_names, char*** variant_field_names,
+                                         TypeInfo*** variant_field_types, int* variant_field_counts,
+                                         int variant_count, ASTNode* enum_decl_node) {
+    if (!ctx || !enum_name) return NULL;
+
+    // Check if enum type already exists
+    TypeEntry* entry = ctx->type_table;
+    while (entry) {
+        if (entry->type->kind == TYPE_KIND_ENUM &&
+            entry->type->type_name &&
+            strcmp(entry->type->type_name, enum_name) == 0) {
+            log_error("Enum '%s' is already defined", enum_name);
+            return entry->type; // Return existing
+        }
+        entry = entry->next;
+    }
+
+    // Create new enum type
+    TypeInfo* enum_type = type_info_create(TYPE_KIND_ENUM, strdup(enum_name));
+
+    // Copy variant names
+    enum_type->data.enum_type.variant_names = (char**)malloc(sizeof(char*) * variant_count);
+    for (int i = 0; i < variant_count; i++) {
+        enum_type->data.enum_type.variant_names[i] = strdup(variant_names[i]);
+    }
+
+    // Copy variant field names (deep copy)
+    enum_type->data.enum_type.variant_field_names = (char***)malloc(sizeof(char**) * variant_count);
+    for (int i = 0; i < variant_count; i++) {
+        if (variant_field_names[i]) {
+            enum_type->data.enum_type.variant_field_names[i] = (char**)malloc(sizeof(char*) * variant_field_counts[i]);
+            for (int j = 0; j < variant_field_counts[i]; j++) {
+                enum_type->data.enum_type.variant_field_names[i][j] = strdup(variant_field_names[i][j]);
+            }
+        } else {
+            enum_type->data.enum_type.variant_field_names[i] = NULL;
+        }
+    }
+
+    // Copy variant field types array (TypeInfo pointers are shared references)
+    enum_type->data.enum_type.variant_field_types = (TypeInfo***)malloc(sizeof(TypeInfo**) * variant_count);
+    for (int i = 0; i < variant_count; i++) {
+        if (variant_field_types[i]) {
+            enum_type->data.enum_type.variant_field_types[i] = (TypeInfo**)malloc(sizeof(TypeInfo*) * variant_field_counts[i]);
+            memcpy(enum_type->data.enum_type.variant_field_types[i], variant_field_types[i],
+                   sizeof(TypeInfo*) * variant_field_counts[i]);
+        } else {
+            enum_type->data.enum_type.variant_field_types[i] = NULL;
+        }
+    }
+
+    // Copy variant field counts
+    enum_type->data.enum_type.variant_field_counts = (int*)malloc(sizeof(int) * variant_count);
+    memcpy(enum_type->data.enum_type.variant_field_counts, variant_field_counts, sizeof(int) * variant_count);
+
+    enum_type->data.enum_type.variant_count = variant_count;
+    enum_type->data.enum_type.enum_decl_node = enum_decl_node;  // Store reference
+
+    // Create struct types for each variant with data fields
+    // This allows pattern matching with struct bindings: if (expr is Variant(let m)) { m.field }
+    for (int i = 0; i < variant_count; i++) {
+        if (variant_field_counts[i] > 0) {
+            // Create struct type name: "EnumName.VariantName"
+            size_t type_name_len = strlen(enum_name) + strlen(variant_names[i]) + 2; // +2 for '.' and '\0'
+            char* struct_type_name = (char*)malloc(type_name_len);
+            snprintf(struct_type_name, type_name_len, "%s.%s", enum_name, variant_names[i]);
+            
+            // Create the struct type (using TYPE_KIND_OBJECT which has the fields we need)
+            TypeInfo* struct_type = type_info_create(TYPE_KIND_OBJECT, struct_type_name);
+            struct_type->data.object.property_names = (char**)malloc(sizeof(char*) * variant_field_counts[i]);
+            struct_type->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * variant_field_counts[i]);
+            
+            // Copy field names and types from the variant
+            for (int j = 0; j < variant_field_counts[i]; j++) {
+                struct_type->data.object.property_names[j] = strdup(variant_field_names[i][j]);
+                struct_type->data.object.property_types[j] = variant_field_types[i][j];
+            }
+            
+            struct_type->data.object.property_count = variant_field_counts[i];
+            struct_type->data.object.struct_decl_node = NULL;  // No declaration node for generated types
+            
+            // Register the struct type in the type context
+            type_context_register_type(ctx, struct_type);
+            
+            log_verbose("Created struct type '%s' for enum variant with %d fields", 
+                       struct_type_name, variant_field_counts[i]);
+        }
+    }
+
+    return type_context_register_type(ctx, enum_type);
+}
+
+// Find an enum type by name
+TypeInfo* type_context_find_enum_type(TypeContext* ctx, const char* enum_name) {
+    if (!ctx || !enum_name) return NULL;
+
+    TypeEntry* entry = ctx->type_table;
+    while (entry) {
+        if (entry->type->kind == TYPE_KIND_ENUM &&
+            entry->type->type_name &&
+            strcmp(entry->type->type_name, enum_name) == 0) {
+            return entry->type;
+        }
+        entry = entry->next;
+    }
+
+    return NULL;
+}
+
 // Helper: Check if two TypeInfo arrays match (with implicit ref conversion and alias resolution)
 static bool type_arrays_match(TypeInfo** types1, TypeInfo** types2, int count) {
     for (int i = 0; i < count; i++) {

@@ -1,0 +1,21 @@
+// Test enum variant construction with data
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Color {
+    red;
+    green;
+    blue;
+}
+
+let c1 = Color.red;
+let c2 = Color.green;
+
+if (c1 is Color.red) {
+    io.println("c1 is red");
+}
+
+if (c2 is Color.green) {
+    io.println("c2 is green");
+}

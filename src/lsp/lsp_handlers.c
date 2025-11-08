@@ -412,3 +412,100 @@ void lsp_handle_did_save(LSPServer* server, LspJsonDidSaveTextDocumentParams* pa
     (void)params;
     // Nothing special to do on save for now
 }
+
+char* lsp_handle_inlay_hint(LSPServer* server, LspJsonInlayHintParams* params) {
+    LSP_LOG("Inlay hint request for %s", params->textDocument.uri);
+
+    // Find the document
+    LSPDocument* doc = lsp_server_find_document(server, params->textDocument.uri);
+    if (!doc) {
+        LSP_LOG("Document not found");
+        return strdup("[]");
+    }
+
+    // Get code index (rebuilds if type inference completed)
+    CodeIndex* code_index = lsp_document_get_code_index(doc);
+    if (!code_index) {
+        LSP_LOG("Code index not built");
+        return strdup("[]");
+    }
+
+    // Convert URI to filename
+    char* filename = lsp_uri_to_path(params->textDocument.uri);
+    if (!filename) {
+        LSP_LOG("Failed to convert URI to path");
+        return strdup("[]");
+    }
+
+    // Build inlay hints array
+    JSONBuilder* builder = json_builder_create();
+    json_start_array(builder);
+
+    // Iterate through all position entries
+    for (int i = 0; i < code_index->position_count; i++) {
+        PositionEntry* entry = &code_index->positions[i];
+        
+        // Skip if not in requested range or not in this file
+        if (!entry->range.filename || strcmp(entry->range.filename, filename) != 0) {
+            continue;
+        }
+        
+        // Check if position is within requested range (LSP uses 0-based, we use 1-based)
+        if (entry->range.start_line - 1 < params->range.start.line || 
+            entry->range.end_line - 1 > params->range.end.line) {
+            continue;
+        }
+
+        // Only show hints for variable declarations and parameters (not functions, types, etc.)
+        if (!entry->code_info || !entry->is_definition) {
+            continue;
+        }
+
+        if (entry->code_info->kind != CODE_VARIABLE && entry->code_info->kind != CODE_PARAMETER) {
+            continue;
+        }
+
+        // Skip if type_info is unknown (shouldn't happen for variables/params after type inference)
+        if (!entry->code_info->type_info || type_info_is_unknown(entry->code_info->type_info)) {
+            continue;
+        }
+
+        // Get type information
+        if (!entry->code_info->type_info || !entry->code_info->type_info->type_name) {
+            continue;
+        }
+
+        // Create inlay hint
+        json_start_object(builder);
+
+        // Position: at the end of the identifier
+        json_add_key(builder, "position");
+        json_start_object(builder);
+        json_add_number_field(builder, "line", (int)entry->range.end_line - 1);  // Convert to 0-based
+        json_add_number_field(builder, "character", (int)entry->range.end_column);  // After the identifier
+        json_end_object(builder);
+
+        // Label: ": typename"
+        char label[256];
+        snprintf(label, sizeof(label), ": %s", entry->code_info->type_info->type_name);
+        json_add_string_field(builder, "label", label);
+
+        // Kind: 1 = Type hint
+        json_add_number_field(builder, "kind", 1);
+
+        // Padding
+        json_add_bool_field(builder, "paddingLeft", false);
+        json_add_bool_field(builder, "paddingRight", false);
+
+        json_end_object(builder);
+    }
+
+    json_end_array(builder);
+
+    char* result = json_builder_to_string(builder);
+    json_builder_free(builder);
+    free(filename);
+
+    LSP_LOG("Returning inlay hints");
+    return result;
+}

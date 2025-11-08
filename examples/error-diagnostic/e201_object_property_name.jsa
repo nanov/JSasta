@@ -1,7 +1,8 @@
 // E201: Expected property name in object literal
 // This error occurs when an object literal has a missing or invalid property name
 
-function main() {
-    // Error: missing property name (only has value)
-    var obj = { : 42 };
+var i = 1;
+
+function mitko() {
+    return 1;
 }

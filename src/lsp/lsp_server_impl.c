@@ -287,6 +287,7 @@ LSPServer *lsp_server_create(void) {
 	server->capabilities.references_provider = true; // Implemented with CodeIndex
 	server->capabilities.document_symbol_provider = false; // TODO: implement
 	server->capabilities.diagnostic_provider = true;
+	server->capabilities.inlay_hint_provider = true;
 
 	return server;
 }
@@ -404,6 +405,11 @@ void lsp_server_run(LSPServer *server) {
 			case LSP_METHOD_TEXTDOCUMENT_REFERENCES: {
 				char *result = lsp_handle_references( server, &msg.notification_or_request.params.references);
 				response_json =lsp_serialize_response(msg.notification_or_request.id, result);
+				free(result);
+			} break;
+			case LSP_METHOD_TEXTDOCUMENT_INLAY_HINT: {
+				char *result = lsp_handle_inlay_hint(server, &msg.notification_or_request.params.inlayHint);
+				response_json = lsp_serialize_response(msg.notification_or_request.id, result);
 				free(result);
 			} break;
 			default:

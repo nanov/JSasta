@@ -189,6 +189,9 @@ char* lsp_handle_definition(LSPServer* server, LspJsonTextDocumentPositionParams
 // Handle textDocument/references request
 char* lsp_handle_references(LSPServer* server, LspJsonTextDocumentPositionParams* params);
 
+// Handle textDocument/inlayHint request
+char* lsp_handle_inlay_hint(LSPServer* server, LspJsonInlayHintParams* params);
+
 // Handle textDocument/documentSymbol request
 char* lsp_handle_document_symbol(LSPServer* server, const char* params);
 

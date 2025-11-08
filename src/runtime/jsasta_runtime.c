@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdint.h>
+#include <errno.h>
 
 // JSasta runtime memory allocation functions
 // These wrap malloc/calloc/free for now, but can be replaced with ARC or GC in the future
@@ -19,4 +20,8 @@ void jsasta_free(void* ptr) {
     if (ptr != NULL) {
         free(ptr);
     }
+}
+
+int get_errno() {
+	return errno;
 }

@@ -100,6 +100,36 @@ void ast_free(ASTNode* node) {
             }
             break;
 
+        case AST_ENUM_DECL:
+            free(node->enum_decl.name);
+            for (int i = 0; i < node->enum_decl.variant_count; i++) {
+                free(node->enum_decl.variant_names[i]);
+                if (node->enum_decl.variant_field_names[i]) {
+                    for (int j = 0; j < node->enum_decl.variant_field_counts[i]; j++) {
+                        free(node->enum_decl.variant_field_names[i][j]);
+                    }
+                    free(node->enum_decl.variant_field_names[i]);
+                }
+                // Note: variant_field_types are references to TypeContext, don't free the TypeInfo objects
+                if (node->enum_decl.variant_field_types[i]) {
+                    free(node->enum_decl.variant_field_types[i]);
+                }
+            }
+            free(node->enum_decl.variant_names);
+            if (node->enum_decl.variant_field_names) {
+                free(node->enum_decl.variant_field_names);
+            }
+            if (node->enum_decl.variant_field_types) {
+                free(node->enum_decl.variant_field_types);
+            }
+            if (node->enum_decl.variant_field_counts) {
+                free(node->enum_decl.variant_field_counts);
+            }
+            if (node->enum_decl.variant_locs) {
+                free(node->enum_decl.variant_locs);
+            }
+            break;
+
         case AST_RETURN:
             ast_free(node->return_stmt.value);
             break;
@@ -201,6 +231,39 @@ void ast_free(ASTNode* node) {
         case AST_MEMBER_ACCESS:
             ast_free(node->member_access.object);
             free(node->member_access.property);
+            break;
+
+        case AST_ENUM_VARIANT:
+            free(node->enum_variant.enum_name);
+            free(node->enum_variant.variant_name);
+            // enum_type is a reference, don't free
+            if (node->enum_variant.field_names) {
+                for (int i = 0; i < node->enum_variant.field_count; i++) {
+                    free(node->enum_variant.field_names[i]);
+                }
+                free(node->enum_variant.field_names);
+            }
+            if (node->enum_variant.field_values) {
+                for (int i = 0; i < node->enum_variant.field_count; i++) {
+                    ast_free(node->enum_variant.field_values[i]);
+                }
+                free(node->enum_variant.field_values);
+            }
+            break;
+
+        case AST_PATTERN_MATCH:
+            ast_free(node->pattern_match.expr);
+            free(node->pattern_match.enum_name);
+            free(node->pattern_match.variant_name);
+            // Free binding arrays
+            for (int i = 0; i < node->pattern_match.binding_count; i++) {
+                free(node->pattern_match.binding_names[i]);
+            }
+            free(node->pattern_match.binding_names);
+            free(node->pattern_match.binding_is_mutable);
+            free(node->pattern_match.binding_is_wildcard);
+            free(node->pattern_match.binding_types);
+            // enum_type is a reference, don't free
             break;
 
         case AST_MEMBER_ASSIGNMENT:
@@ -415,6 +478,57 @@ ASTNode* ast_clone(ASTNode* node) {
             }
             break;
 
+        case AST_ENUM_DECL:
+            clone->enum_decl.name = strdup(node->enum_decl.name);
+            clone->enum_decl.variant_count = node->enum_decl.variant_count;
+
+            // Clone variant names
+            clone->enum_decl.variant_names = (char**)malloc(sizeof(char*) * node->enum_decl.variant_count);
+            for (int i = 0; i < node->enum_decl.variant_count; i++) {
+                clone->enum_decl.variant_names[i] = strdup(node->enum_decl.variant_names[i]);
+            }
+
+            // Clone variant field names
+            clone->enum_decl.variant_field_names = (char***)malloc(sizeof(char**) * node->enum_decl.variant_count);
+            for (int i = 0; i < node->enum_decl.variant_count; i++) {
+                if (node->enum_decl.variant_field_names[i]) {
+                    clone->enum_decl.variant_field_names[i] = (char**)malloc(sizeof(char*) * node->enum_decl.variant_field_counts[i]);
+                    for (int j = 0; j < node->enum_decl.variant_field_counts[i]; j++) {
+                        clone->enum_decl.variant_field_names[i][j] = strdup(node->enum_decl.variant_field_names[i][j]);
+                    }
+                } else {
+                    clone->enum_decl.variant_field_names[i] = NULL;
+                }
+            }
+
+            // Copy type references (don't clone - they're managed by TypeContext)
+            clone->enum_decl.variant_field_types = (TypeInfo***)malloc(sizeof(TypeInfo**) * node->enum_decl.variant_count);
+            for (int i = 0; i < node->enum_decl.variant_count; i++) {
+                if (node->enum_decl.variant_field_types[i]) {
+                    clone->enum_decl.variant_field_types[i] = (TypeInfo**)malloc(sizeof(TypeInfo*) * node->enum_decl.variant_field_counts[i]);
+                    for (int j = 0; j < node->enum_decl.variant_field_counts[i]; j++) {
+                        clone->enum_decl.variant_field_types[i][j] = node->enum_decl.variant_field_types[i][j];
+                    }
+                } else {
+                    clone->enum_decl.variant_field_types[i] = NULL;
+                }
+            }
+
+            // Copy variant field counts
+            clone->enum_decl.variant_field_counts = (int*)malloc(sizeof(int) * node->enum_decl.variant_count);
+            memcpy(clone->enum_decl.variant_field_counts, node->enum_decl.variant_field_counts,
+                   sizeof(int) * node->enum_decl.variant_count);
+
+            // Copy variant locations
+            if (node->enum_decl.variant_locs) {
+                clone->enum_decl.variant_locs = (SourceLocation*)malloc(sizeof(SourceLocation) * node->enum_decl.variant_count);
+                memcpy(clone->enum_decl.variant_locs, node->enum_decl.variant_locs,
+                       sizeof(SourceLocation) * node->enum_decl.variant_count);
+            } else {
+                clone->enum_decl.variant_locs = NULL;
+            }
+            break;
+
         case AST_RETURN:
             clone->return_stmt.value = ast_clone(node->return_stmt.value);
             break;
@@ -526,6 +640,60 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->member_access.object = ast_clone(node->member_access.object);
             clone->member_access.property = strdup(node->member_access.property);
             clone->member_access.property_loc = node->member_access.property_loc;
+            break;
+
+        case AST_ENUM_VARIANT:
+            clone->enum_variant.enum_name = strdup(node->enum_variant.enum_name);
+            clone->enum_variant.variant_name = strdup(node->enum_variant.variant_name);
+            clone->enum_variant.enum_type = node->enum_variant.enum_type; // Reference, not cloned
+            clone->enum_variant.variant_index = node->enum_variant.variant_index;
+            clone->enum_variant.field_count = node->enum_variant.field_count;
+            if (node->enum_variant.field_names) {
+                clone->enum_variant.field_names = malloc(sizeof(char*) * node->enum_variant.field_count);
+                for (int i = 0; i < node->enum_variant.field_count; i++) {
+                    clone->enum_variant.field_names[i] = strdup(node->enum_variant.field_names[i]);
+                }
+            } else {
+                clone->enum_variant.field_names = NULL;
+            }
+            if (node->enum_variant.field_values) {
+                clone->enum_variant.field_values = malloc(sizeof(ASTNode*) * node->enum_variant.field_count);
+                for (int i = 0; i < node->enum_variant.field_count; i++) {
+                    clone->enum_variant.field_values[i] = ast_clone(node->enum_variant.field_values[i]);
+                }
+            } else {
+                clone->enum_variant.field_values = NULL;
+            }
+            break;
+
+        case AST_PATTERN_MATCH:
+            clone->pattern_match.expr = ast_clone(node->pattern_match.expr);
+            clone->pattern_match.enum_name = strdup(node->pattern_match.enum_name);
+            clone->pattern_match.variant_name = strdup(node->pattern_match.variant_name);
+            clone->pattern_match.enum_type = node->pattern_match.enum_type; // Reference
+            clone->pattern_match.variant_index = node->pattern_match.variant_index;
+            clone->pattern_match.binding_count = node->pattern_match.binding_count;
+            clone->pattern_match.is_struct_binding = node->pattern_match.is_struct_binding;
+            
+            // Clone binding arrays
+            if (node->pattern_match.binding_count > 0) {
+                clone->pattern_match.binding_names = malloc(sizeof(char*) * node->pattern_match.binding_count);
+                clone->pattern_match.binding_is_mutable = malloc(sizeof(bool) * node->pattern_match.binding_count);
+                clone->pattern_match.binding_is_wildcard = malloc(sizeof(bool) * node->pattern_match.binding_count);
+                clone->pattern_match.binding_types = malloc(sizeof(TypeInfo*) * node->pattern_match.binding_count);
+                
+                for (int i = 0; i < node->pattern_match.binding_count; i++) {
+                    clone->pattern_match.binding_names[i] = strdup(node->pattern_match.binding_names[i]);
+                    clone->pattern_match.binding_is_mutable[i] = node->pattern_match.binding_is_mutable[i];
+                    clone->pattern_match.binding_is_wildcard[i] = node->pattern_match.binding_is_wildcard[i];
+                    clone->pattern_match.binding_types[i] = node->pattern_match.binding_types[i]; // Reference
+                }
+            } else {
+                clone->pattern_match.binding_names = NULL;
+                clone->pattern_match.binding_is_mutable = NULL;
+                clone->pattern_match.binding_is_wildcard = NULL;
+                clone->pattern_match.binding_types = NULL;
+            }
             break;
 
         case AST_MEMBER_ASSIGNMENT:

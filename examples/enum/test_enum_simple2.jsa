@@ -1,0 +1,15 @@
+enum Color {
+    red;
+    green;
+    blue;
+}
+
+function test() {
+    var c = Color.red;
+    return c;
+}
+
+function main() {
+    var result = test();
+    return result;
+}

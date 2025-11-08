@@ -561,7 +561,7 @@ static ASTNode* parse_call(Parser* parser) {
 
     while (parser_match(parser, TOKEN_LPAREN) || parser_match(parser, TOKEN_DOT) ||
            parser_match(parser, TOKEN_LBRACKET) || parser_match(parser, TOKEN_PLUSPLUS) ||
-           parser_match(parser, TOKEN_MINUSMINUS)) {
+           parser_match(parser, TOKEN_MINUSMINUS) || parser_match(parser, TOKEN_LBRACE)) {
 
         // Postfix ++ and --
         if (parser_match(parser, TOKEN_PLUSPLUS) || parser_match(parser, TOKEN_MINUSMINUS)) {
@@ -603,12 +603,12 @@ static ASTNode* parse_call(Parser* parser) {
             parser_advance(parser);
 
             // Handle property access (e.g., console.log, obj.method)
+            // Note: EnumType.variant will be parsed as member access here,
+            // and converted to AST_ENUM_VARIANT during type inference
             if (!parser_match(parser, TOKEN_IDENTIFIER)) {
                 PARSE_ERROR(parser, "E204", "Expected identifier after '.'");
                 return node;
             }
-
-            // Create member access node
             ASTNode* member = AST_NODE(parser, AST_MEMBER_ACCESS);
             member->member_access.object = node;
             member->member_access.property = strdup(parser->current_token->value);
@@ -675,6 +675,70 @@ static ASTNode* parse_call(Parser* parser) {
 
                 parser_expect(parser, TOKEN_RPAREN);
                 node = call;
+            }
+        } else if (parser_match(parser, TOKEN_LBRACE)) {
+            // Check if this is enum variant construction: Enum.Variant{x: 1, y: 2}
+            if (node->type == AST_MEMBER_ACCESS) {
+                // This will be converted to AST_ENUM_VARIANT during type inference
+                // For now, we attach the field initializers to the member access node
+                // We'll need to store this data temporarily
+                
+                // Convert to AST_ENUM_VARIANT immediately with field data
+                char* enum_name = NULL;
+                char* variant_name = NULL;
+                
+                if (node->member_access.object->type == AST_IDENTIFIER) {
+                    enum_name = strdup(node->member_access.object->identifier.name);
+                    variant_name = strdup(node->member_access.property);
+                } else {
+                    PARSE_ERROR(parser, "E250", "Expected enum type before variant construction");
+                    return node;
+                }
+                
+                ASTNode* variant_node = AST_NODE(parser, AST_ENUM_VARIANT);
+                variant_node->enum_variant.enum_name = enum_name;
+                variant_node->enum_variant.variant_name = variant_name;
+                variant_node->enum_variant.enum_type = NULL; // Will be resolved in type inference
+                variant_node->enum_variant.variant_index = -1;
+                
+                // Free the old member access node
+                ast_free(node);
+                
+                parser_advance(parser); // consume '{'
+                
+                // Parse field initializers: {x: 1, y: 2}
+                int capacity = 4;
+                variant_node->enum_variant.field_names = malloc(sizeof(char*) * capacity);
+                variant_node->enum_variant.field_values = malloc(sizeof(ASTNode*) * capacity);
+                variant_node->enum_variant.field_count = 0;
+                
+                if (!parser_match(parser, TOKEN_RBRACE)) {
+                    do {
+                        if (variant_node->enum_variant.field_count >= capacity) {
+                            capacity *= 2;
+                            variant_node->enum_variant.field_names = realloc(variant_node->enum_variant.field_names, sizeof(char*) * capacity);
+                            variant_node->enum_variant.field_values = realloc(variant_node->enum_variant.field_values, sizeof(ASTNode*) * capacity);
+                        }
+                        
+                        // Parse field_name: value
+                        if (parser->current_token->type != TOKEN_IDENTIFIER) {
+                            PARSE_ERROR(parser, "E251", "Expected field name in variant construction");
+                            return variant_node;
+                        }
+                        
+                        variant_node->enum_variant.field_names[variant_node->enum_variant.field_count] = strdup(parser->current_token->value);
+                        parser_advance(parser);
+                        
+                        parser_expect(parser, TOKEN_COLON);
+                        
+                        variant_node->enum_variant.field_values[variant_node->enum_variant.field_count] = parse_expression(parser);
+                        variant_node->enum_variant.field_count++;
+                        
+                    } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+                }
+                
+                parser_expect(parser, TOKEN_RBRACE);
+                node = variant_node;
             }
         }
     }
@@ -809,11 +873,136 @@ static ASTNode* parse_bit_shift(Parser* parser) {
     return node;
 }
 
+// Parse pattern matching: expr is EnumType.Variant(bindings...)
+static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
+    parser_advance(parser); // skip 'is'
+    
+    ASTNode* node = AST_NODE(parser, AST_PATTERN_MATCH);
+    node->pattern_match.expr = expr;
+    
+    // Parse EnumType
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        PARSE_ERROR(parser, "E250", "Expected enum type name after 'is'");
+        return node;
+    }
+    node->pattern_match.enum_name = strdup(parser->current_token->value);
+    parser_advance(parser);
+    
+    // Parse .Variant
+    if (!parser_match(parser, TOKEN_DOT)) {
+        PARSE_ERROR(parser, "E251", "Expected '.' after enum type name");
+        return node;
+    }
+    parser_advance(parser);
+    
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        PARSE_ERROR(parser, "E252", "Expected variant name after '.'");
+        return node;
+    }
+    node->pattern_match.variant_name = strdup(parser->current_token->value);
+    parser_advance(parser);
+    
+    // Check for bindings: (let x, var y, _)
+    node->pattern_match.binding_count = 0;
+    node->pattern_match.binding_names = NULL;
+    node->pattern_match.binding_is_mutable = NULL;
+    node->pattern_match.binding_is_wildcard = NULL;
+    node->pattern_match.binding_types = NULL;
+    node->pattern_match.enum_type = NULL;
+    node->pattern_match.variant_index = -1;
+    node->pattern_match.is_struct_binding = false;
+    
+    if (parser_match(parser, TOKEN_LPAREN)) {
+        parser_advance(parser);
+        
+        // Parse bindings
+        int capacity = 4;
+        char** names = malloc(sizeof(char*) * capacity);
+        bool* is_mutable = malloc(sizeof(bool) * capacity);
+        bool* is_wildcard = malloc(sizeof(bool) * capacity);
+        int count = 0;
+        
+        while (!parser_match(parser, TOKEN_RPAREN) && !parser_match(parser, TOKEN_EOF)) {
+            if (count >= capacity) {
+                capacity *= 2;
+                names = realloc(names, sizeof(char*) * capacity);
+                is_mutable = realloc(is_mutable, sizeof(bool) * capacity);
+                is_wildcard = realloc(is_wildcard, sizeof(bool) * capacity);
+            }
+            
+            // Check for wildcard
+            if (parser_match(parser, TOKEN_UNDERSCORE)) {
+                names[count] = strdup("_");
+                is_mutable[count] = false;
+                is_wildcard[count] = true;
+                parser_advance(parser);
+                count++;
+            }
+            // Check for binding with let/var/const
+            else if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR) || parser_match(parser, TOKEN_CONST)) {
+                bool mut = parser_match(parser, TOKEN_VAR);
+                parser_advance(parser);
+                
+                if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                    PARSE_ERROR(parser, "E253", "Expected identifier after 'let'/'var'/'const' in pattern");
+                    free(names);
+                    free(is_mutable);
+                    free(is_wildcard);
+                    return node;
+                }
+                
+                names[count] = strdup(parser->current_token->value);
+                is_mutable[count] = mut;
+                is_wildcard[count] = false;
+                parser_advance(parser);
+                count++;
+            } else {
+                PARSE_ERROR(parser, "E254", "Expected 'let', 'var', 'const', or '_' in pattern binding");
+                free(names);
+                free(is_mutable);
+                free(is_wildcard);
+                return node;
+            }
+            
+            // Check for comma or end
+            if (parser_match(parser, TOKEN_COMMA)) {
+                parser_advance(parser);
+            } else if (!parser_match(parser, TOKEN_RPAREN)) {
+                PARSE_ERROR(parser, "E255", "Expected ',' or ')' in pattern bindings");
+                free(names);
+                free(is_mutable);
+                free(is_wildcard);
+                return node;
+            }
+        }
+        
+        parser_expect(parser, TOKEN_RPAREN);
+        
+        node->pattern_match.binding_count = count;
+        node->pattern_match.binding_names = names;
+        node->pattern_match.binding_is_mutable = is_mutable;
+        node->pattern_match.binding_is_wildcard = is_wildcard;
+        node->pattern_match.binding_types = malloc(sizeof(TypeInfo*) * count);
+        for (int i = 0; i < count; i++) {
+            node->pattern_match.binding_types[i] = NULL;
+        }
+    }
+    
+    return node;
+}
+
 static ASTNode* parse_comparison(Parser* parser) {
     ASTNode* node = parse_bit_shift(parser);
 
     while (parser_match(parser, TOKEN_LT) || parser_match(parser, TOKEN_GT) ||
-           parser_match(parser, TOKEN_LE) || parser_match(parser, TOKEN_GE)) {
+           parser_match(parser, TOKEN_LE) || parser_match(parser, TOKEN_GE) ||
+           parser_match(parser, TOKEN_IS)) {
+        
+        // Special handling for 'is' - pattern matching
+        if (parser_match(parser, TOKEN_IS)) {
+            return parse_pattern_match(parser, node);
+        }
+        
         ASTNode* op = AST_NODE(parser, AST_BINARY_OP);
         op->binary_op.op = strdup(parser->current_token->value);
         op->binary_op.left = node;
@@ -1627,6 +1816,175 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
     return node;
 }
 
+static ASTNode* parse_enum_declaration(Parser* parser) {
+    parser_advance(parser); // skip 'enum'
+
+    ASTNode* node = AST_NODE(parser, AST_ENUM_DECL);
+
+    // Parse enum name
+    if (parser->current_token->type != TOKEN_IDENTIFIER) {
+        PARSE_ERROR(parser, "E240", "Expected enum name after 'enum' keyword");
+        return node;
+    }
+
+    node->enum_decl.name = strdup(parser->current_token->value);
+    parser_advance(parser);
+
+    parser_expect(parser, TOKEN_LBRACE);
+
+    // Parse variants
+    int capacity = 4;
+    node->enum_decl.variant_names = (char**)malloc(sizeof(char*) * capacity);
+    node->enum_decl.variant_field_names = (char***)malloc(sizeof(char**) * capacity);
+    node->enum_decl.variant_field_types = (TypeInfo***)malloc(sizeof(TypeInfo**) * capacity);
+    node->enum_decl.variant_field_counts = (int*)malloc(sizeof(int) * capacity);
+    node->enum_decl.variant_locs = (SourceLocation*)malloc(sizeof(SourceLocation) * capacity);
+    node->enum_decl.variant_count = 0;
+
+    while (!parser_match(parser, TOKEN_RBRACE) && !parser_match(parser, TOKEN_EOF)) {
+        if (node->enum_decl.variant_count >= capacity) {
+            capacity *= 2;
+            node->enum_decl.variant_names = (char**)realloc(node->enum_decl.variant_names, sizeof(char*) * capacity);
+            node->enum_decl.variant_field_names = (char***)realloc(node->enum_decl.variant_field_names, sizeof(char**) * capacity);
+            node->enum_decl.variant_field_types = (TypeInfo***)realloc(node->enum_decl.variant_field_types, sizeof(TypeInfo**) * capacity);
+            node->enum_decl.variant_field_counts = (int*)realloc(node->enum_decl.variant_field_counts, sizeof(int) * capacity);
+            node->enum_decl.variant_locs = (SourceLocation*)realloc(node->enum_decl.variant_locs, sizeof(SourceLocation) * capacity);
+        }
+
+        // Parse variant name
+        if (parser->current_token->type != TOKEN_IDENTIFIER) {
+            PARSE_ERROR(parser, "E241", "Expected variant name in enum declaration");
+            return node;
+        }
+
+        int variant_idx = node->enum_decl.variant_count;
+        node->enum_decl.variant_locs[variant_idx].filename = parser->filename;
+        node->enum_decl.variant_locs[variant_idx].line = parser->current_token->line;
+        node->enum_decl.variant_locs[variant_idx].column = parser->current_token->column;
+        node->enum_decl.variant_names[variant_idx] = strdup(parser->current_token->value);
+        parser_advance(parser);
+
+        // Check for variant data: unit (;), named fields ((...)), or unnamed (single type)
+        if (parser_match(parser, TOKEN_SEMICOLON)) {
+            // Unit variant: quit;
+            node->enum_decl.variant_field_names[variant_idx] = NULL;
+            node->enum_decl.variant_field_types[variant_idx] = NULL;
+            node->enum_decl.variant_field_counts[variant_idx] = 0;
+            parser_expect(parser, TOKEN_SEMICOLON);
+        } else if (parser_match(parser, TOKEN_LPAREN)) {
+            // Variant with data
+            parser_expect(parser, TOKEN_LPAREN);
+
+            // Check if this is named fields or single unnamed field
+            // Strategy: save first identifier, advance, check if next token is colon
+            // (same pattern as external function parameter parsing)
+            
+            if (parser_match(parser, TOKEN_RPAREN)) {
+                // Empty parentheses - treat as unit variant
+                node->enum_decl.variant_field_names[variant_idx] = NULL;
+                node->enum_decl.variant_field_types[variant_idx] = NULL;
+                node->enum_decl.variant_field_counts[variant_idx] = 0;
+                parser_expect(parser, TOKEN_RPAREN);
+                parser_expect(parser, TOKEN_SEMICOLON);
+                node->enum_decl.variant_count++;
+                continue;
+            }
+
+            // Save first token to determine if it's named or unnamed
+            if (parser->current_token->type != TOKEN_IDENTIFIER) {
+                PARSE_ERROR(parser, "E242", "Expected field name or type in enum variant");
+                return node;
+            }
+            
+            char* first_identifier = strdup(parser->current_token->value);
+            parser_advance(parser);
+
+            // Check if it's "name: type" or just "type"
+            bool is_named = parser_match(parser, TOKEN_COLON);
+
+            if (is_named) {
+                // Named fields: move(x: i32, y: i32)
+                int field_capacity = 2;
+                char** field_names = (char**)malloc(sizeof(char*) * field_capacity);
+                TypeInfo** field_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * field_capacity);
+                int field_count = 0;
+
+                // Process first field
+                field_names[field_count] = first_identifier; // Already saved
+                
+                // parse_type_annotation expects to consume the colon itself
+                field_types[field_count] = parse_type_annotation(parser);
+                if (!field_types[field_count]) {
+                    PARSE_ERROR(parser, "E243", "Expected type annotation for field '%s'", field_names[field_count]);
+                    field_types[field_count] = Type_Unknown;
+                }
+                field_count++;
+
+                // Parse remaining fields
+                while (parser_match(parser, TOKEN_COMMA)) {
+                    parser_advance(parser); // consume comma
+
+                    if (field_count >= field_capacity) {
+                        field_capacity *= 2;
+                        field_names = (char**)realloc(field_names, sizeof(char*) * field_capacity);
+                        field_types = (TypeInfo**)realloc(field_types, sizeof(TypeInfo*) * field_capacity);
+                    }
+
+                    if (parser->current_token->type != TOKEN_IDENTIFIER) {
+                        PARSE_ERROR(parser, "E242", "Expected field name in enum variant");
+                        free(field_names);
+                        free(field_types);
+                        return node;
+                    }
+                    field_names[field_count] = strdup(parser->current_token->value);
+                    parser_advance(parser);
+
+                    // parse_type_annotation expects to consume the colon itself
+                    field_types[field_count] = parse_type_annotation(parser);
+                    if (!field_types[field_count]) {
+                        PARSE_ERROR(parser, "E243", "Expected type annotation for field '%s'", field_names[field_count]);
+                        field_types[field_count] = Type_Unknown;
+                    }
+                    field_count++;
+                }
+
+                node->enum_decl.variant_field_names[variant_idx] = field_names;
+                node->enum_decl.variant_field_types[variant_idx] = field_types;
+                node->enum_decl.variant_field_counts[variant_idx] = field_count;
+                parser_expect(parser, TOKEN_RPAREN);
+            } else {
+                // Single unnamed field: write(string)
+                // first_identifier is the type name
+                TypeInfo* field_type = type_context_find_type(parser->type_ctx, first_identifier);
+                if (!field_type) {
+                    // Type not found - create an unresolved type that will be resolved during type inference
+                    // This allows forward references and references to types defined later
+                    field_type = type_info_create(TYPE_KIND_UNKNOWN, first_identifier);
+                    field_type->type_name = strdup(first_identifier);
+                }
+                free(first_identifier);
+
+                TypeInfo** field_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+                field_types[0] = field_type;
+
+                node->enum_decl.variant_field_names[variant_idx] = NULL; // NULL means unnamed
+                node->enum_decl.variant_field_types[variant_idx] = field_types;
+                node->enum_decl.variant_field_counts[variant_idx] = 1;
+                parser_expect(parser, TOKEN_RPAREN);
+            }
+
+            parser_expect(parser, TOKEN_SEMICOLON);
+        } else {
+            PARSE_ERROR(parser, "E245", "Expected ';' or '(' after variant name");
+        }
+
+        node->enum_decl.variant_count++;
+    }
+
+    parser_expect(parser, TOKEN_RBRACE);
+    return node;
+}
+
 static ASTNode* parse_return_statement(Parser* parser) {
     parser_advance(parser); // skip 'return'
 
@@ -1803,8 +2161,10 @@ static ASTNode* parse_export_declaration(Parser* parser) {
         node->export_decl.declaration = parse_external_function_declaration(parser);
     } else if (parser_match(parser, TOKEN_STRUCT)) {
         node->export_decl.declaration = parse_struct_declaration(parser);
+    } else if (parser_match(parser, TOKEN_ENUM)) {
+        node->export_decl.declaration = parse_enum_declaration(parser);
     } else {
-        PARSE_ERROR(parser, "E233", "Expected function, const, external, or struct after 'export'");
+        PARSE_ERROR(parser, "E233", "Expected function, const, external, struct, or enum after 'export'");
         return node;
     }
 
@@ -1824,6 +2184,8 @@ static ASTNode* parse_statement(Parser* parser) {
         return parse_external_function_declaration(parser);
     } else if (parser_match(parser, TOKEN_STRUCT)) {
         return parse_struct_declaration(parser);
+    } else if (parser_match(parser, TOKEN_ENUM)) {
+        return parse_enum_declaration(parser);
     } else if (parser_match(parser, TOKEN_RETURN)) {
         return parse_return_statement(parser);
     } else if (parser_match(parser, TOKEN_BREAK)) {

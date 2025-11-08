@@ -78,6 +78,7 @@ typedef struct {
     bool references_provider;
     bool document_symbol_provider;
     bool diagnostic_provider;
+    bool inlay_hint_provider;
 } LSPServerCapabilities;
 
 // === JSON-RPC Protocol Functions ===

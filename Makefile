@@ -140,7 +140,7 @@ $(BUILD_DIR)/common/%.o: $(COMMON_DIR)/%.c $(COMMON_HEADERS) | $(BUILD_DIR)
 # Compile compiler objects (depend on common headers and compiler headers)
 $(BUILD_DIR)/compiler/%.o: $(COMPILER_DIR)/%.c $(COMMON_HEADERS) $(COMPILER_HEADERS) | $(BUILD_DIR)
 	@echo "Compiling [compiler]: $<"
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -DRUNTIME_PATH=\"$(BUILD_DIR)/runtime\" -c $< -o $@
 
 # Compile LSP objects (depend on common headers and LSP headers)
 $(BUILD_DIR)/lsp/%.o: $(LSP_DIR)/%.c $(COMMON_HEADERS) $(LSP_HEADERS) | $(BUILD_DIR)

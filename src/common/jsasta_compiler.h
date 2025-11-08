@@ -23,7 +23,9 @@
     X(TOKEN_EXPORT, "export") \
     X(TOKEN_FROM, "from") \
     X(TOKEN_STRUCT, "struct") \
+    X(TOKEN_ENUM, "enum") \
     X(TOKEN_REF, "ref") \
+    X(TOKEN_IS, "is") \
     X(TOKEN_RETURN, "return") \
     X(TOKEN_BREAK, "break") \
     X(TOKEN_CONTINUE, "continue") \
@@ -85,7 +87,8 @@
     X(TOKEN_OR, "||") \
     X(TOKEN_NOT, "!") \
     X(TOKEN_QUESTION, "?") \
-    X(TOKEN_COLON, ":")
+    X(TOKEN_COLON, ":") \
+    X(TOKEN_UNDERSCORE, "_")
 
 // Generate enum
 #define TOKEN_ENUM(name, str) name,
@@ -111,6 +114,7 @@ typedef enum {
     AST_VAR_DECL,
     AST_FUNCTION_DECL,  // Used for both user and external functions
     AST_STRUCT_DECL,    // Struct type definition
+    AST_ENUM_DECL,      // Enum type definition
     AST_IMPORT_DECL,    // Import statement
     AST_EXPORT_DECL,    // Export statement
     AST_RETURN,
@@ -133,6 +137,8 @@ typedef enum {
     AST_COMPOUND_ASSIGNMENT,
     AST_MEMBER_ACCESS,
     AST_MEMBER_ASSIGNMENT,  // obj.prop = value
+    AST_ENUM_VARIANT,       // EnumType.variant - enum variant reference
+    AST_PATTERN_MATCH,      // Pattern matching: expr is Pattern(bindings)
     AST_TERNARY,
     AST_INDEX_ACCESS,
     AST_ARRAY_LITERAL,
@@ -170,6 +176,7 @@ typedef enum {
     TYPE_KIND_ARRAY,        // Array types
     TYPE_KIND_FUNCTION,     // Function types
     TYPE_KIND_REF,          // Reference types (pointers with mutable flag)
+    TYPE_KIND_ENUM,         // Enum types (tagged unions)
     TYPE_KIND_ALIAS,        // Type alias (e.g., usize -> u64)
     TYPE_KIND_UNKNOWN       // Unknown/unresolved types
 } TypeKind;
@@ -219,6 +226,16 @@ struct TypeInfo {
             TypeInfo* target_type;   // Type being referenced
             bool is_mutable;         // True if reference is mutable (default)
         } ref;
+
+        // For TYPE_KIND_ENUM: enum variants (tagged union)
+        struct {
+            char** variant_names;         // Variant names
+            char*** variant_field_names;  // Field names for each variant (NULL for unit/unnamed)
+            TypeInfo*** variant_field_types; // Field types for each variant
+            int* variant_field_counts;    // Number of fields per variant
+            int variant_count;
+            ASTNode* enum_decl_node;      // Reference to enum declaration
+        } enum_type;
 
         // For TYPE_KIND_ALIAS: points to the actual type
         struct {
@@ -333,6 +350,16 @@ struct ASTNode {
         } struct_decl;
 
         struct {
+            char* name;                   // Enum name: "Message"
+            char** variant_names;         // Variant names: ["quit", "move", "write"]
+            char*** variant_field_names;  // Field names for each variant (NULL for unit/unnamed)
+            TypeInfo*** variant_field_types; // Field types for each variant
+            int* variant_field_counts;    // Number of fields per variant (0 for unit)
+            int variant_count;
+            SourceLocation* variant_locs; // Source locations for each variant
+        } enum_decl;
+
+        struct {
             char* module_path;       // Path to module file: "./math/lib.jsa"
             char* namespace_name;    // Namespace identifier: "math"
             void* imported_module;   // Pointer to loaded Module (set during module loading)
@@ -435,6 +462,35 @@ struct ASTNode {
             SymbolEntry* symbol_entry;  // Symbol entry if object is identifier (resolved during type inference)
             int property_index;         // Index of property in struct (-1 if not applicable, resolved during type inference)
         } member_access;
+
+        struct {
+            char* enum_name;            // Name of the enum type (e.g., "Color")
+            char* variant_name;         // Name of the variant (e.g., "red")
+            TypeInfo* enum_type;        // Resolved enum type (set during type inference)
+            int variant_index;          // Index of variant in enum (set during type inference, -1 if not found)
+            // For variant construction: Enum.Variant{x: 1, y: 2}
+            char** field_names;         // Field names (NULL for unit variants)
+            ASTNode** field_values;     // Field values (NULL for unit variants)
+            int field_count;            // Number of fields (0 for unit variants)
+        } enum_variant;
+
+        struct {
+            ASTNode* expr;              // Expression to match (e.g., result)
+            char* enum_name;            // Name of the enum type (e.g., "Result")
+            char* variant_name;         // Name of the variant (e.g., "Ok")
+            TypeInfo* enum_type;        // Resolved enum type (set during type inference)
+            int variant_index;          // Index of variant in enum (set during type inference)
+            
+            // Pattern bindings
+            char** binding_names;       // Array of binding names (e.g., ["value"] or ["x", "y"])
+            int binding_count;          // Number of bindings
+            bool* binding_is_mutable;   // Array of mutability flags (var vs let/const)
+            bool* binding_is_wildcard;  // Array of wildcard flags (true if binding is "_")
+            
+            // Resolved during type inference
+            TypeInfo** binding_types;   // Types of bound variables (NULL until type inference)
+            bool is_struct_binding;     // true if single binding for all fields as struct
+        } pattern_match;
 
         struct {
             ASTNode* object;
@@ -710,6 +766,11 @@ static inline bool type_info_is_object(TypeInfo* type_info) {
     return type_info && type_info->kind == TYPE_KIND_OBJECT;
 }
 
+static inline bool type_info_is_enum(TypeInfo* type_info) {
+    type_info = type_info_resolve_alias(type_info);
+    return type_info && type_info->kind == TYPE_KIND_ENUM;
+}
+
 static inline bool type_info_is_array(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
     return type_info && type_info->kind == TYPE_KIND_ARRAY;
@@ -782,6 +843,11 @@ TypeInfo* type_context_create_struct_type(TypeContext* ctx, const char* struct_n
                                           char** property_names, TypeInfo** property_types,
                                           int property_count, ASTNode* struct_decl_node);
 TypeInfo* type_context_find_struct_type(TypeContext* ctx, const char* struct_name);
+TypeInfo* type_context_create_enum_type(TypeContext* ctx, const char* enum_name,
+                                         char** variant_names, char*** variant_field_names,
+                                         TypeInfo*** variant_field_types, int* variant_field_counts,
+                                         int variant_count, ASTNode* enum_decl_node);
+TypeInfo* type_context_find_enum_type(TypeContext* ctx, const char* enum_name);
 FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeInfo* func_type,
                                                         TypeInfo** param_type_info, int param_count);
 FunctionSpecialization* type_context_find_specialization(TypeContext* ctx, TypeInfo* func_type,
@@ -870,7 +936,9 @@ TypeInfo* runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);
-int compile_file(const char* input_file, const char* output_file, bool enable_debug_symbols, bool enable_debug);
+int compile_file(const char* input_file, const char* output_file, 
+                 bool emit_llvm, bool emit_asm, bool compile_only, int opt_level,
+                 const char* sanitizer, bool enable_debug_symbols, bool enable_debug);
 
 
 FunctionSpecialization* s;

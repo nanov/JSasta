@@ -40,6 +40,7 @@ typedef enum {
     LSP_METHOD_TEXTDOCUMENT_COMPLETION,
     LSP_METHOD_TEXTDOCUMENT_DEFINITION,
     LSP_METHOD_TEXTDOCUMENT_REFERENCES,
+    LSP_METHOD_TEXTDOCUMENT_INLAY_HINT,
     // Workspace
     LSP_METHOD_WORKSPACE_DID_CHANGE_CONFIGURATION,
     // Generic
@@ -64,6 +65,7 @@ typedef struct LspJsonCompletionParams LspJsonCompletionParams;
 typedef struct LspJsonDidChangeConfigurationParams LspJsonDidChangeConfigurationParams;
 typedef struct LspJsonCancelParams LspJsonCancelParams;
 typedef struct LspJsonTextDocumentPositionParams LspJsonTextDocumentPositionParams;
+typedef struct LspJsonInlayHintParams LspJsonInlayHintParams;
 
 /*
 ================================================================================
@@ -150,6 +152,11 @@ struct LspJsonCancelParams {
     int64_t id;
 };
 
+struct LspJsonInlayHintParams {
+    LspJsonTextDocumentIdentifier textDocument;
+    TextRange range;
+};
+
 // --- Main Message Structure ---
 
 typedef enum {
@@ -184,6 +191,7 @@ struct LspJsonMessage {
                 LspJsonCancelParams cancelRequest;
                 LspJsonTextDocumentPositionParams definition;
                 LspJsonTextDocumentPositionParams references;
+                LspJsonInlayHintParams inlayHint;
                 // 'initialized', 'shutdown', 'exit' have no params
             } params;
 
@@ -201,4 +209,6 @@ struct LspJsonMessage {
 int lsp_json_parse_to_message(const char* json, size_t size, LspJsonMessage* message);
 
 void lsp_json_free_message(LspJsonMessage* message);
+
+// if your message is stack allocated you stil need to free intrenal allocations
 void lsp_json_inner_free_message(LspJsonMessage* message);

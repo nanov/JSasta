@@ -1,0 +1,22 @@
+// Test enum variant construction with data fields
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Message {
+    quit;
+    move(x: i32, y: i32);
+}
+
+let msg1 = Message.quit;
+let msg2 = Message.move{x: 10, y: 20};
+
+if (msg1 is Message.quit) {
+    io.println("msg1 is quit");
+}
+
+if (msg2 is Message.quit) {
+    io.println("msg2 is quit");
+} else {
+    io.println("msg2 is not quit");
+}

@@ -179,11 +179,13 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "export") == 0) type = TOKEN_EXPORT;
     else if (strcmp(buffer, "from") == 0) type = TOKEN_FROM;
     else if (strcmp(buffer, "struct") == 0) type = TOKEN_STRUCT;
+    else if (strcmp(buffer, "enum") == 0) type = TOKEN_ENUM;
     else if (strcmp(buffer, "ref") == 0) type = TOKEN_REF;
     else if (strcmp(buffer, "return") == 0) type = TOKEN_RETURN;
     else if (strcmp(buffer, "break") == 0) type = TOKEN_BREAK;
     else if (strcmp(buffer, "continue") == 0) type = TOKEN_CONTINUE;
     else if (strcmp(buffer, "if") == 0) type = TOKEN_IF;
+    else if (strcmp(buffer, "is") == 0) type = TOKEN_IS;
     else if (strcmp(buffer, "else") == 0) type = TOKEN_ELSE;
     else if (strcmp(buffer, "for") == 0) type = TOKEN_FOR;
     else if (strcmp(buffer, "while") == 0) type = TOKEN_WHILE;

@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <unistd.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 char* read_file(const char* filename) {
     FILE* file = fopen(filename, "r");
@@ -26,7 +32,129 @@ char* read_file(const char* filename) {
     return content;
 }
 
-int compile_file(const char* input_file, const char* output_file, bool enable_debug_symbols, bool enable_debug) {
+// Compile LLVM module to object or assembly file
+int compile_to_object_or_asm(LLVMModuleRef module, const char* output_file, int opt_level, bool emit_assembly) {
+    // Initialize LLVM targets
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+    
+    // Get the default target triple
+    char* target_triple = LLVMGetDefaultTargetTriple();
+    LLVMSetTarget(module, target_triple);
+    
+    // Get the target
+    LLVMTargetRef target;
+    char* error = NULL;
+    if (LLVMGetTargetFromTriple(target_triple, &target, &error)) {
+        log_error("Failed to get target: %s", error);
+        LLVMDisposeMessage(error);
+        LLVMDisposeMessage(target_triple);
+        return 1;
+    }
+    
+    // Create target machine
+    LLVMCodeGenOptLevel llvm_opt_level;
+    switch (opt_level) {
+        case 0: llvm_opt_level = LLVMCodeGenLevelNone; break;
+        case 1: llvm_opt_level = LLVMCodeGenLevelLess; break;
+        case 2: llvm_opt_level = LLVMCodeGenLevelDefault; break;
+        case 3: llvm_opt_level = LLVMCodeGenLevelAggressive; break;
+        default: llvm_opt_level = LLVMCodeGenLevelNone; break;
+    }
+    
+    LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
+        target,
+        target_triple,
+        "",  // CPU
+        "",  // Features
+        llvm_opt_level,
+        LLVMRelocPIC,
+        LLVMCodeModelDefault
+    );
+    
+    LLVMDisposeMessage(target_triple);
+    
+    if (!machine) {
+        log_error("Failed to create target machine");
+        return 1;
+    }
+    
+    // Emit object or assembly file
+    LLVMCodeGenFileType file_type = emit_assembly ? LLVMAssemblyFile : LLVMObjectFile;
+    if (LLVMTargetMachineEmitToFile(machine, module, (char*)output_file, file_type, &error)) {
+        log_error("Failed to emit %s: %s", emit_assembly ? "assembly" : "object file", error);
+        LLVMDisposeMessage(error);
+        LLVMDisposeTargetMachine(machine);
+        return 1;
+    }
+    
+    log_verbose("%s written to %s", emit_assembly ? "Assembly" : "Object file", output_file);
+    LLVMDisposeTargetMachine(machine);
+    return 0;
+}
+
+// Link object file with runtime to create executable
+int link_executable(const char* obj_file, const char* output_file, const char* sanitizer, bool debug_symbols) {
+    // Get the compiler's directory to find runtime relative to it
+    char compiler_path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", compiler_path, sizeof(compiler_path) - 1);
+    if (len == -1) {
+        // Fallback for macOS
+        uint32_t size = sizeof(compiler_path);
+        if (_NSGetExecutablePath(compiler_path, &size) != 0) {
+            log_error("Failed to get compiler path");
+            return 1;
+        }
+    } else {
+        compiler_path[len] = '\0';
+    }
+    
+    // Get directory of compiler binary
+    char* last_slash = strrchr(compiler_path, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+    }
+    
+    // Runtime is in ../runtime relative to compiler binary
+    char runtime_path[PATH_MAX];
+    snprintf(runtime_path, sizeof(runtime_path), "%s/runtime", compiler_path);
+    
+    // Build clang command
+    char command[4096];
+    int pos = snprintf(command, sizeof(command), "clang %s", obj_file);
+    
+    // Add runtime object files
+    pos += snprintf(command + pos, sizeof(command) - pos, " %s/display.o", runtime_path);
+    pos += snprintf(command + pos, sizeof(command) - pos, " %s/jsasta_runtime.o", runtime_path);
+    
+    // Add sanitizer flags
+    if (sanitizer) {
+        pos += snprintf(command + pos, sizeof(command) - pos, " -fsanitize=%s", sanitizer);
+    }
+    
+    // Add debug symbols flag
+    if (debug_symbols) {
+        pos += snprintf(command + pos, sizeof(command) - pos, " -g");
+    }
+    
+    // Add output file
+    pos += snprintf(command + pos, sizeof(command) - pos, " -o %s", output_file);
+    
+    log_verbose("Linking: %s", command);
+    
+    int result = system(command);
+    if (result != 0) {
+        log_error("Linking failed");
+        return 1;
+    }
+    
+    log_info("Executable written to %s", output_file);
+    return 0;
+}
+
+int compile_file(const char* input_file, const char* output_file, 
+                 bool emit_llvm, bool emit_asm, bool compile_only, int opt_level,
+                 const char* sanitizer, bool enable_debug_symbols, bool enable_debug) {
     log_info("Compiling %s...", input_file);
     if (enable_debug_symbols) {
         log_verbose("Debug symbols enabled");
@@ -150,10 +278,44 @@ int compile_file(const char* input_file, const char* output_file, bool enable_de
 
     log_info("Code generation complete");
 
-    // Emit LLVM IR
-    codegen_emit_llvm_ir(gen, output_file);
-
-    log_info("LLVM IR written to %s", output_file);
+    // Determine what to do based on flags
+    if (emit_llvm) {
+        // Emit LLVM IR
+        codegen_emit_llvm_ir(gen, output_file);
+        log_info("LLVM IR written to %s", output_file);
+    } else if (emit_asm) {
+        // Emit assembly
+        log_section("Compilation");
+        if (compile_to_object_or_asm(gen->module, output_file, opt_level, true) != 0) {
+            codegen_free(gen);
+            module_registry_free(registry);
+            return 1;
+        }
+    } else {
+        // Compile to object file or binary
+        const char* obj_file = compile_only ? output_file : "/tmp/jsasta_temp.o";
+        
+        log_section("Compilation");
+        if (compile_to_object_or_asm(gen->module, obj_file, opt_level, false) != 0) {
+            codegen_free(gen);
+            module_registry_free(registry);
+            return 1;
+        }
+        
+        if (!compile_only) {
+            // Link to create executable
+            log_section("Linking");
+            if (link_executable(obj_file, output_file, sanitizer, enable_debug_symbols) != 0) {
+                codegen_free(gen);
+                module_registry_free(registry);
+                return 1;
+            }
+            
+            // Clean up temporary object file
+            unlink(obj_file);
+        }
+    }
+    
     diagnostic_print_summary(registry->diagnostics);
 
     // Cleanup
@@ -163,9 +325,14 @@ int compile_file(const char* input_file, const char* output_file, bool enable_de
 }
 
 void print_usage(const char* program_name) {
-    fprintf(stderr, "Usage: %s [options] <input.js>\n", program_name);
+    fprintf(stderr, "Usage: %s [options] <input.jsa>\n", program_name);
     fprintf(stderr, "\nOptions:\n");
-    fprintf(stderr, "  -o <file>          Output file (default: output.ll)\n");
+    fprintf(stderr, "  -o <file>          Output file (default: a.out)\n");
+    fprintf(stderr, "  -c                 Compile to object file only (don't link)\n");
+    fprintf(stderr, "  -S                 Emit assembly only (don't assemble or link)\n");
+    fprintf(stderr, "  -L, --emit-llvm    Emit LLVM IR instead of native code\n");
+    fprintf(stderr, "  -O<level>          Optimization level: 0, 1, 2, 3 (default: 0)\n");
+    fprintf(stderr, "  --sanitize=<type>  Enable sanitizer: address, memory, thread, undefined\n");
     fprintf(stderr, "  -g, --debug        Generate debug symbols (DWARF)\n");
     fprintf(stderr, "  -d, --debug-mode   Enable debug mode (enables debug.assert)\n");
     fprintf(stderr, "  -v, --verbose      Enable verbose output\n");
@@ -180,23 +347,63 @@ int main(int argc, char** argv) {
     LogLevel log_level = LOG_INFO;
     bool enable_debug_symbols = false;
     bool enable_debug = false;
-    const char* output_file = "output.ll";
+    bool emit_llvm = false;
+    bool emit_asm = false;
+    bool compile_only = false;
+    int opt_level = 0;
+    const char* sanitizer = NULL;
+    const char* output_file = NULL;  // Will be set based on mode
 
     // Parse command-line options
     static struct option long_options[] = {
-        {"debug",      no_argument, 0, 'g'},
-        {"debug-mode", no_argument, 0, 'd'},
-        {"verbose",    no_argument, 0, 'v'},
-        {"quiet",      no_argument, 0, 'q'},
-        {"help",       no_argument, 0, 'h'},
+        {"debug",      no_argument,       0, 'g'},
+        {"debug-mode", no_argument,       0, 'd'},
+        {"verbose",    no_argument,       0, 'v'},
+        {"quiet",      no_argument,       0, 'q'},
+        {"help",       no_argument,       0, 'h'},
+        {"emit-llvm",  no_argument,       0, 'L'},
+        {"sanitize",   required_argument, 0, 's'},
         {0, 0, 0, 0}
     };
 
+    // Parse -O flags first (before getopt processes them)
+    // We need to do this manually because getopt doesn't handle -O3 style flags well
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-' && argv[i][1] == 'O') {
+            if (argv[i][2] >= '0' && argv[i][2] <= '3' && argv[i][3] == '\0') {
+                opt_level = argv[i][2] - '0';
+            } else if (argv[i][2] != '\0') {
+                fprintf(stderr, "Invalid optimization flag: %s (use -O0, -O1, -O2, or -O3)\n", argv[i]);
+                return 1;
+            }
+        }
+    }
+
     int opt;
-    while ((opt = getopt_long(argc, argv, "o:gdvqh", long_options, NULL)) != -1) {
+    int option_index = 0;
+    opterr = 0;  // Suppress getopt error messages for -O flags
+    while ((opt = getopt_long(argc, argv, "o:cSLgdvqh", long_options, &option_index)) != -1) {
+        if (opt == '?') {
+            // Check if it's an -O flag (which we already handled)
+            if (optopt == 'O' || (optind > 1 && argv[optind-1][0] == '-' && argv[optind-1][1] == 'O')) {
+                continue;  // Skip -O flags, we already handled them
+            }
+            // Otherwise, it's an actual unknown option
+            print_usage(argv[0]);
+            return 1;
+        }
         switch (opt) {
             case 'o':
                 output_file = optarg;
+                break;
+            case 'c':
+                compile_only = true;
+                break;
+            case 'S':
+                emit_asm = true;
+                break;
+            case 'L':
+                emit_llvm = true;
                 break;
             case 'g':
                 enable_debug_symbols = true;
@@ -209,6 +416,9 @@ int main(int argc, char** argv) {
                 break;
             case 'q':
                 log_level = LOG_WARNING;
+                break;
+            case 's':
+                sanitizer = optarg;
                 break;
             case 'h':
                 print_usage(argv[0]);
@@ -230,6 +440,32 @@ int main(int argc, char** argv) {
     }
 
     const char* input_file = argv[optind];
+    
+    // Set default output file if not specified
+    if (!output_file) {
+        if (emit_llvm) {
+            output_file = "output.ll";
+        } else if (emit_asm) {
+            output_file = "output.s";
+        } else if (compile_only) {
+            output_file = "output.o";
+        } else {
+            output_file = "a.out";
+        }
+    } else {
+        // Auto-detect mode from output file extension if not explicitly set
+        size_t len = strlen(output_file);
+        if (!emit_llvm && !emit_asm && !compile_only) {
+            if (len > 3 && strcmp(output_file + len - 3, ".ll") == 0) {
+                emit_llvm = true;
+            } else if (len > 2 && strcmp(output_file + len - 2, ".s") == 0) {
+                emit_asm = true;
+            } else if (len > 2 && strcmp(output_file + len - 2, ".o") == 0) {
+                compile_only = true;
+            }
+        }
+    }
 
-    return compile_file(input_file, output_file, enable_debug_symbols, enable_debug);
+    return compile_file(input_file, output_file, emit_llvm, emit_asm, compile_only, 
+                       opt_level, sanitizer, enable_debug_symbols, enable_debug);
 }

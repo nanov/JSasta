@@ -1,0 +1,15 @@
+// Test enum with io to actually use the value
+import io from @io;
+
+enum Color {
+    red;
+    green;
+    blue;
+}
+
+function printColor() {
+    var c = Color.green;
+    io.println("Color value: {}", c);
+}
+
+printColor();

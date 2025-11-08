@@ -20,6 +20,16 @@ static inline Module* symbol_get_imported_module(SymbolEntry* entry) {
     return symbol_is_namespace(entry) ? (Module*)entry->node->import_decl.imported_module : NULL;
 }
 
+// Helper: Check if an identifier is an enum type name
+static inline bool identifier_is_enum_type(const char* name, TypeContext* type_ctx) {
+    return name && type_ctx && type_context_find_enum_type(type_ctx, name) != NULL;
+}
+
+// Helper: Get enum type by name
+static inline TypeInfo* get_enum_type(const char* name, TypeContext* type_ctx) {
+    return name && type_ctx ? type_context_find_enum_type(type_ctx, name) : NULL;
+}
+
 // Helper macro for type errors (similar to PARSE_ERROR)
 #define TYPE_ERROR(diag, loc, code, ...) do { \
     if (diag) { \
@@ -44,7 +54,11 @@ static TypeInfo* resolve_namespaced_type(const char* type_path, SymbolTable* sym
     // Check if this is a namespaced type (contains a dot)
     if (!strchr(type_path, '.')) {
         // Not namespaced, just look it up directly in the TypeContext
+        // Try struct first, then enum
         TypeInfo* result = type_context_find_struct_type(type_ctx, type_path);
+        if (!result) {
+            result = type_context_find_enum_type(type_ctx, type_path);
+        }
         log_verbose("  Direct lookup '%s': %s", type_path, result ? "found" : "not found");
         return result;
     }
@@ -649,6 +663,79 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
     }
 }
 
+// Collect enum declarations and register them in TypeContext
+static void collect_enum_declarations(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
+    if (!node) return;
+
+    switch (node->type) {
+        case AST_PROGRAM:
+        case AST_BLOCK:
+            for (int i = 0; i < node->program.count; i++) {
+                collect_enum_declarations(node->program.statements[i], symbols, type_ctx, diag);
+            }
+            break;
+
+        case AST_ENUM_DECL: {
+            const char* enum_name = node->enum_decl.name;
+            char** variant_names = node->enum_decl.variant_names;
+            char*** variant_field_names = node->enum_decl.variant_field_names;
+            TypeInfo*** variant_field_types = node->enum_decl.variant_field_types;
+            int* variant_field_counts = node->enum_decl.variant_field_counts;
+            int variant_count = node->enum_decl.variant_count;
+
+            // Resolve any unresolved field types
+            for (int i = 0; i < variant_count; i++) {
+                if (variant_field_types[i]) {
+                    for (int j = 0; j < variant_field_counts[i]; j++) {
+                        TypeInfo* field_type = variant_field_types[i][j];
+                        // Check if this is an unresolved type that needs resolution
+                        if (field_type && field_type->kind == TYPE_KIND_UNKNOWN && field_type->type_name) {
+                            TypeInfo* resolved = resolve_namespaced_type(field_type->type_name, symbols, type_ctx);
+                            if (resolved) {
+                                variant_field_types[i][j] = resolved;
+                            } else {
+                                TYPE_ERROR(diag, node->loc, "T101",
+                                    "Cannot resolve type '%s' in enum '%s' variant '%s'",
+                                    field_type->type_name, enum_name, variant_names[i]);
+                                variant_field_types[i][j] = Type_Unknown;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Register enum type in TypeContext
+            if (type_ctx) {
+                TypeInfo* existing = type_context_find_enum_type(type_ctx, enum_name);
+                if (!existing) {
+                    TypeInfo* enum_type = type_context_create_enum_type(
+                        type_ctx,
+                        enum_name,
+                        variant_names,
+                        variant_field_names,
+                        variant_field_types,
+                        variant_field_counts,
+                        variant_count,
+                        node  // Pass the enum declaration node
+                    );
+
+                    if (enum_type) {
+                        log_verbose("Registered enum type during type inference: %s with %d variants",
+                                   enum_name, variant_count);
+                    }
+                } else {
+                    log_verbose("Enum type already registered: %s", enum_name);
+                }
+            }
+
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
 // Pass 1: Collect function signatures
 static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!node) return;
@@ -688,8 +775,10 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             }
             
             // Resolve namespaced return type hint
+            // Skip Type_Unknown (which has type_name "unknown" but shouldn't be resolved)
             if (return_type_hint && 
                 return_type_hint->kind == TYPE_KIND_UNKNOWN &&
+                return_type_hint != Type_Unknown &&
                 return_type_hint->type_name) {
                 TypeInfo* resolved = resolve_namespaced_type(return_type_hint->type_name, symbols, type_ctx);
                 if (resolved) {
@@ -1353,13 +1442,42 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             }
             break;
 
-        case AST_IF:
+        case AST_IF: {
             infer_literal_types(node->if_stmt.condition, symbols, type_ctx, diag);
-            infer_literal_types(node->if_stmt.then_branch, symbols, type_ctx, diag);
+            
+            // Check if condition is a pattern match - if so, add bindings to then-branch scope
+            if (node->if_stmt.condition && node->if_stmt.condition->type == AST_PATTERN_MATCH) {
+                ASTNode* pattern = node->if_stmt.condition;
+                
+                // Create a new scope for the then-branch to hold pattern bindings
+                SymbolTable* then_scope = symbol_table_create(symbols);
+                
+                // Add pattern bindings to the then-branch scope
+                for (int i = 0; i < pattern->pattern_match.binding_count; i++) {
+                    if (!pattern->pattern_match.binding_is_wildcard[i]) {
+                        char* binding_name = pattern->pattern_match.binding_names[i];
+                        TypeInfo* binding_type = pattern->pattern_match.binding_types[i];
+                        bool is_const = !pattern->pattern_match.binding_is_mutable[i];
+                        
+                        symbol_table_insert(then_scope, binding_name, binding_type, NULL, is_const);
+                    }
+                }
+                
+                // Attach the scope to the then-branch node so codegen can use it
+                node->if_stmt.then_branch->symbol_table = then_scope;
+                
+                // Infer types in then-branch with the new scope
+                infer_literal_types(node->if_stmt.then_branch, then_scope, type_ctx, diag);
+            } else {
+                // Normal if without pattern matching
+                infer_literal_types(node->if_stmt.then_branch, symbols, type_ctx, diag);
+            }
+            
             if (node->if_stmt.else_branch) {
                 infer_literal_types(node->if_stmt.else_branch, symbols, type_ctx, diag);
             }
             break;
+        }
 
         case AST_FOR: {
             // For loops create their own scope for variables declared in init
@@ -1423,6 +1541,10 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             SymbolEntry* entry = symbol_table_lookup(symbols, node->identifier.name);
             if (entry) {
                 node->type_info = entry->type_info;
+            } else if (identifier_is_enum_type(node->identifier.name, type_ctx)) {
+                // This is an enum type name - it will be converted to enum variant in later pass
+                // Set a placeholder type for now
+                node->type_info = get_enum_type(node->identifier.name, type_ctx);
             } else if (!type_info_is_unknown(node->type_info)) {
                 // Only report error on first encounter (when type is not yet UNKNOWN)
                 TYPE_ERROR(diag, node->loc, "T301", "Undefined variable: %s", node->identifier.name);
@@ -1567,6 +1689,195 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
         }
 
+        case AST_ENUM_VARIANT: {
+            // Resolve enum type if not already set (e.g., for variant construction created in parser)
+            if (!node->enum_variant.enum_type) {
+                node->enum_variant.enum_type = get_enum_type(node->enum_variant.enum_name, type_ctx);
+            }
+            
+            // Resolve variant index and set type
+            if (node->enum_variant.enum_type) {
+                TypeInfo* enum_type = node->enum_variant.enum_type;
+                
+                // Find variant index
+                for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
+                    if (strcmp(enum_type->data.enum_type.variant_names[i], node->enum_variant.variant_name) == 0) {
+                        node->enum_variant.variant_index = i;
+                        break;
+                    }
+                }
+                
+                if (node->enum_variant.variant_index == -1) {
+                    TYPE_ERROR(diag, node->loc, "T320",
+                        "Enum '%s' does not have variant '%s'",
+                        node->enum_variant.enum_name, node->enum_variant.variant_name);
+                } else {
+                    // If this is a variant construction with fields, type-check them
+                    if (node->enum_variant.field_count > 0) {
+                        int variant_idx = node->enum_variant.variant_index;
+                        int expected_field_count = enum_type->data.enum_type.variant_field_counts[variant_idx];
+                        
+                        // Check field count matches
+                        if (node->enum_variant.field_count != expected_field_count) {
+                            TYPE_ERROR(diag, node->loc, "T322",
+                                "Variant '%s' expects %d fields, got %d",
+                                node->enum_variant.variant_name, expected_field_count, node->enum_variant.field_count);
+                        } else {
+                            // Type-check each field
+                            char** expected_field_names = enum_type->data.enum_type.variant_field_names[variant_idx];
+                            TypeInfo** expected_field_types = enum_type->data.enum_type.variant_field_types[variant_idx];
+                            
+                            for (int i = 0; i < node->enum_variant.field_count; i++) {
+                                // Check field name matches
+                                bool found = false;
+                                int field_pos = -1;
+                                for (int j = 0; j < expected_field_count; j++) {
+                                    if (strcmp(node->enum_variant.field_names[i], expected_field_names[j]) == 0) {
+                                        found = true;
+                                        field_pos = j;
+                                        break;
+                                    }
+                                }
+                                
+                                if (!found) {
+                                    TYPE_ERROR(diag, node->loc, "T323",
+                                        "Variant '%s' has no field '%s'",
+                                        node->enum_variant.variant_name, node->enum_variant.field_names[i]);
+                                    continue;
+                                }
+                                
+                                // Type-check the field value
+                                infer_literal_types(node->enum_variant.field_values[i], symbols, type_ctx, diag);
+                                
+                                TypeInfo* value_type = node->enum_variant.field_values[i]->type_info;
+                                TypeInfo* expected_type = expected_field_types[field_pos];
+                                
+                                // Simple pointer comparison for type checking
+                                if (value_type != expected_type && value_type != Type_Unknown) {
+                                    TYPE_ERROR(diag, node->loc, "T324",
+                                        "Type mismatch for field '%s': expected %s, got %s",
+                                        node->enum_variant.field_names[i],
+                                        expected_type->type_name ? expected_type->type_name : "unknown",
+                                        value_type->type_name ? value_type->type_name : "unknown");
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Set the node's type to the enum type
+                node->type_info = enum_type;
+            } else {
+                TYPE_ERROR(diag, node->loc, "T321",
+                    "Unknown enum type '%s'", node->enum_variant.enum_name);
+                node->type_info = Type_Unknown;
+            }
+            break;
+        }
+
+        case AST_PATTERN_MATCH: {
+            // Type check pattern matching: expr is EnumType.Variant(bindings)
+            // First, infer the type of the expression being matched
+            infer_literal_types(node->pattern_match.expr, symbols, type_ctx, diag);
+            
+            // Look up the enum type
+            TypeInfo* enum_type = get_enum_type(node->pattern_match.enum_name, type_ctx);
+            if (!enum_type) {
+                TYPE_ERROR(diag, node->loc, "T322",
+                    "Unknown enum type '%s' in pattern match", node->pattern_match.enum_name);
+                node->type_info = Type_Bool; // Pattern match result is always bool
+                break;
+            }
+            
+            node->pattern_match.enum_type = enum_type;
+            
+            // Verify the expression type matches the enum type
+            TypeInfo* expr_type = node->pattern_match.expr->type_info;
+            if (expr_type && expr_type != Type_Unknown && expr_type != enum_type) {
+                TYPE_ERROR(diag, node->loc, "T323",
+                    "Type mismatch in pattern match: expected '%s', got '%s'",
+                    enum_type->type_name, expr_type->type_name);
+            }
+            
+            // Find the variant index
+            int variant_index = -1;
+            for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
+                if (strcmp(enum_type->data.enum_type.variant_names[i], node->pattern_match.variant_name) == 0) {
+                    variant_index = i;
+                    break;
+                }
+            }
+            
+            if (variant_index == -1) {
+                TYPE_ERROR(diag, node->loc, "T324",
+                    "Enum '%s' does not have variant '%s'",
+                    node->pattern_match.enum_name, node->pattern_match.variant_name);
+                node->type_info = Type_Bool;
+                break;
+            }
+            
+            node->pattern_match.variant_index = variant_index;
+            
+            // Get variant field information
+            int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
+            TypeInfo** field_types = enum_type->data.enum_type.variant_field_types[variant_index];
+            char** field_names = enum_type->data.enum_type.variant_field_names[variant_index];
+            
+            // Determine if this is struct binding or destructuring
+            int non_wildcard_count = 0;
+            for (int i = 0; i < node->pattern_match.binding_count; i++) {
+                if (!node->pattern_match.binding_is_wildcard[i]) {
+                    non_wildcard_count++;
+                }
+            }
+            
+            if (non_wildcard_count == 1 && node->pattern_match.binding_count == 1) {
+                // Single binding - bind all fields as struct
+                node->pattern_match.is_struct_binding = true;
+                
+                // Look up the variant struct type created during enum registration
+                // Type name is "EnumName.VariantName"
+                size_t struct_name_len = strlen(node->pattern_match.enum_name) + 
+                                        strlen(node->pattern_match.variant_name) + 2;
+                char* struct_name = malloc(struct_name_len);
+                snprintf(struct_name, struct_name_len, "%s.%s", 
+                        node->pattern_match.enum_name, node->pattern_match.variant_name);
+                
+                TypeInfo* struct_type = type_context_find_struct_type(type_ctx, struct_name);
+                free(struct_name);
+                
+                if (!struct_type) {
+                    // Fallback: variant has no fields or struct type wasn't created
+                    TYPE_ERROR(diag, node->loc, "T326",
+                        "Cannot find struct type for variant '%s.%s'",
+                        node->pattern_match.enum_name, node->pattern_match.variant_name);
+                    node->pattern_match.binding_types[0] = Type_Unknown;
+                } else {
+                    node->pattern_match.binding_types[0] = struct_type;
+                }
+            } else {
+                // Multiple bindings or wildcards - destructure
+                node->pattern_match.is_struct_binding = false;
+                
+                if (node->pattern_match.binding_count != field_count) {
+                    TYPE_ERROR(diag, node->loc, "T325",
+                        "Pattern binding count mismatch: variant '%s' has %d fields, but pattern has %d bindings",
+                        node->pattern_match.variant_name, field_count, node->pattern_match.binding_count);
+                }
+                
+                // Assign types to each binding
+                for (int i = 0; i < node->pattern_match.binding_count && i < field_count; i++) {
+                    if (!node->pattern_match.binding_is_wildcard[i]) {
+                        node->pattern_match.binding_types[i] = field_types[i];
+                    }
+                }
+            }
+            
+            // Pattern match result type is always bool
+            node->type_info = Type_Bool;
+            break;
+        }
+
         case AST_MEMBER_ACCESS: {
             infer_literal_types(node->member_access.object, symbols, type_ctx, diag);
 
@@ -1580,6 +1891,48 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
                 // Look up the identifier in the symbol table
                 SymbolEntry* entry = symbol_table_lookup(symbols, obj_name);
+
+                // Check if this is an enum type (e.g., "Color" in "Color.red")
+                if (identifier_is_enum_type(obj_name, type_ctx)) {
+                    // This is an enum variant access! Convert AST_MEMBER_ACCESS to AST_ENUM_VARIANT
+                    TypeInfo* enum_type = get_enum_type(obj_name, type_ctx);
+                    
+                    // Save the old data before transforming the node
+                    ASTNode* old_object = node->member_access.object;
+                    char* old_property = node->member_access.property;
+                    
+                    // Transform the node type and set enum_variant fields
+                    node->type = AST_ENUM_VARIANT;
+                    node->enum_variant.enum_name = strdup(obj_name);
+                    node->enum_variant.variant_name = strdup(member_name);
+                    node->enum_variant.enum_type = enum_type;
+                    node->enum_variant.variant_index = -1; // Will be resolved below
+                    // Initialize construction fields (not used for simple references)
+                    node->enum_variant.field_names = NULL;
+                    node->enum_variant.field_values = NULL;
+                    node->enum_variant.field_count = 0;
+                    
+                    // Free the old member_access data
+                    ast_free(old_object);
+                    free(old_property);
+                    
+                    // Now resolve the variant index and set type (same as AST_ENUM_VARIANT case below)
+                    for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
+                        if (strcmp(enum_type->data.enum_type.variant_names[i], node->enum_variant.variant_name) == 0) {
+                            node->enum_variant.variant_index = i;
+                            break;
+                        }
+                    }
+                    
+                    if (node->enum_variant.variant_index == -1) {
+                        TYPE_ERROR(diag, node->loc, "T320",
+                            "Enum '%s' does not have variant '%s'",
+                            node->enum_variant.enum_name, node->enum_variant.variant_name);
+                    }
+                    
+                    node->type_info = enum_type;
+                    break;
+                }
 
                 // Check if this is an imported namespace (e.g., "math" in "math.add")
                 if (symbol_is_namespace(entry)) {
@@ -2228,6 +2581,18 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
             analyze_call_sites(node->member_access.object, symbols, ctx, diag);
             break;
 
+        case AST_ENUM_VARIANT:
+            // Analyze field values if present
+            for (int i = 0; i < node->enum_variant.field_count; i++) {
+                analyze_call_sites(node->enum_variant.field_values[i], symbols, ctx, diag);
+            }
+            break;
+
+        case AST_PATTERN_MATCH:
+            // Analyze the expression being matched
+            analyze_call_sites(node->pattern_match.expr, symbols, ctx, diag);
+            break;
+
         case AST_NEW_EXPR:
             analyze_call_sites(node->new_expr.size_expr, symbols, ctx, diag);
             break;
@@ -2765,6 +3130,24 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // Nothing extra needed here
             break;
 
+        case AST_ENUM_VARIANT: {
+            // Type was already set in infer_literal_types, just ensure it's still there
+            if (!node->type_info || node->type_info == Type_Unknown) {
+                // Try to resolve again if it wasn't set
+                if (node->enum_variant.enum_type) {
+                    node->type_info = node->enum_variant.enum_type;
+                }
+            }
+            break;
+        }
+
+        case AST_PATTERN_MATCH: {
+            // Infer the expression being matched
+            infer_with_specializations(node->pattern_match.expr, symbols, ctx, diag);
+            // Type is always bool, already set in infer_literal_types
+            break;
+        }
+
         case AST_MEMBER_ACCESS: {
             infer_with_specializations(node->member_access.object, symbols, ctx, diag);
 
@@ -2981,8 +3364,10 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
                 // Register the const in symbol table (even if no array size)
                 if (stmt->var_decl.init) {
                     infer_literal_types(stmt->var_decl.init, symbols, type_ctx, diag);
+                    // Use type hint if provided, otherwise use inferred type from init
+                    TypeInfo* var_type = stmt->var_decl.type_hint ? stmt->var_decl.type_hint : stmt->var_decl.init->type_info;
                     symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
-                                                       stmt->var_decl.init->type_info,
+                                                       var_type,
                                                        stmt->var_decl.is_const, stmt);
                 } else if (stmt->var_decl.type_hint) {
                     symbol_table_insert_var_declaration(symbols, stmt->var_decl.name,
@@ -3030,6 +3415,14 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
                     progress_made = true;
                 }
                 // If not all resolved, we'll try again next iteration
+            }
+            // Try to process enum declarations
+            else if (stmt->type == AST_ENUM_DECL) {
+                // Enums don't have array sizes to evaluate, just register them
+                collect_enum_declarations(stmt, symbols, type_ctx, diag);
+                log_verbose_indent(2, "Processed enum: %s", stmt->enum_decl.name);
+                processed[i] = true;
+                progress_made = true;
             }
         }
 

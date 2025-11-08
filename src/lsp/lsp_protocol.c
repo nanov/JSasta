@@ -43,6 +43,7 @@ static LspJsonMethodType lsp_json_method_to_enum(const char* method) {
     if (strcmp(method, "textDocument/completion") == 0) return LSP_METHOD_TEXTDOCUMENT_COMPLETION;
     if (strcmp(method, "textDocument/definition") == 0) return LSP_METHOD_TEXTDOCUMENT_DEFINITION;
     if (strcmp(method, "textDocument/references") == 0) return LSP_METHOD_TEXTDOCUMENT_REFERENCES;
+    if (strcmp(method, "textDocument/inlayHint") == 0) return LSP_METHOD_TEXTDOCUMENT_INLAY_HINT;
     if (strcmp(method, "workspace/didChangeConfiguration") == 0) return LSP_METHOD_WORKSPACE_DID_CHANGE_CONFIGURATION;
     if (strcmp(method, "$/cancelRequest") == 0) return LSP_METHOD_CANCEL_REQUEST;
     return LSP_METHOD_UNKNOWN;
@@ -177,6 +178,15 @@ static int lsp_json_text_positions_params_callback(JSONParser* p, const char* ke
     return -1;
 }
 
+static int lsp_json_inlay_hint_params_callback(JSONParser* p, const char* key, void* user_data) {
+    LspJsonInlayHintParams* params = (LspJsonInlayHintParams*)user_data;
+    if (strcmp(key, "textDocument") == 0)
+        return json_parse_fast_object(p, lsp_json_text_document_identifier_parser_callback, &params->textDocument);
+    if (strcmp(key, "range") == 0)
+        return json_parse_fast_object(p, lsp_json_range_parser_callback, &params->range);
+    return -1;
+}
+
 static int lsp_json_hover_params_callback(JSONParser* p, const char* key, void* user_data) {
     LspJsonHoverParams* params = (LspJsonHoverParams*)user_data;
     if (strcmp(key, "textDocument") == 0)
@@ -223,6 +233,8 @@ static int lsp_json_params_parser_dispatcher(JSONParser* parser, LspJsonMessage*
             return json_parse_fast_object(parser, lsp_json_text_positions_params_callback, &message->notification_or_request.params.definition);
         case LSP_METHOD_TEXTDOCUMENT_REFERENCES:
             return json_parse_fast_object(parser, lsp_json_text_positions_params_callback, &message->notification_or_request.params.references);
+        case LSP_METHOD_TEXTDOCUMENT_INLAY_HINT:
+            return json_parse_fast_object(parser, lsp_json_inlay_hint_params_callback, &message->notification_or_request.params.inlayHint);
         case LSP_METHOD_CANCEL_REQUEST:
              return json_parse_fast_object(parser, lsp_json_cancel_params_callback, &message->notification_or_request.params.cancelRequest);
         // Methods with no params are handled by skipping the value
@@ -631,6 +643,13 @@ char* lsp_create_initialize_response(LSPServerCapabilities* caps) {
         json_add_bool_field(builder, "documentSymbolProvider", true);
     }
 
+    if (caps->inlay_hint_provider) {
+        json_add_key(builder, "inlayHintProvider");
+        json_start_object(builder);
+        json_add_bool_field(builder, "resolveProvider", false);
+        json_end_object(builder);
+    }
+
     json_end_object(builder); // capabilities
 
     // serverInfo
@@ -902,6 +921,9 @@ void lsp_json_inner_free_message(LspJsonMessage* message) {
             } break;
             case LSP_METHOD_TEXTDOCUMENT_DEFINITION: {
                 free(message->notification_or_request.params.references.textDocument.uri);
+            } break;
+            case LSP_METHOD_TEXTDOCUMENT_INLAY_HINT: {
+                free(message->notification_or_request.params.inlayHint.textDocument.uri);
             } break;
             case LSP_METHOD_TEXTDOCUMENT_HOVER:
             case LSP_METHOD_TEXTDOCUMENT_COMPLETION:

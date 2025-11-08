@@ -1,7 +1,26 @@
+import io from @io;
 external printf(string, ...): void;
 
-var WIDTH = 100;
-var GENERATIONS  60;
+
+// terminal
+struct winsize_t {
+	ws_row: u16;
+	ws_col: u16;
+	ws_xpixel: u16;
+	ws_ypixel: u16;
+}
+
+// ioctl.h
+const TIOCGWINSZ:u64 = 1074295912;
+const STDOUT_FILENO = 1;
+var w: winsize_t;
+
+external ioctl(a: int, b: u64, ...): i32;
+
+ioctl(STDOUT_FILENO, TIOCGWINSZ, ref w);
+
+var WIDTH = w.ws_col;
+var GENERATIONS = 60;
 
 const ANSI_RESET = "\e[0m";
 const ANSI_BLACK = "\e[30m"; // "\033[0;30m";
@@ -13,17 +32,18 @@ function applyRule110(left, center, right) {
 	return res & 1;
 }
 
+
 printf("Rule 110 Cellular Automaton\n");
-printf("Width: \n" + WIDTH);
-printf("Generations: \n" + GENERATIONS);
+io.println("Width: {}", WIDTH);
+io.println("Generations: {}", GENERATIONS);
 printf("=\n", WIDTH);
 
 let prevLeft = 0;
 let prevCenter = 0;
 let prevRight = 0;
 
-let currentRow: i32[150];
-let nextRow: i32[150];
+let currentRow = new i32[WIDTH];
+let nextRow = new i32[WIDTH];
 var wasHit = true;
 
 for (let i = 0; i < WIDTH; i++) {
@@ -33,21 +53,22 @@ for (let i = 0; i < WIDTH; i++) {
 	printf(cell == 1 ? "*" : "·");
 }
 printf("%s\n", ANSI_RESET);
-var cr = ref currentRow;
-var nr = ref nextRow;
 
 for (let gen = 1; gen < GENERATIONS; gen++) {
 	for (let i = 0; i < WIDTH; i++) {
-		var left = i == 0 ? 0 : cr[i - 1];
-		var center = cr[i];
-		var right = i == WIDTH - 1 ? 0 : cr[i + 1];
+		var left = i == 0 ? 0 : currentRow[i - 1];
+		var center = currentRow[i];
+		var right = i == WIDTH - 1 ? 0 : currentRow[i + 1];
 		var nextCell = applyRule110(left, center, right);
-		nr[i] = nextCell;
+		nextRow[i] = nextCell;
 		printf(nextCell == 1 ? ANSI_RESET : ANSI_BLACK);
 		printf(nextCell == 1 ? "*" : "·");
 	}
-	var tr = cr;
-	cr = nr;
-	nr = tr;
+	var tr = currentRow;
+	currentRow = nextRow;
+	nextRow = tr;
 	printf("%s\n", ANSI_RESET);
 }
+
+delete nextRow;
+delete currentRow;

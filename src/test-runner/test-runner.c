@@ -10,6 +10,9 @@
 #include <limits.h>
 #include <sys/wait.h>
 #include <sys/sysctl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <termios.h>
 
 // --- Definitions and Globals ---
 #define MAX_PATH 1024
@@ -144,7 +147,7 @@ int execute_and_capture_streams(const char* command, char** stdout_buf, char** s
 
     int status;
     waitpid(pid, &status, 0);
-    
+
     // Handle both normal exits and signal termination
     if (WIFEXITED(status)) {
         return WEXITSTATUS(status);
@@ -278,7 +281,7 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                         // Compile and link with runtime instead of using lli
                         char temp_exe[MAX_PATH];
                         snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
-                        snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null", 
+                        snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null",
                                  temp_executable_path, temp_exe);
                         system(command);
                         snprintf(command, sizeof(command), "%s", temp_exe);
@@ -330,7 +333,7 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                 // Compile and link with runtime instead of using lli
                 char temp_exe[MAX_PATH];
                 snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
-                snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null", 
+                snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null",
                          temp_executable_path, temp_exe);
                 system(command);
                 snprintf(command, sizeof(command), "%s", temp_exe);
@@ -423,7 +426,7 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
         const char* suite_display_name = current_dir + strlen(root_dir);
         if (*suite_display_name == '/') suite_display_name++;
         printf("\nRunning Suite: %s\n", *suite_display_name ? suite_display_name : ".");
-        
+
         if (g_max_parallel_jobs == 1) {
             // Sequential execution
             for (int i = 0; i < test_file_count; i++) {
@@ -435,7 +438,7 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
             // Parallel execution
             int active_processes = 0;
             int next_test = 0;
-            
+
             while (next_test < test_file_count || active_processes > 0) {
                 // Spawn new processes up to the limit
                 while (active_processes < g_max_parallel_jobs && next_test < test_file_count) {
@@ -458,7 +461,7 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
                         goto cleanup_files;
                     }
                 }
-                
+
                 // Wait for any child to complete
                 if (active_processes > 0) {
                     int status;
@@ -473,7 +476,7 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
                     }
                 }
             }
-            
+
 cleanup_files:
             for (int i = 0; i < test_file_count; i++) {
                 free(test_files[i]);
@@ -507,6 +510,10 @@ void print_usage(const char* prog_name) {
 }
 
 int main(int argc, char* argv[]) {
+	struct winsize w;
+	ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+	printf("w: %zU, %d\n", TIOCGWINSZ, w.ws_col);
+	return 0;
     if (argc < 2) { print_usage(argv[0]); return 1; }
 
     // Set default parallel jobs to cores/2

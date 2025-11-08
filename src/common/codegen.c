@@ -21,6 +21,7 @@ static inline Module* symbol_get_imported_module(SymbolEntry* entry) {
 
 // Forward declarations
 static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info);
+static LLVMTypeRef codegen_lookup_enum_type(CodeGen* gen, TypeInfo* type_info);
 static LLVMValueRef codegen_member_access_ptr(CodeGen* gen, ASTNode* node);
 static LLVMTypeRef codegen_get_llvm_type(CodeGen* gen, ASTNode* node);
 static LLVMValueRef codegen_get_lvalue_ptr(CodeGen* gen, ASTNode* node);
@@ -207,6 +208,14 @@ LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
         }
         // Return NULL if not found - this signals dependency not ready yet during type initialization
         // The iterative approach in codegen_initialize_types will retry
+        return NULL;
+    } else if (type_info->kind == TYPE_KIND_ENUM) {
+        // Look up the enum type (tagged union)
+        LLVMTypeRef enum_type = codegen_lookup_enum_type(gen, type_info);
+        if (enum_type) {
+            return enum_type;
+        }
+        // Return NULL if not found - will be retried during initialization
         return NULL;
     }
 
@@ -635,6 +644,325 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_BOOLEAN:
             return LLVMConstInt(LLVMInt1TypeInContext(gen->context), node->boolean.value, 0);
 
+        case AST_ENUM_VARIANT: {
+            // Generate code for enum variant
+            TypeInfo* enum_type = node->enum_variant.enum_type;
+            int variant_index = node->enum_variant.variant_index;
+            
+            if (!enum_type || variant_index < 0) {
+                log_error_at(&node->loc, "Invalid enum variant: %s.%s",
+                    node->enum_variant.enum_name, node->enum_variant.variant_name);
+                return NULL;
+            }
+            
+            // Check if enum has any data variants
+            bool has_data_variants = false;
+            for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
+                if (enum_type->data.enum_type.variant_field_counts[i] > 0) {
+                    has_data_variants = true;
+                    break;
+                }
+            }
+            
+            if (!has_data_variants) {
+                // All unit variants - return just the tag
+                LLVMTypeRef tag_type = get_llvm_type(gen, enum_type);
+                if (!tag_type) {
+                    log_error_at(&node->loc, "Could not determine LLVM type for enum: %s",
+                        node->enum_variant.enum_name);
+                    return NULL;
+                }
+                return LLVMConstInt(tag_type, variant_index, 0);
+            }
+            
+            // Enum has data variants - need to construct { tag, data } struct
+            LLVMTypeRef enum_llvm_type = get_llvm_type(gen, enum_type);
+            if (!enum_llvm_type) {
+                log_error_at(&node->loc, "Could not determine LLVM type for enum: %s",
+                    node->enum_variant.enum_name);
+                return NULL;
+            }
+            
+            // Check if this specific variant has data
+            int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
+            
+            if (field_count == 0) {
+                // This variant is a unit variant within a mixed enum
+                // Create { tag, zeroed_union }
+                LLVMValueRef enum_val = LLVMGetUndef(enum_llvm_type);
+                
+                // Set tag
+                LLVMValueRef tag = LLVMConstInt(LLVMInt32TypeInContext(gen->context), variant_index, 0);
+                enum_val = LLVMBuildInsertValue(gen->builder, enum_val, tag, 0, "enum_tag");
+                
+                return enum_val;
+            } else {
+                // This variant has data - construct it
+                if (node->enum_variant.field_count == 0) {
+                    // Reference to variant without construction (shouldn't happen after parsing)
+                    log_error_at(&node->loc, "Cannot reference data variant without construction: %s.%s",
+                        node->enum_variant.enum_name, node->enum_variant.variant_name);
+                    return NULL;
+                }
+                
+                // Build the variant struct with field values
+                // Create field types array
+                LLVMTypeRef* variant_field_types = malloc(sizeof(LLVMTypeRef) * field_count);
+                LLVMValueRef* variant_field_values = malloc(sizeof(LLVMValueRef) * field_count);
+                
+                char** expected_field_names = enum_type->data.enum_type.variant_field_names[variant_index];
+                TypeInfo** expected_field_types = enum_type->data.enum_type.variant_field_types[variant_index];
+                
+                // Initialize all fields (in case not all are specified, though type inference should catch that)
+                for (int j = 0; j < field_count; j++) {
+                    variant_field_types[j] = get_llvm_type(gen, expected_field_types[j]);
+                    variant_field_values[j] = NULL;
+                }
+                
+                // Fill in the provided field values
+                for (int i = 0; i < node->enum_variant.field_count; i++) {
+                    // Find the position of this field in the expected field list
+                    int field_pos = -1;
+                    for (int j = 0; j < field_count; j++) {
+                        if (strcmp(node->enum_variant.field_names[i], expected_field_names[j]) == 0) {
+                            field_pos = j;
+                            break;
+                        }
+                    }
+                    
+                    if (field_pos < 0) {
+                        // This should have been caught in type inference
+                        continue;
+                    }
+                    
+                    // Generate code for the field value
+                    LLVMValueRef field_val = codegen_node(gen, node->enum_variant.field_values[i]);
+                    if (!field_val) {
+                        log_error_at(&node->loc, "Failed to generate code for field '%s'",
+                            node->enum_variant.field_names[i]);
+                        free(variant_field_types);
+                        free(variant_field_values);
+                        return NULL;
+                    }
+                    
+                    variant_field_values[field_pos] = field_val;
+                }
+                
+                // Create the variant struct type and build the value
+                LLVMTypeRef variant_struct_type = LLVMStructTypeInContext(gen->context, variant_field_types, field_count, 0);
+                
+                // Build the struct value using insertvalue
+                LLVMValueRef variant_data = LLVMGetUndef(variant_struct_type);
+                for (int i = 0; i < field_count; i++) {
+                    if (variant_field_values[i]) {
+                        variant_data = LLVMBuildInsertValue(gen->builder, variant_data, variant_field_values[i], i, "field");
+                    }
+                }
+                
+                free(variant_field_types);
+                free(variant_field_values);
+                
+                // Now we need to store this struct into the enum's data array [8 x i64]
+                // We'll allocate temporary space, store the struct, then load as the array type
+                LLVMTypeRef data_array_type = LLVMStructGetTypeAtIndex(enum_llvm_type, 1);
+                
+                // Allocate space for the struct
+                LLVMValueRef temp_alloca = LLVMBuildAlloca(gen->builder, variant_struct_type, "variant_temp");
+                LLVMBuildStore(gen->builder, variant_data, temp_alloca);
+                
+                // Bitcast to pointer to the data array type
+                LLVMValueRef array_ptr = LLVMBuildBitCast(gen->builder, temp_alloca, 
+                    LLVMPointerType(data_array_type, 0), "array_ptr");
+                
+                // Load as the array type
+                LLVMValueRef data_array = LLVMBuildLoad2(gen->builder, data_array_type, array_ptr, "data_array");
+                
+                // Create the complete enum value { tag, data_array }
+                LLVMValueRef enum_val = LLVMGetUndef(enum_llvm_type);
+                
+                // Set tag
+                LLVMValueRef tag = LLVMConstInt(LLVMInt32TypeInContext(gen->context), variant_index, 0);
+                enum_val = LLVMBuildInsertValue(gen->builder, enum_val, tag, 0, "enum_tag");
+                
+                // Set data
+                enum_val = LLVMBuildInsertValue(gen->builder, enum_val, data_array, 1, "enum_data");
+                
+                return enum_val;
+            }
+        }
+
+        case AST_PATTERN_MATCH: {
+            // Pattern matching: expr is EnumType.Variant(bindings)
+            // Returns a bool indicating if the pattern matches
+            
+            TypeInfo* enum_type = node->pattern_match.enum_type;
+            int variant_index = node->pattern_match.variant_index;
+            
+            if (!enum_type || variant_index < 0) {
+                log_error_at(&node->loc, "Invalid pattern match");
+                return NULL;
+            }
+            
+            // Generate code for the expression being matched
+            LLVMValueRef expr_val = codegen_node(gen, node->pattern_match.expr);
+            if (!expr_val) {
+                return NULL;
+            }
+            
+            // Determine if this enum is unit-only or has data variants
+            bool has_data_variants = false;
+            for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
+                if (enum_type->data.enum_type.variant_field_counts[i] > 0) {
+                    has_data_variants = true;
+                    break;
+                }
+            }
+            
+            LLVMValueRef tag_val;
+            LLVMValueRef data_array = NULL;  // Used for extracting variant data
+            
+            if (!has_data_variants) {
+                // All unit variants - the value IS the tag
+                tag_val = expr_val;
+            } else {
+                // Has data variants - enum is a struct { tag, data }
+                // Extract tag (field 0) and data (field 1) from the value
+                tag_val = LLVMBuildExtractValue(gen->builder, expr_val, 0, "tag");
+                data_array = LLVMBuildExtractValue(gen->builder, expr_val, 1, "data");
+            }
+            
+            // Compare tag with expected variant index
+            LLVMTypeRef tag_type = LLVMTypeOf(tag_val);
+            LLVMValueRef expected_tag = LLVMConstInt(tag_type, variant_index, 0);
+            LLVMValueRef matches = LLVMBuildICmp(gen->builder, LLVMIntEQ, tag_val, expected_tag, "pattern_match");
+            
+            // If we have bindings, we need to extract the data fields
+            // Note: The bindings are already in the symbol table (added during type inference)
+            // We need to create alloca for them and store the extracted values
+            
+            int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
+            
+            if (node->pattern_match.binding_count > 0 && field_count > 0) {
+                TypeInfo** field_types = enum_type->data.enum_type.variant_field_types[variant_index];
+                
+                // First, create allocas for all bindings BEFORE any conditional branching
+                // This ensures the bindings are available in the symbol table for the then-branch
+                for (int i = 0; i < node->pattern_match.binding_count && i < field_count; i++) {
+                    if (node->pattern_match.binding_is_wildcard[i]) {
+                        continue;
+                    }
+                    
+                    char* binding_name = node->pattern_match.binding_names[i];
+                    SymbolEntry* entry = symbol_table_lookup(gen->symbols, binding_name);
+                    
+                    if (entry && !entry->value) {
+                        TypeInfo* field_type = field_types[i];
+                        LLVMTypeRef field_llvm_type = get_llvm_type(gen, field_type);
+                        
+                        LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, field_llvm_type, binding_name);
+                        entry->value = alloca;
+                        entry->llvm_type = field_llvm_type;
+                    }
+                }
+                
+                // Now create a conditional block to only extract data if the pattern matches
+                LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
+                LLVMValueRef current_func = LLVMGetBasicBlockParent(current_block);
+                
+                LLVMBasicBlockRef extract_block = LLVMAppendBasicBlock(current_func, "pattern_extract");
+                LLVMBasicBlockRef continue_block = LLVMAppendBasicBlock(current_func, "pattern_continue");
+                
+                // Branch based on match
+                LLVMBuildCondBr(gen->builder, matches, extract_block, continue_block);
+                
+                // In extract block: extract fields and bind to variables
+                LLVMPositionBuilderAtEnd(gen->builder, extract_block);
+                
+                if (node->pattern_match.is_struct_binding) {
+                    // Single binding - bind entire variant data as a struct
+                    char* binding_name = node->pattern_match.binding_names[0];
+                    SymbolEntry* entry = symbol_table_lookup(gen->symbols, binding_name);
+                    
+                    if (entry && entry->value) {
+                        // Build the variant struct type
+                        LLVMTypeRef* variant_field_llvm_types = malloc(sizeof(LLVMTypeRef) * field_count);
+                        for (int j = 0; j < field_count; j++) {
+                            variant_field_llvm_types[j] = get_llvm_type(gen, field_types[j]);
+                        }
+                        LLVMTypeRef variant_struct_type = LLVMStructTypeInContext(gen->context, variant_field_llvm_types, field_count, 0);
+                        free(variant_field_llvm_types);
+                        
+                        // Allocate temporary space for the data array
+                        LLVMTypeRef data_array_type = LLVMArrayType(LLVMInt64TypeInContext(gen->context), 8);
+                        LLVMValueRef temp_data_alloca = LLVMBuildAlloca(gen->builder, data_array_type, "temp_data");
+                        LLVMBuildStore(gen->builder, data_array, temp_data_alloca);
+                        
+                        // Bitcast to pointer to variant struct
+                        LLVMValueRef variant_ptr = LLVMBuildBitCast(gen->builder, temp_data_alloca,
+                            LLVMPointerType(variant_struct_type, 0), "variant_ptr");
+                        
+                        // Load the entire struct
+                        LLVMValueRef struct_val = LLVMBuildLoad2(gen->builder, variant_struct_type, variant_ptr, "variant_struct");
+                        
+                        // Store it to the binding's alloca
+                        LLVMBuildStore(gen->builder, struct_val, entry->value);
+                    }
+                } else {
+                    // Destructure - extract each field and store to the allocas
+                    for (int i = 0; i < node->pattern_match.binding_count && i < field_count; i++) {
+                        if (node->pattern_match.binding_is_wildcard[i]) {
+                            continue; // Skip wildcards
+                        }
+                        
+                        // Look up the symbol for this binding
+                        char* binding_name = node->pattern_match.binding_names[i];
+                        SymbolEntry* entry = symbol_table_lookup(gen->symbols, binding_name);
+                        
+                        if (entry && entry->value) {
+                            TypeInfo* field_type = field_types[i];
+                            LLVMTypeRef field_llvm_type = get_llvm_type(gen, field_type);
+                            LLVMValueRef alloca = entry->value;
+                            
+                            // Extract the field value from data array
+                            // The data array is [8 x i64], we need to extract the variant struct from it
+                            // and then get the specific field
+                            
+                            // Build the variant struct type
+                            char** field_names = enum_type->data.enum_type.variant_field_names[variant_index];
+                            LLVMTypeRef* variant_field_llvm_types = malloc(sizeof(LLVMTypeRef) * field_count);
+                            for (int j = 0; j < field_count; j++) {
+                                variant_field_llvm_types[j] = get_llvm_type(gen, field_types[j]);
+                            }
+                            LLVMTypeRef variant_struct_type = LLVMStructTypeInContext(gen->context, variant_field_llvm_types, field_count, 0);
+                            free(variant_field_llvm_types);
+                            
+                            // Allocate temporary space for the data array
+                            LLVMTypeRef data_array_type = LLVMArrayType(LLVMInt64TypeInContext(gen->context), 8);
+                            LLVMValueRef temp_data_alloca = LLVMBuildAlloca(gen->builder, data_array_type, "temp_data");
+                            LLVMBuildStore(gen->builder, data_array, temp_data_alloca);
+                            
+                            // Bitcast to pointer to variant struct
+                            LLVMValueRef variant_ptr = LLVMBuildBitCast(gen->builder, temp_data_alloca,
+                                LLVMPointerType(variant_struct_type, 0), "variant_ptr");
+                            
+                            // Extract field i from the variant struct
+                            LLVMValueRef field_ptr = LLVMBuildStructGEP2(gen->builder, variant_struct_type, variant_ptr, i, "field_ptr");
+                            LLVMValueRef field_val = LLVMBuildLoad2(gen->builder, field_llvm_type, field_ptr, "field_val");
+                            
+                            LLVMBuildStore(gen->builder, field_val, alloca);
+                        }
+                    }
+                }
+                
+                LLVMBuildBr(gen->builder, continue_block);
+                
+                // Continue after pattern match
+                LLVMPositionBuilderAtEnd(gen->builder, continue_block);
+            }
+            
+            return matches;
+        }
+
         case AST_IDENTIFIER: {
             SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->identifier.name);
             if (entry && entry->value) {
@@ -695,6 +1023,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
 
                 return codegen_string_concat(gen, left, right);
+            }
+
+            // Special handling for enum comparisons (== and !=)
+            if ((strcmp(node->binary_op.op, "==") == 0 || strcmp(node->binary_op.op, "!=") == 0)) {
+                TypeInfo* left_type = node->binary_op.left->type_info;
+                TypeInfo* right_type = node->binary_op.right->type_info;
+                
+                // Check if both operands are the same enum type
+                if (left_type && right_type && 
+                    left_type->kind == TYPE_KIND_ENUM && right_type->kind == TYPE_KIND_ENUM &&
+                    left_type == right_type) {
+                    
+                    // For unit variants (which are u8/u16/u32 values), use integer comparison
+                    LLVMIntPredicate pred = (strcmp(node->binary_op.op, "==") == 0) ? LLVMIntEQ : LLVMIntNE;
+                    return LLVMBuildICmp(gen->builder, pred, left, right, 
+                                       strcmp(node->binary_op.op, "==") == 0 ? "enum_eq" : "enum_ne");
+                }
             }
 
             // Use trait system for all other binary operations
@@ -2057,7 +2402,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         }
 
         case AST_IF: {
+            // If the condition is a pattern match, we need to temporarily switch to the then-branch
+            // scope to create allocas for bindings BEFORE generating the condition
+            bool is_pattern_match = (node->if_stmt.condition && 
+                                    node->if_stmt.condition->type == AST_PATTERN_MATCH &&
+                                    node->if_stmt.then_branch->symbol_table);
+            
+            SymbolTable* prev_scope = gen->symbols;
+            if (is_pattern_match) {
+                gen->symbols = node->if_stmt.then_branch->symbol_table;
+            }
+            
             LLVMValueRef cond = codegen_node(gen, node->if_stmt.condition);
+            
+            // Restore scope after generating condition
+            if (is_pattern_match) {
+                gen->symbols = prev_scope;
+            }
 
             LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(gen->context, gen->current_function, "then");
             LLVMBasicBlockRef else_bb = node->if_stmt.else_branch ?
@@ -2070,9 +2431,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 LLVMBuildCondBr(gen->builder, cond, then_bb, merge_bb);
             }
 
-            // Then branch
+            // Then branch - switch to scoped symbol table if it exists (for pattern match bindings)
             LLVMPositionBuilderAtEnd(gen->builder, then_bb);
+            if (node->if_stmt.then_branch->symbol_table) {
+                gen->symbols = node->if_stmt.then_branch->symbol_table;
+            }
             codegen_node(gen, node->if_stmt.then_branch);
+            gen->symbols = prev_scope;  // Restore previous scope
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder))) {
                 LLVMBuildBr(gen->builder, merge_bb);
             }
@@ -2478,6 +2843,57 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
     return NULL;
 }
 
+// Lookup pre-generated LLVM enum type (tagged union) by TypeInfo
+static LLVMTypeRef codegen_lookup_enum_type(CodeGen* gen, TypeInfo* type_info) {
+    if (!gen->type_ctx || !type_info || !type_info_is_enum(type_info)) {
+        return NULL;
+    }
+
+    // If type_info doesn't have a type_name, we can't look it up
+    if (!type_info->type_name) {
+        return NULL;
+    }
+
+    // Search through current module's type table by type_name
+    TypeEntry* entry = gen->type_ctx->type_table;
+    while (entry) {
+        if (entry->type && entry->type->type_name &&
+            strcmp(entry->type->type_name, type_info->type_name) == 0 &&
+            entry->llvm_type) {
+            return entry->llvm_type;
+        }
+        entry = entry->next;
+    }
+    
+    // Search imported modules
+    if (gen->symbols) {
+        SymbolEntry* sym_entry = gen->symbols->head;
+        while (sym_entry) {
+            if (symbol_is_namespace(sym_entry)) {
+                Module* imported_module = symbol_get_imported_module(sym_entry);
+                if (imported_module && imported_module->type_ctx) {
+                    TypeEntry* imported_entry = imported_module->type_ctx->type_table;
+                    while (imported_entry) {
+                        if (imported_entry->type && imported_entry->type->type_name &&
+                            strcmp(imported_entry->type->type_name, type_info->type_name) == 0 &&
+                            imported_entry->llvm_type) {
+                            
+                            log_verbose("Found enum type '%s' in imported module '%s'", 
+                                       type_info->type_name, imported_module->relative_path);
+                            
+                            return imported_entry->llvm_type;
+                        }
+                        imported_entry = imported_entry->next;
+                    }
+                }
+            }
+            sym_entry = sym_entry->next;
+        }
+    }
+
+    return NULL;
+}
+
 // Initialize all types from TypeContext: pre-generate object structs and declare function prototypes
 static void codegen_initialize_types(CodeGen* gen) {
     if (!gen->type_ctx) {
@@ -2560,6 +2976,122 @@ static void codegen_initialize_types(CodeGen* gen) {
                 }
 
                 free(field_types);
+            } else if (type->kind == TYPE_KIND_ENUM) {
+                // Skip if already generated
+                if (entry->llvm_type) {
+                    entry = entry->next;
+                    continue;
+                }
+
+                // Create enum as tagged union: { i32 tag, union data }
+                // The union contains a field for each variant that has data
+                
+                // Collect variant data types for the union
+                LLVMTypeRef* variant_union_types = NULL;
+                int union_type_count = 0;
+                int max_union_types = type->data.enum_type.variant_count;
+                
+                if (max_union_types > 0) {
+                    variant_union_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * max_union_types);
+                }
+                
+                bool all_resolved = true;
+                
+                for (int i = 0; i < type->data.enum_type.variant_count; i++) {
+                    int field_count = type->data.enum_type.variant_field_counts[i];
+                    
+                    if (field_count == 0) {
+                        // Unit variant - no data, skip
+                        continue;
+                    }
+                    
+                    if (field_count == 1 && !type->data.enum_type.variant_field_names[i]) {
+                        // Single unnamed field - just use that type
+                        TypeInfo* field_type = type->data.enum_type.variant_field_types[i][0];
+                        LLVMTypeRef llvm_field_type = get_llvm_type(gen, field_type);
+                        if (!llvm_field_type) {
+                            all_resolved = false;
+                            break;
+                        }
+                        variant_union_types[union_type_count++] = llvm_field_type;
+                    } else {
+                        // Named fields or multiple fields - create a struct for this variant
+                        LLVMTypeRef* variant_field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * field_count);
+                        
+                        for (int j = 0; j < field_count; j++) {
+                            TypeInfo* field_type = type->data.enum_type.variant_field_types[i][j];
+                            variant_field_types[j] = get_llvm_type(gen, field_type);
+                            if (!variant_field_types[j]) {
+                                all_resolved = false;
+                                free(variant_field_types);
+                                break;
+                            }
+                        }
+                        
+                        if (!all_resolved) {
+                            free(variant_field_types);
+                            break;
+                        }
+                        
+                        // Create anonymous struct for this variant
+                        LLVMTypeRef variant_struct = LLVMStructTypeInContext(gen->context, variant_field_types, field_count, 0);
+                        variant_union_types[union_type_count++] = variant_struct;
+                        free(variant_field_types);
+                    }
+                }
+                
+                if (all_resolved) {
+                    LLVMTypeRef enum_llvm_type;
+                    
+                    if (union_type_count == 0) {
+                        // All variants are unit variants - enum is just the tag
+                        // Use the smallest integer type that can represent all variants
+                        int variant_count = type->data.enum_type.variant_count;
+                        LLVMTypeRef tag_type;
+                        
+                        if (variant_count <= 256) {
+                            // u8 can hold 0-255
+                            tag_type = LLVMInt8TypeInContext(gen->context);
+                        } else if (variant_count <= 65536) {
+                            // u16 can hold 0-65535
+                            tag_type = LLVMInt16TypeInContext(gen->context);
+                        } else {
+                            // u32 for larger enums
+                            tag_type = LLVMInt32TypeInContext(gen->context);
+                        }
+                        
+                        enum_llvm_type = tag_type;
+                    } else {
+                        // Create tagged union: { i32 tag, [N x i8] data }
+                        // We'll use a byte array large enough to hold any variant
+                        // For now, use a fixed size of 64 bytes (can be optimized later)
+                        // In a real implementation, we'd calculate the actual max size needed
+                        
+                        // Simple approach: use an array of i64 values to ensure proper alignment
+                        // Most variants will fit in 8 i64 values (64 bytes)
+                        LLVMTypeRef data_array = LLVMArrayType(LLVMInt64TypeInContext(gen->context), 8);
+                        
+                        // Create tagged union: { i32 tag, [8 x i64] data }
+                        LLVMTypeRef tagged_union_fields[] = {
+                            LLVMInt32TypeInContext(gen->context),  // tag
+                            data_array                              // data (64 bytes, aligned to i64)
+                        };
+                        
+                        enum_llvm_type = LLVMStructCreateNamed(gen->context, type->type_name);
+                        LLVMStructSetBody(enum_llvm_type, tagged_union_fields, 2, 0);
+                    }
+                    
+                    entry->llvm_type = enum_llvm_type;
+                    
+                    log_verbose("Pre-generated LLVM enum type '%s' with %d variants (%d with data)",
+                               type->type_name, type->data.enum_type.variant_count, union_type_count);
+                    
+                    progress = true;
+                }
+                
+                if (variant_union_types) {
+                    free(variant_union_types);
+                }
             }
 
             entry = entry->next;

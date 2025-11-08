@@ -1,16 +1,29 @@
-// jastat-summary: Function returning struct
-// jastat: mode=run, capture=stdout
-
 import io from @io;
 
-struct Point {
-    x: i32;
-    y: i32;
-}
+struct winsize_t {
+	ws_row: u16;
+	ws_col: u16;
+	ws_xpixel: u16;
+	ws_ypixel: u16;
+};
 
-function make_point(x: i32, y: i32): Point {
-    return Point { x: x, y: y };
-}
+const TIOCGWINSZ:u64 = 1074295912;
+const STDOUT_FILENO = 1;
 
-let p = make_point(5, 10);
-io.println("Point: ({}, {})", p.x, p.y);
+external ioctl(a: int, b: u64, ...): int;
+external get_errno(): int;
+external isatty(fd: int): int;
+
+io.println("Is stdout a tty? {}", isatty(STDOUT_FILENO));
+
+var w:winsize_t;
+
+var r = ioctl(STDOUT_FILENO, TIOCGWINSZ, ref w);
+io.println("ioctl result: {}, errno: {}, ws_row: {}, ws_col: {}", r, get_errno(), w.ws_row, w.ws_col);
+
+
+
+// Executable statements need to be after all declarations
+// Note: external functions with struct parameters are not currently supported
+// var w:winsize_t;
+// ioctl(STDOUT_FILENO, TIOCGWINSZ, ref w);

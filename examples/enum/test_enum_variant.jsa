@@ -1,0 +1,16 @@
+enum Color {
+    red;
+    green;
+    blue;
+}
+
+function main() {
+    var c = Color.red;
+    var d = Color.green;
+
+    if (c == Color.red) {
+        return 1;
+    }
+
+    return 0;
+}
