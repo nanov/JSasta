@@ -1,7 +1,0 @@
-// jastat-summary: Error on undefined variable reference
-// jastat: mode=compiler, capture=expect
-
-import io from @io;
-
-// jastat_expect: TE_UNDEFINED_VARIABLE
-var a: i32 = undefinedVar;

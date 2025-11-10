@@ -1,5 +1,0 @@
-// jastat-summary: Syntax error on missing semicolon
-// jastat: mode=compiler, capture=stderr
-
-let x: i32 = 10
-let y: i32 = 20  // Missing semicolon

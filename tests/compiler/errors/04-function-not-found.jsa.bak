@@ -1,7 +1,0 @@
-// jastat-summary: Error on calling undefined function
-// jastat: mode=compiler, capture=expect
-
-import io from @io;
-
-// jastat_expect: TE_UNDEFINED_VARIABLE
-nonexistent_function(42);  // Undefined variable (function)

@@ -1,5 +1,0 @@
-// jastat-summary: Error on unknown type in variable declaration
-// jastat: mode=compiler, capture=expect
-
-// jastat_expect: PE_UNKNOWN_TYPE
-let x: UnknownType = 42;  // Unknown type
