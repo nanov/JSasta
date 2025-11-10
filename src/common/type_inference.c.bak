@@ -35,7 +35,7 @@ static inline TypeInfo* get_enum_type(const char* name, TypeContext* type_ctx) {
     if (diag) { \
         JSASTA_ERROR(diag, loc, err, ##__VA_ARGS__); \
     } else { \
-        log_error_at(&loc, JSASTA_GET_TEMPLATE(err), ##__VA_ARGS__); \
+        log_error_at(&loc, ##__VA_ARGS__); \
     } \
 } while(0)
 
@@ -610,7 +610,7 @@ static void collect_struct_declarations(ASTNode* node, SymbolTable* symbols, Typ
                     if (default_type != prop_type) {
                         // Allow int -> double promotion
                         if (!(prop_type == Type_Double && default_type == Type_Int)) {
-                            TYPE_ERROR(diag, node->loc, TE_DUPLICATE_VARIABLE,
+                            TYPE_ERROR(diag, node->loc, "T306",
                                 "Type mismatch in struct '%s': property '%s' has type %s but default value has type %s",
                                 struct_name, property_names[i],
                                 prop_type ? prop_type->type_name : "unknown",
@@ -695,7 +695,7 @@ static void collect_enum_declarations(ASTNode* node, SymbolTable* symbols, TypeC
                             if (resolved) {
                                 variant_field_types[i][j] = resolved;
                             } else {
-                                TYPE_ERROR(diag, node->loc, TE_TYPE_MISMATCH,
+                                TYPE_ERROR(diag, node->loc, "T101",
                                     "Cannot resolve type '%s' in enum '%s' variant '%s'",
                                     field_type->type_name, enum_name, variant_names[i]);
                                 variant_field_types[i][j] = Type_Unknown;
@@ -767,7 +767,7 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                     if (resolved) {
                         param_type_hints[i] = resolved;
                     } else {
-                        TYPE_ERROR(diag, node->loc, TE_TYPE_MISMATCH,
+                        TYPE_ERROR(diag, node->loc, "T101",
                             "Cannot resolve parameter type '%s' in function '%s'",
                             param_type_hints[i]->type_name, func_name);
                         param_type_hints[i] = Type_Unknown;
@@ -786,7 +786,7 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                     node->func_decl.return_type_hint = resolved;
                     return_type_hint = resolved;
                 } else {
-                    TYPE_ERROR(diag, node->loc, TE_TYPE_MISMATCH,
+                    TYPE_ERROR(diag, node->loc, "T101",
                         "Cannot resolve return type '%s' in function '%s'",
                         return_type_hint->type_name, func_name);
                     node->func_decl.return_type_hint = Type_Unknown;
@@ -1044,7 +1044,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->var_decl.type_hint = resolved;
                 } else {
                     log_error("VAR_DECL: Failed to resolve type '%s'", node->var_decl.type_hint->type_name);
-                    TYPE_ERROR(diag, node->loc, TE_TYPE_MISMATCH,
+                    TYPE_ERROR(diag, node->loc, "T101",
                         "Cannot resolve type '%s'", node->var_decl.type_hint->type_name);
                     node->var_decl.type_hint = Type_Unknown;
                 }
@@ -1058,10 +1058,10 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 } else {
                     // Report error with proper diagnostic
                     if (result.error_msg) {
-                        TYPE_ERROR(diag, result.loc, TE_FIELD_NOT_FOUND, "%s", result.error_msg);
+                        TYPE_ERROR(diag, result.loc, "T313", "%s", result.error_msg);
                         free(result.error_msg);
                     } else {
-                        TYPE_ERROR(diag, node->loc, TE_FIELD_NOT_FOUND, "Invalid array size expression");
+                        TYPE_ERROR(diag, node->loc, "T313", "Invalid array size expression");
                     }
                     node->var_decl.array_size = 0;
                 }
@@ -1108,7 +1108,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     if (type_info_is_unknown(inferred_type) && inferred_type != declared_type) {
                         // Allow int -> double promotion
                         if (!(declared_type == Type_Double && inferred_type == Type_Int)) {
-                            TYPE_ERROR(diag, node->loc, TE_TYPE_MISMATCH,
+                            TYPE_ERROR(diag, node->loc, "T307",
+                                "Type mismatch: variable '%s' declared as %s but initialized with %s",
+                                node->var_decl.name,
                                 declared_type->type_name,
                                 inferred_type->type_name);
                         }
@@ -1181,7 +1183,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                         }
 
                                         if (!allow_conversion) {
-                                            TYPE_ERROR(diag, node->loc, TE_WRONG_ARGUMENT_COUNT,
+                                            TYPE_ERROR(diag, node->loc, "T308",
                                                 "Property '%s' type mismatch: expected %s but got %s",
                                                 provided_key,
                                                 expected_type->type_name,
@@ -1193,7 +1195,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                             }
 
                             if (!found) {
-                                TYPE_ERROR(diag, node->loc, TE_OPERATOR_NOT_SUPPORTED,
+                                TYPE_ERROR(diag, node->loc, "T309",
                                     "Unknown property '%s' in struct '%s'",
                                     provided_key, declared_info->type_name);
                             }
@@ -1224,7 +1226,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                    declared_info->type_name);
                                     } else {
                                         // No default value - this is an error
-                                        TYPE_ERROR(diag, node->loc, TE_RETURN_TYPE_MISMATCH,
+                                        TYPE_ERROR(diag, node->loc, "T310",
                                             "Missing required property '%s' in struct '%s' (no default value)",
                                             declared_info->data.object.property_names[i],
                                             declared_info->type_name);
@@ -1386,7 +1388,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         }
                     }
                 } else {
-              		JSASTA_ERROR(diag, node->loc, TE_FUNCTION_NOT_FOUND, "Function not declared");
+              		JSASTA_ERROR(diag, node->loc, TE404_FUNCTION_NOT_FOUND, "Function not declared");
                 }
             }
             break;
@@ -1509,7 +1511,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                 }
 
                                 if (!allow_conversion) {
-                                    TYPE_ERROR(diag, node->loc, TE_MISSING_RETURN,
+                                    TYPE_ERROR(diag, node->loc, "T311",
                                         "Type mismatch: cannot assign %s to property '%s' of type %s",
                                         assigned_type ? assigned_type->type_name : "unknown",
                                         node->member_assignment.property,
@@ -1670,7 +1672,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 node->type_info = get_enum_type(node->identifier.name, type_ctx);
             } else if (!type_info_is_unknown(node->type_info)) {
                 // Only report error on first encounter (when type is not yet UNKNOWN)
-                TYPE_ERROR(diag, node->loc, TE_UNDEFINED_VARIABLE, node->identifier.name);
+                TYPE_ERROR(diag, node->loc, "T301", "Undefined variable: %s", node->identifier.name);
                 node->type_info = Type_Unknown;
             }
             break;
@@ -1728,7 +1730,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                TYPE_ERROR(diag, node->loc, TE_ARRAY_INDEX_NON_INTEGER, "Type '%s' does not implement Index<%s>",
+                TYPE_ERROR(diag, node->loc, "T304", "Type '%s' does not implement Index<%s>",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->type_info = Type_Unknown;
@@ -1774,7 +1776,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                TYPE_ERROR(diag, node->loc, TE_PROPERTY_NOT_FOUND, "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
+                TYPE_ERROR(diag, node->loc, "T305", "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->index_assignment.trait_impl = NULL;
@@ -1852,7 +1854,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 }
 
                 if (node->enum_variant.variant_index == -1) {
-                    TYPE_ERROR(diag, node->loc, TE_TYPE_ANNOTATION_REQUIRED,
+                    TYPE_ERROR(diag, node->loc, "T320",
                         "Enum '%s' does not have variant '%s'",
                         node->enum_variant.enum_name, node->enum_variant.variant_name);
                 } else {
@@ -1863,7 +1865,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
                         // Check field count matches
                         if (node->enum_variant.field_count != expected_field_count) {
-                            TYPE_ERROR(diag, node->loc, TE_INCOMPATIBLE_TYPES,
+                            TYPE_ERROR(diag, node->loc, "T322",
                                 "Variant '%s' expects %d fields, got %d",
                                 node->enum_variant.variant_name, expected_field_count, node->enum_variant.field_count);
                         } else {
@@ -1884,7 +1886,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                 }
 
                                 if (!found) {
-                                    TYPE_ERROR(diag, node->loc, TE_INVALID_CAST,
+                                    TYPE_ERROR(diag, node->loc, "T323",
                                         "Variant '%s' has no field '%s'",
                                         node->enum_variant.variant_name, node->enum_variant.field_names[i]);
                                     continue;
@@ -1898,7 +1900,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
                                 // Simple pointer comparison for type checking
                                 if (value_type != expected_type && value_type != Type_Unknown) {
-                                    TYPE_ERROR(diag, node->loc, TE_TRAIT_NOT_IMPLEMENTED,
+                                    TYPE_ERROR(diag, node->loc, "T324",
                                         "Type mismatch for field '%s': expected %s, got %s",
                                         node->enum_variant.field_names[i],
                                         expected_type->type_name ? expected_type->type_name : "unknown",
@@ -1912,7 +1914,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 // Set the node's type to the enum type
                 node->type_info = enum_type;
             } else {
-                TYPE_ERROR(diag, node->loc, TE_CANNOT_INFER_TYPE,
+                TYPE_ERROR(diag, node->loc, "T321",
                     "Unknown enum type '%s'", node->enum_variant.enum_name);
                 node->type_info = Type_Unknown;
             }
@@ -1927,7 +1929,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Look up the enum type
             TypeInfo* enum_type = get_enum_type(node->pattern_match.enum_name, type_ctx);
             if (!enum_type) {
-                TYPE_ERROR(diag, node->loc, TE_INCOMPATIBLE_TYPES,
+                TYPE_ERROR(diag, node->loc, "T322",
                     "Unknown enum type '%s' in pattern match", node->pattern_match.enum_name);
                 node->type_info = Type_Bool; // Pattern match result is always bool
                 break;
@@ -1938,7 +1940,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Verify the expression type matches the enum type
             TypeInfo* expr_type = node->pattern_match.expr->type_info;
             if (expr_type && expr_type != Type_Unknown && expr_type != enum_type) {
-                TYPE_ERROR(diag, node->loc, TE_INVALID_CAST,
+                TYPE_ERROR(diag, node->loc, "T323",
                     "Type mismatch in pattern match: expected '%s', got '%s'",
                     enum_type->type_name, expr_type->type_name);
             }
@@ -1953,7 +1955,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             }
 
             if (variant_index == -1) {
-                TYPE_ERROR(diag, node->loc, TE_TRAIT_NOT_IMPLEMENTED,
+                TYPE_ERROR(diag, node->loc, "T324",
                     "Enum '%s' does not have variant '%s'",
                     node->pattern_match.enum_name, node->pattern_match.variant_name);
                 node->type_info = Type_Bool;
@@ -1992,7 +1994,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
                 if (!struct_type) {
                     // Fallback: variant has no fields or struct type wasn't created
-                    TYPE_ERROR(diag, node->loc, TE_AMBIGUOUS_TYPE,
+                    TYPE_ERROR(diag, node->loc, "T326",
                         "Cannot find struct type for variant '%s.%s'",
                         node->pattern_match.enum_name, node->pattern_match.variant_name);
                     node->pattern_match.binding_types[0] = Type_Unknown;
@@ -2004,7 +2006,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 node->pattern_match.is_struct_binding = false;
 
                 if (node->pattern_match.binding_count != field_count) {
-                    TYPE_ERROR(diag, node->loc, TE_METHOD_NOT_FOUND,
+                    TYPE_ERROR(diag, node->loc, "T325",
                         "Pattern binding count mismatch: variant '%s' has %d fields, but pattern has %d bindings",
                         node->pattern_match.variant_name, field_count, node->pattern_match.binding_count);
                 }
@@ -2069,7 +2071,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     }
 
                     if (node->enum_variant.variant_index == -1) {
-                        TYPE_ERROR(diag, node->loc, TE_TYPE_ANNOTATION_REQUIRED,
+                        TYPE_ERROR(diag, node->loc, "T320",
                             "Enum '%s' does not have variant '%s'",
                             node->enum_variant.enum_name, node->enum_variant.variant_name);
                     }
@@ -2122,7 +2124,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         break;
                     } else {
                         // Member not found in namespace
-                        TYPE_ERROR(diag, node->loc, CE_CODEGEN_FAILED,
+                        TYPE_ERROR(diag, node->loc, "E400",
                                   "Module '%s' has no exported member '%s'",
                                   obj_name, member_name);
                         node->type_info = Type_Unknown;
@@ -2209,7 +2211,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     free(node->new_expr.element_type);
                     node->new_expr.element_type = resolved;
                 } else {
-                    TYPE_ERROR(diag, node->loc, TE_MISSING_RETURN, "Unknown type '%s' in new expression", type_name);
+                    TYPE_ERROR(diag, node->loc, "T311", "Unknown type '%s' in new expression", type_name);
                     node->type_info = Type_Unknown;
                     break;
                 }
@@ -2230,7 +2232,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Validate that operand is a ref type
             TypeInfo* operand_type = node->delete_expr.operand->type_info;
             if (!type_info_is_ref(operand_type)) {
-                TYPE_ERROR(diag, node->loc, TE_CANNOT_DELETE_NON_REF);
+                TYPE_ERROR(diag, node->loc, "T312",
+                    "delete requires a reference type, got %s",
+                    operand_type->type_name);
             }
 
             // delete returns void
@@ -2257,7 +2261,7 @@ static void specialization_create_body(FunctionSpecialization* spec, ASTNode* or
         if (!cloned_body->symbol_table) {
             // This shouldn't happen - body should have been set up with symbol table in Pass 1
             if (diag) {
-                JSASTA_ERROR(diag, original_func_node->loc, JE_INTERNAL_ERROR,
+                JSASTA_ERROR(diag, original_func_node->loc, JE001_INTERNAL_ERROR,
                     "Cloned body exists but has no symbol table for %s", spec->specialized_name);
             }
             return;
@@ -2451,7 +2455,9 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                             if (!type_info_is_unknown(arg_value_type) && arg_value_type != arg_types[i]) {
                                 // Allow int -> double promotion
                                 if (!(arg_types[i] == Type_Double && arg_value_type == Type_Int)) {
-                                    TYPE_ERROR(diag, node->loc, TE_TYPE_MISMATCH,
+                                    TYPE_ERROR(diag, node->loc, "T312",
+                                        "Type mismatch in call to '%s': parameter %d expects %s but got %s",
+                                        actual_func_name, i + 1,
                                         arg_types[i] ? arg_types[i]->type_name : "unknown",
                                         arg_value_type ? arg_value_type->type_name : "unknown");
                                 }
@@ -2654,7 +2660,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                 if (obj_type && type_info_is_object(obj_type)) {
                     snprintf(mangled_name, sizeof(mangled_name), "%s.%s", obj_type->type_name, node->method_call.method_name);
                 } else {
-                    TYPE_ERROR(diag, node->loc, TE_CANNOT_CALL_METHOD_ON_NON_OBJECT);
+                    TYPE_ERROR(diag, node->loc, "T302", "Cannot call method on non-object type");
                     break;
                 }
             }
@@ -3001,7 +3007,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                TYPE_ERROR(diag, node->loc, TE_ARRAY_INDEX_NON_INTEGER, "Type '%s' does not implement Index<%s>",
+                TYPE_ERROR(diag, node->loc, "T304", "Type '%s' does not implement Index<%s>",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->type_info = Type_Unknown;
@@ -3047,7 +3053,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                                                     type_param_bindings, 1);
 
             if (!trait_impl) {
-                TYPE_ERROR(diag, node->loc, TE_PROPERTY_NOT_FOUND, "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
+                TYPE_ERROR(diag, node->loc, "T305", "Type '%s' does not implement RefIndex<%s> (required for index assignment)",
                             index_target_type->type_name ? index_target_type->type_name : "?",
                             index_type->type_name ? index_type->type_name : "?");
                 node->index_assignment.trait_impl = NULL;
@@ -3096,7 +3102,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     // Unknown function - report error
                     if (diag) {
                         JSASTA_ERROR(diag, node->loc,
-                            TE_FUNCTION_NOT_FOUND, func_name);
+                            TE404_FUNCTION_NOT_FOUND, func_name);
                     }
                     node->type_info = Type_Void;
                 }
@@ -3207,7 +3213,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 if (target_type && type_info_is_object(target_type)) {
                     snprintf(mangled_name, sizeof(mangled_name), "%s.%s", target_type->type_name, node->method_call.method_name);
                 } else {
-                    TYPE_ERROR(diag, node->loc, TE_CANNOT_CALL_METHOD_ON_NON_OBJECT);
+                    TYPE_ERROR(diag, node->loc, "T302", "Cannot call method on non-object type");
                     node->type_info = Type_Unknown;
                     break;
                 }
@@ -3289,7 +3295,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     }
                 } else {
                     log_verbose("[METHOD_CALL] %s -> NOT FOUND", mangled_name);
-                    TYPE_ERROR(diag, node->loc, TE_CANNOT_CALL_METHOD_ON_NON_OBJECT, "Method '%s' not found or type mismatch", mangled_name);
+                    TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found or type mismatch", mangled_name);
                     node->type_info = Type_Unknown;
                     node->method_call.resolved_spec = NULL;
                 }
@@ -3480,7 +3486,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     free(node->new_expr.element_type);
                     node->new_expr.element_type = resolved;
                 } else {
-                    TYPE_ERROR(diag, node->loc, TE_MISSING_RETURN, "Unknown type '%s' in new expression", type_name);
+                    TYPE_ERROR(diag, node->loc, "T311", "Unknown type '%s' in new expression", type_name);
                     node->type_info = Type_Unknown;
                     break;
                 }
@@ -3501,7 +3507,9 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             // Validate that operand is a ref type
             TypeInfo* operand_type = node->delete_expr.operand->type_info;
             if (!type_info_is_ref(operand_type)) {
-                TYPE_ERROR(diag, node->loc, TE_CANNOT_DELETE_NON_REF);
+                TYPE_ERROR(diag, node->loc, "T312",
+                    "delete requires a reference type, got %s",
+                    operand_type->type_name);
             }
 
             // delete returns void
@@ -3611,7 +3619,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
                     } else {
                         // Real error - log it now
                         if (result.error_msg) {
-                            TYPE_ERROR(diag, result.loc, TE_VARIANT_NOT_FOUND, "%s", result.error_msg);
+                            TYPE_ERROR(diag, result.loc, "T314", "%s", result.error_msg);
                             free(result.error_msg);
                         }
                         processed[i] = true;  // Mark as done (with error)
@@ -3656,7 +3664,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
                         } else {
                             // Real error
                             if (result.error_msg) {
-                                TYPE_ERROR(diag, result.loc, TE_VARIANT_NOT_FOUND, "%s", result.error_msg);
+                                TYPE_ERROR(diag, result.loc, "T314", "%s", result.error_msg);
                                 free(result.error_msg);
                             }
                             // Mark field as error but continue
@@ -3694,7 +3702,7 @@ static void collect_consts_and_structs(ASTNode* ast, SymbolTable* symbols, TypeC
         if (!processed[i]) {
             ASTNode* stmt = ast->program.statements[i];
             if (stmt->type == AST_VAR_DECL && stmt->var_decl.is_const) {
-                TYPE_ERROR(diag, stmt->loc, TE_ENUM_NOT_FOUND, "Could not resolve const declaration '%s' (circular dependency or undefined reference)",
+                TYPE_ERROR(diag, stmt->loc, "T315", "Could not resolve const declaration '%s' (circular dependency or undefined reference)",
                            stmt->var_decl.name);
             }
         }

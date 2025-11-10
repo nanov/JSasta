@@ -281,6 +281,15 @@ int compile_file(const char* input_file, const char* output_file,
 
     log_info("Code generation complete");
 
+    // Check for -o=none flag (skip writing output)
+    if (strcmp(output_file, "none") == 0) {
+        log_info("Output set to 'none', skipping file generation");
+        diagnostic_print_summary(registry->diagnostics);
+        codegen_free(gen);
+        module_registry_free(registry);
+        return 0;
+    }
+
     // Determine what to do based on flags
     if (emit_llvm) {
         // Emit LLVM IR
@@ -340,6 +349,7 @@ void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s [options] <input.jsa>\n", program_name);
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -o <file>          Output file (default: a.out)\n");
+    fprintf(stderr, "                     Use '-o none' to skip output generation (type check only)\n");
     fprintf(stderr, "  -c                 Compile to object file only (don't link)\n");
     fprintf(stderr, "  -S                 Emit assembly only (don't assemble or link)\n");
     fprintf(stderr, "  -L, --emit-llvm    Emit LLVM IR instead of native code\n");

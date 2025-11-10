@@ -1,5 +1,5 @@
 // jastat-summary: Error when using pattern binding after ||
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
 import io from @io;
 
@@ -11,8 +11,6 @@ enum Message {
 let msg = Message.move{x: 10, y: 20};
 
 // ERROR: x is used after || so it's not available
-// jastat_expect: TE_UNDEFINED_VARIABLE
 if (msg is Message.move(let x, let y) || x > 5) {
-    // jastat_expect: TE_UNDEFINED_VARIABLE
     io.println("x={}", x);
 }

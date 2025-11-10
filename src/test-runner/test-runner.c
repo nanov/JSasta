@@ -17,6 +17,9 @@
 #include <spawn.h>
 #include "neco.h"
 
+// Include error catalog for mapping long names to short codes
+#include "../common/jsasta_errors.h"
+
 extern char **environ;
 
 // --- Definitions and Globals ---
@@ -49,7 +52,12 @@ typedef enum { TEST_PASS, TEST_FAIL, TEST_ERROR } test_status_t;
 
 // --- Data structures for test configuration ---
 typedef enum { MODE_RUN, MODE_COMPILER } TestMode;
-typedef enum { CAPTURE_ALL, CAPTURE_STDOUT, CAPTURE_STDERR, CAPTURE_ASSERT } CaptureStream;
+typedef enum { CAPTURE_ALL, CAPTURE_STDOUT, CAPTURE_STDERR, CAPTURE_ASSERT, CAPTURE_EXPECT } CaptureStream;
+
+typedef struct {
+    int line_number;
+    char error_code[64];  // e.g., "TE_UNDEFINED_VARIABLE" or "TE301"
+} ExpectedError;
 
 typedef struct {
     TestMode mode;
@@ -58,6 +66,9 @@ typedef struct {
     bool exit_code_was_set;
     bool expect_non_zero_exit_code;
     char* summary;
+    ExpectedError* expected_errors;
+    int expected_error_count;
+    int expected_error_capacity;
 } TestConfig;
 
 // --- Parallel test execution structures ---
@@ -235,54 +246,173 @@ void parse_test_config(const char* source_path, TestConfig* config) {
     config->exit_code_was_set = false;
     config->expect_non_zero_exit_code = false;
     config->summary = NULL;
+    config->expected_errors = NULL;
+    config->expected_error_count = 0;
+    config->expected_error_capacity = 0;
 
     FILE* file = fopen(source_path, "r");
     if (!file) return;
 
     char line[2048];
+    int line_number = 0;
     int lines_scanned = 0;
-    const int max_lines_to_scan = 10;
+    const int max_lines_to_scan_for_config = 10;
+    char pending_error_code[64] = {0};
 
-    while (fgets(line, sizeof(line), file) && lines_scanned < max_lines_to_scan) {
+    while (fgets(line, sizeof(line), file)) {
+        line_number++;
         char* p = line;
         while (isspace((unsigned char)*p)) p++;
         if (*p == '\0') continue;
-        lines_scanned++;
 
+        // Parse configuration (first 10 lines only)
+        if (lines_scanned < max_lines_to_scan_for_config) {
+            lines_scanned++;
+
+            if (strncmp(p, "//", 2) == 0) {
+                p += 2; while (isspace((unsigned char)*p)) p++;
+
+                if (strncmp(p, "jastat:", 7) == 0) {
+                    p += 7;
+                    char* token = strtok(p, " \t\n,");
+                    while (token) {
+                        if (strncmp(token, "mode=", 5) == 0) {
+                            if (strcmp(token + 5, "compiler") == 0) config->mode = MODE_COMPILER;
+                        } else if (strncmp(token, "capture=", 8) == 0) {
+                            if (strcmp(token + 8, "stdout") == 0) config->capture_stream = CAPTURE_STDOUT;
+                            else if (strcmp(token + 8, "stderr") == 0) config->capture_stream = CAPTURE_STDERR;
+                            else if (strcmp(token + 8, "assert") == 0) config->capture_stream = CAPTURE_ASSERT;
+                            else if (strcmp(token + 8, "expect") == 0) config->capture_stream = CAPTURE_EXPECT;
+                        } else if (strncmp(token, "expect-exit-code=", 17) == 0) {
+                            char* value = token + 17;
+                            if (strcmp(value, "!0") == 0) {
+                                config->expect_non_zero_exit_code = true;
+                            } else {
+                                config->expected_exit_code = atoi(value);
+                                config->exit_code_was_set = true;
+                            }
+                        }
+                        token = strtok(NULL, " \t\n,");
+                    }
+                } else if (strncmp(p, "jastat-summary:", 15) == 0) {
+                    p += 15;
+                    while (isspace((unsigned char)*p)) p++;
+                    trim_trailing_whitespace(p);
+                    if (config->summary) free(config->summary);
+                    config->summary = strdup(p);
+                }
+            }
+        }
+
+        // Parse jastat_expect comments (entire file)
         if (strncmp(p, "//", 2) == 0) {
             p += 2; while (isspace((unsigned char)*p)) p++;
-
-            if (strncmp(p, "jastat:", 7) == 0) {
-                p += 7;
-                char* token = strtok(p, " \t\n,");
-                while (token) {
-                    if (strncmp(token, "mode=", 5) == 0) {
-                        if (strcmp(token + 5, "compiler") == 0) config->mode = MODE_COMPILER;
-                    } else if (strncmp(token, "capture=", 8) == 0) {
-                        if (strcmp(token + 8, "stdout") == 0) config->capture_stream = CAPTURE_STDOUT;
-                        else if (strcmp(token + 8, "stderr") == 0) config->capture_stream = CAPTURE_STDERR;
-                        else if (strcmp(token + 8, "assert") == 0) config->capture_stream = CAPTURE_ASSERT;
-                    } else if (strncmp(token, "expect-exit-code=", 17) == 0) {
-                        char* value = token + 17;
-                        if (strcmp(value, "!0") == 0) {
-                            config->expect_non_zero_exit_code = true;
-                        } else {
-                            config->expected_exit_code = atoi(value);
-                            config->exit_code_was_set = true;
-                        }
-                    }
-                    token = strtok(NULL, " \t\n,");
-                }
-            } else if (strncmp(p, "jastat-summary:", 15) == 0) {
-                p += 15;
+            if (strncmp(p, "jastat_expect:", 14) == 0) {
+                p += 14;
                 while (isspace((unsigned char)*p)) p++;
                 trim_trailing_whitespace(p);
-                if (config->summary) free(config->summary);
-                config->summary = strdup(p);
+                strncpy(pending_error_code, p, sizeof(pending_error_code) - 1);
             }
+        } else if (pending_error_code[0]) {
+            // Non-comment line after jastat_expect - record the expectation
+            if (config->expected_error_count >= config->expected_error_capacity) {
+                config->expected_error_capacity = config->expected_error_capacity == 0 ? 4 : config->expected_error_capacity * 2;
+                config->expected_errors = realloc(config->expected_errors, config->expected_error_capacity * sizeof(ExpectedError));
+            }
+            config->expected_errors[config->expected_error_count].line_number = line_number;
+            strncpy(config->expected_errors[config->expected_error_count].error_code, pending_error_code, sizeof(config->expected_errors[0].error_code) - 1);
+            config->expected_error_count++;
+            pending_error_code[0] = '\0';
         }
     }
     fclose(file);
+}
+
+// Helper function to validate expected errors against compiler output
+// Returns true if all expected errors are found
+bool validate_expected_errors(const char* compiler_stderr, const ExpectedError* expected, int count, char** failure_msg) {
+    if (count == 0) return true;
+    
+    bool* found = calloc(count, sizeof(bool));
+    char* stderr_copy = strdup(compiler_stderr);
+    char* line = strtok(stderr_copy, "\n");
+    
+    while (line) {
+        // Parse error line format: [error:CODE] /path/file.jsa:LINE:COL: message
+        char* error_marker = strstr(line, "[error:");
+        if (error_marker) {
+            char* code_start = error_marker + 7;
+            char* code_end = strchr(code_start, ']');
+            if (code_end) {
+                char error_code[64];
+                int code_len = code_end - code_start;
+                if (code_len < 64) {
+                    strncpy(error_code, code_start, code_len);
+                    error_code[code_len] = '\0';
+                    
+                    // Extract line number
+                    char* line_info = strstr(code_end, ".jsa:");
+                    if (line_info) {
+                        line_info += 5;  // Skip ".jsa:"
+                        int error_line = atoi(line_info);
+                        
+                        // Check against expected errors
+                        for (int i = 0; i < count; i++) {
+                            if (!found[i] && error_line == expected[i].line_number) {
+                                // Match either by short code (PE211) or long name (PE_EXPECTED_IDENTIFIER_AFTER_VAR)
+                                bool matches = false;
+                                
+                                // Direct match with short code
+                                if (strcmp(error_code, expected[i].error_code) == 0) {
+                                    matches = true;
+                                } else {
+                                    // Try to find the error in catalog by long name and match its short code
+                                    for (int e = 0; e < JSASTA_ERROR_COUNT; e++) {
+                                        if (strcmp(jsasta_error_table[e].long_name, expected[i].error_code) == 0) {
+                                            if (strcmp(jsasta_error_table[e].code, error_code) == 0) {
+                                                matches = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (matches) {
+                                    found[i] = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        line = strtok(NULL, "\n");
+    }
+    
+    // Check if all expected errors were found
+    bool all_found = true;
+    for (int i = 0; i < count; i++) {
+        if (!found[i]) {
+            all_found = false;
+            if (failure_msg) {
+                char buf[512];
+                snprintf(buf, sizeof(buf), "Expected error '%s' on line %d not found",
+                        expected[i].error_code, expected[i].line_number);
+                if (*failure_msg) {
+                    char* old = *failure_msg;
+                    asprintf(failure_msg, "%s\n%s", old, buf);
+                    free(old);
+                } else {
+                    *failure_msg = strdup(buf);
+                }
+            }
+        }
+    }
+    
+    free(found);
+    free(stderr_copy);
+    return all_found;
 }
 
 // =========================================================================
@@ -306,7 +436,9 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
     parse_test_config(absolute_source_path, &config);
 
     test_status_t status = TEST_FAIL;
-    snprintf(command, sizeof(command), "./%s -q -o %s %s", COMPILER_PATH, temp_executable_path, absolute_source_path);
+    // Use -o none for compiler-only tests to skip generating output files
+    const char* output_target = (config.mode == MODE_COMPILER) ? "none" : temp_executable_path;
+    snprintf(command, sizeof(command), "./%s -q -o %s %s", COMPILER_PATH, output_target, absolute_source_path);
     char* compiler_stdout = NULL, *compiler_stderr = NULL;
     int compiler_exit_code = execute_and_capture_streams(command, &compiler_stdout, &compiler_stderr);
 
@@ -355,17 +487,40 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
     } else {
         // Test mode
         if (config.mode == MODE_COMPILER) {
-            bool exit_code_ok;
-            if (config.expect_non_zero_exit_code) { exit_code_ok = (compiler_exit_code != 0);
-            } else if (config.exit_code_was_set) { exit_code_ok = (compiler_exit_code == config.expected_exit_code);
-            } else { exit_code_ok = (compiler_exit_code != 0); }
+            // Handle CAPTURE_EXPECT mode: validate inline error expectations
+            if (config.capture_stream == CAPTURE_EXPECT) {
+                bool exit_code_ok = (compiler_exit_code != 0);  // Should fail to compile
+                if (!exit_code_ok) {
+                    status = TEST_FAIL;
+                    if (failure_output) *failure_output = strdup("Compilation succeeded but errors were expected");
+                } else {
+                    char* validation_error = NULL;
+                    if (validate_expected_errors(compiler_stderr, config.expected_errors, 
+                                                config.expected_error_count, &validation_error)) {
+                        status = TEST_PASS;
+                    } else {
+                        status = TEST_FAIL;
+                        if (failure_output && validation_error) {
+                            *failure_output = validation_error;
+                        } else if (validation_error) {
+                            free(validation_error);
+                        }
+                    }
+                }
+            } else {
+                // Original MODE_COMPILER behavior with fixtures
+                bool exit_code_ok;
+                if (config.expect_non_zero_exit_code) { exit_code_ok = (compiler_exit_code != 0);
+                } else if (config.exit_code_was_set) { exit_code_ok = (compiler_exit_code == config.expected_exit_code);
+                } else { exit_code_ok = (compiler_exit_code != 0); }
 
-            if (!exit_code_ok) { status = TEST_FAIL; }
-            else {
-                char* expected_err = read_file_contents(fixture_path);
-                if (expected_err && strcmp(compiler_stderr, expected_err) == 0) { status = TEST_PASS; }
-                else { status = TEST_FAIL; }
-                if (expected_err) free(expected_err);
+                if (!exit_code_ok) { status = TEST_FAIL; }
+                else {
+                    char* expected_err = read_file_contents(fixture_path);
+                    if (expected_err && strcmp(compiler_stderr, expected_err) == 0) { status = TEST_PASS; }
+                    else { status = TEST_FAIL; }
+                    if (expected_err) free(expected_err);
+                }
             }
         } else {
             if (compiler_exit_code != 0) { status = TEST_FAIL; }
@@ -413,6 +568,7 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
     }
 
     if (config.summary) free(config.summary);
+    if (config.expected_errors) free(config.expected_errors);
     free(compiler_stdout); free(compiler_stderr);
     remove(temp_executable_path);
     return status;

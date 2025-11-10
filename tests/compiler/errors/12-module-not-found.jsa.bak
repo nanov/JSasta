@@ -1,7 +1,6 @@
 // jastat-summary: Error on importing non-existent module
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
-// jastat_expect: JE_INTERNAL_ERROR
 import nonexistent from "./nonexistent.jsa";  // Module not found
 
 nonexistent.some_function();

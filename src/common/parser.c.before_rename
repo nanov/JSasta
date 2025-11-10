@@ -41,7 +41,7 @@ static bool parser_expect(Parser* parser, TokenType type) {
             .line = parser->current_token->line,
             .column = parser->current_token->column
         };
-        JSASTA_ERROR(parser->diagnostics, loc, PE_EXPECTED_TOKEN,
+        JSASTA_ERROR(parser->diagnostics, loc, PE100_EXPECTED_TOKEN,
                         token_type_to_string(type),
                         token_type_to_string(parser->current_token->type));
         return false;
@@ -188,7 +188,7 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
             parser_advance(parser);  // consume '.'
 
             if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                PARSE_ERROR(parser, PE_EXPECTED_PROPERTY_NAME_AFTER_DOT);
+                PARSE_ERROR(parser, PE205_EXPECTED_PROPERTY_NAME_AFTER_DOT);
                 return Type_Unknown;
             }
 
@@ -210,11 +210,11 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
             if (parser->type_ctx) {
                 type_info = type_context_find_struct_type(parser->type_ctx, type_path);
                 if (!type_info) {
-                    PARSE_ERROR(parser, PE_UNKNOWN_TYPE_PATH, type_path);
+                    PARSE_ERROR(parser, PE102_UNKNOWN_TYPE_PATH, type_path);
                     type_info = Type_Unknown;
                 }
             } else {
-                PARSE_ERROR(parser, PE_UNKNOWN_TYPE_PATH, type_path);
+                PARSE_ERROR(parser, PE102_UNKNOWN_TYPE_PATH, type_path);
                 type_info = Type_Unknown;
             }
         }
@@ -461,7 +461,7 @@ static ASTNode* parse_primary(Parser* parser) {
 
                     // Parse property name (must be an identifier or string)
                     if (!parser_match(parser, TOKEN_IDENTIFIER) && !parser_match(parser, TOKEN_STRING)) {
-                        PARSE_ERROR(parser, PE_EXPECTED_PROPERTY_NAME);
+                        PARSE_ERROR(parser, PE201_EXPECTED_PROPERTY_NAME);
                         return node;
                     }
 
@@ -571,7 +571,7 @@ static ASTNode* parse_primary(Parser* parser) {
             // Don't free type_name - it's owned by the TypeInfo now
             parser_advance(parser);
         } else {
-            PARSE_ERROR(parser, PE_EXPECTED_TYPE);
+            PARSE_ERROR(parser, PE210_EXPECTED_TYPE);
             return node;
         }
 
@@ -584,7 +584,7 @@ static ASTNode* parse_primary(Parser* parser) {
 
         // Type will be set to ref element_type during type inference
     } else {
-        PARSE_ERROR(parser, PE_UNEXPECTED_TOKEN_EXPR,
+        PARSE_ERROR(parser, PE202_UNEXPECTED_TOKEN_EXPR,
                    token_type_to_string(parser->current_token->type));
     }
 
@@ -626,7 +626,7 @@ static ASTNode* parse_call(Parser* parser) {
                 node = postfix;
                 continue;
             } else {
-                PARSE_ERROR(parser, PE_POSTFIX_ON_NON_LVALUE);
+                PARSE_ERROR(parser, PE203_POSTFIX_ON_NON_LVALUE);
                 return node;
             }
         }
@@ -645,7 +645,7 @@ static ASTNode* parse_call(Parser* parser) {
             // Note: EnumType.variant will be parsed as member access here,
             // and converted to AST_ENUM_VARIANT during type inference
             if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                PARSE_ERROR(parser, PE_EXPECTED_IDENTIFIER_AFTER_DOT);
+                PARSE_ERROR(parser, PE204_EXPECTED_IDENTIFIER_AFTER_DOT);
                 return node;
             }
             ASTNode* member = AST_NODE(parser, AST_MEMBER_ACCESS);
@@ -731,7 +731,7 @@ static ASTNode* parse_call(Parser* parser) {
                     enum_name = strdup(node->member_access.object->identifier.name);
                     variant_name = strdup(node->member_access.property);
                 } else {
-                    PARSE_ERROR(parser, PE_EXPECTED_ENUM_TYPE_IN_PATTERN);
+                    PARSE_ERROR(parser, PE250_EXPECTED_ENUM_TYPE_IN_PATTERN);
                     return node;
                 }
 
@@ -750,7 +750,7 @@ static ASTNode* parse_call(Parser* parser) {
                 int field_count = parse_field_initializers(parser,
                     &variant_node->enum_variant.field_names,
                     &variant_node->enum_variant.field_values,
-                    PE_EXPECTED_DOT_AFTER_ENUM_TYPE);
+                    PE251_EXPECTED_DOT_AFTER_ENUM_TYPE);
 
                 if (field_count < 0) {
                     return variant_node; // Error already reported
@@ -772,7 +772,7 @@ static ASTNode* parse_call(Parser* parser) {
                 int field_count = parse_field_initializers(parser,
                     &struct_lit->struct_literal.field_names,
                     &struct_lit->struct_literal.field_values,
-                    PE_EXPECTED_VARIANT_NAME_IN_PATTERN);
+                    PE252_EXPECTED_VARIANT_NAME_IN_PATTERN);
 
                 if (field_count < 0) {
                     return struct_lit; // Error already reported
@@ -798,7 +798,7 @@ static ASTNode* parse_unary(Parser* parser) {
         // We parse as primary and then check if we need member/index access
         ASTNode* target = parse_primary(parser);
         if (!target) {
-            PARSE_ERROR(parser, PE_EXPECTED_EXPR_AFTER_PREFIX, prefix->prefix_op.op);
+            PARSE_ERROR(parser, PE207_EXPECTED_EXPR_AFTER_PREFIX, prefix->prefix_op.op);
             return NULL;
         }
 
@@ -808,7 +808,7 @@ static ASTNode* parse_unary(Parser* parser) {
                 // Member access
                 parser_advance(parser);
                 if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                    PARSE_ERROR(parser, PE_EXPECTED_PROPERTY_NAME_AFTER_DOT);
+                    PARSE_ERROR(parser, PE205_EXPECTED_PROPERTY_NAME_AFTER_DOT);
                     return NULL;
                 }
 
@@ -829,7 +829,7 @@ static ASTNode* parse_unary(Parser* parser) {
                 index->index_access.index = parse_expression(parser);
 
                 if (!parser_match(parser, TOKEN_RBRACKET)) {
-                    PARSE_ERROR(parser, PE_EXPECTED_CLOSING_BRACKET);
+                    PARSE_ERROR(parser, PE206_EXPECTED_CLOSING_BRACKET);
                     return NULL;
                 }
                 parser_advance(parser);
@@ -923,7 +923,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
 
     // Parse EnumType
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        PARSE_ERROR(parser, PE_EXPECTED_ENUM_TYPE_IN_PATTERN);
+        PARSE_ERROR(parser, PE250_EXPECTED_ENUM_TYPE_IN_PATTERN);
         return node;
     }
     node->pattern_match.enum_name = strdup(parser->current_token->value);
@@ -931,13 +931,13 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
 
     // Parse .Variant
     if (!parser_match(parser, TOKEN_DOT)) {
-        PARSE_ERROR(parser, PE_EXPECTED_DOT_AFTER_ENUM_TYPE);
+        PARSE_ERROR(parser, PE251_EXPECTED_DOT_AFTER_ENUM_TYPE);
         return node;
     }
     parser_advance(parser);
 
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        PARSE_ERROR(parser, PE_EXPECTED_VARIANT_NAME_IN_PATTERN);
+        PARSE_ERROR(parser, PE252_EXPECTED_VARIANT_NAME_IN_PATTERN);
         return node;
     }
     node->pattern_match.variant_name = strdup(parser->current_token->value);
@@ -985,7 +985,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                 parser_advance(parser);
 
                 if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                    PARSE_ERROR(parser, PE_EXPECTED_IDENTIFIER_IN_PATTERN);
+                    PARSE_ERROR(parser, PE253_EXPECTED_IDENTIFIER_IN_PATTERN);
                     free(names);
                     free(is_mutable);
                     free(is_wildcard);
@@ -998,7 +998,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                 parser_advance(parser);
                 count++;
             } else {
-                PARSE_ERROR(parser, PE_EXPECTED_BINDING_KEYWORD);
+                PARSE_ERROR(parser, PE254_EXPECTED_BINDING_KEYWORD);
                 free(names);
                 free(is_mutable);
                 free(is_wildcard);
@@ -1009,7 +1009,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
             if (parser_match(parser, TOKEN_COMMA)) {
                 parser_advance(parser);
             } else if (!parser_match(parser, TOKEN_RPAREN)) {
-                PARSE_ERROR(parser, PE_EXPECTED_COMMA_OR_PAREN_IN_PATTERN);
+                PARSE_ERROR(parser, PE255_EXPECTED_COMMA_OR_PAREN_IN_PATTERN);
                 free(names);
                 free(is_mutable);
                 free(is_wildcard);
@@ -1193,7 +1193,7 @@ static ASTNode* parse_assignment(Parser* parser) {
             compound->compound_assignment.value = parse_assignment(parser);
             return compound;
         } else {
-            PARSE_ERROR(parser, PE_COMPOUND_ASSIGN_REQUIRES_LVALUE);
+            PARSE_ERROR(parser, PE209_COMPOUND_ASSIGN_REQUIRES_LVALUE);
             return node;
         }
     }
@@ -1236,7 +1236,7 @@ static ASTNode* parse_assignment(Parser* parser) {
             return member_assignment;
         }
         else {
-            PARSE_ERROR(parser, PE_INVALID_ASSIGNMENT_TARGET);
+            PARSE_ERROR(parser, PE208_INVALID_ASSIGNMENT_TARGET);
             return node;
         }
     }
@@ -1278,10 +1278,10 @@ static ASTNode* parse_var_declaration(Parser* parser) {
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         // Check if a type keyword was used as a variable name
         if (parser->current_token->type >= TOKEN_I8 && parser->current_token->type <= TOKEN_INT) {
-            PARSE_ERROR(parser, PE_EXPECTED_TYPE,
+            PARSE_ERROR(parser, PE210_EXPECTED_TYPE,
                         parser->current_token->value);
         } else {
-            PARSE_ERROR(parser, PE_EXPECTED_IDENTIFIER_AFTER_VAR);
+            PARSE_ERROR(parser, PE211_EXPECTED_IDENTIFIER_AFTER_VAR);
         }
 
         // Error recovery: skip to next semicolon or statement boundary
@@ -1315,7 +1315,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
         ASTNode* size_expr = parse_ternary(parser);
 
         if (!size_expr) {
-            PARSE_ERROR(parser, PE_EXPECTED_ARRAY_SIZE);
+            PARSE_ERROR(parser, PE212_EXPECTED_ARRAY_SIZE);
             ast_free(node);
             return NULL;
         }
@@ -1325,7 +1325,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
         node->var_decl.array_size_expr = size_expr;
 
         if (!parser_match(parser, TOKEN_RBRACKET)) {
-            PARSE_ERROR(parser, PE_EXPECTED_CLOSING_BRACKET_AFTER_SIZE);
+            PARSE_ERROR(parser, PE213_EXPECTED_CLOSING_BRACKET_AFTER_SIZE);
             ast_free(node);
             return NULL;
         }
@@ -1350,7 +1350,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
         parser_advance(parser);
         node->var_decl.init = parse_expression(parser);
         if (!node->var_decl.init) {
-            PARSE_ERROR(parser, PE_EXPECTED_EXPR_AFTER_EQUALS);
+            PARSE_ERROR(parser, PE214_EXPECTED_EXPR_AFTER_EQUALS);
             ast_free(node);
             return NULL;
         }
@@ -1370,7 +1370,7 @@ static ASTNode* parse_function_declaration(Parser* parser) {
 
     ASTNode* node = AST_NODE(parser, AST_FUNCTION_DECL);
     if (!parser->current_token || !parser->current_token->value) {
-	    PARSE_ERROR(parser, PE_EXPECTED_EXPR_AFTER_EQUALS);
+	    PARSE_ERROR(parser, PE214_EXPECTED_EXPR_AFTER_EQUALS);
 	    ast_free(node);
 	    return NULL;
     }
@@ -1513,7 +1513,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     param_name = first_identifier;
                     param_type = parse_type_annotation(parser);
                     if (!param_type) {
-                        PARSE_ERROR(parser, PE_EXTERNAL_FUNC_NEEDS_TYPE_HINTS);
+                        PARSE_ERROR(parser, PE215_EXTERNAL_FUNC_NEEDS_TYPE_HINTS);
                         free(first_identifier);
                         return node;
                     }
@@ -1522,7 +1522,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     // Look up the type by name
                     param_type = type_context_find_type(parser->type_ctx, first_identifier);
                     if (!param_type) {
-                        PARSE_ERROR(parser, PE_UNKNOWN_TYPE_IN_PARAM, first_identifier);
+                        PARSE_ERROR(parser, PE216_UNKNOWN_TYPE_IN_PARAM, first_identifier);
                         free(first_identifier);
                         return node;
                     }
@@ -1533,7 +1533,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     free(first_identifier);
                 }
             } else {
-                PARSE_ERROR(parser, PE_EXPECTED_PARAM_NAME_OR_TYPE);
+                PARSE_ERROR(parser, PE217_EXPECTED_PARAM_NAME_OR_TYPE);
                 return node;
             }
 
@@ -1549,7 +1549,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
     // Parse REQUIRED return type annotation
     node->func_decl.return_type_hint = parse_type_annotation(parser);
     if (!node->func_decl.return_type_hint) {
-        PARSE_ERROR(parser, PE_EXTERNAL_FUNC_NEEDS_RETURN_TYPE);
+        PARSE_ERROR(parser, PE218_EXTERNAL_FUNC_NEEDS_RETURN_TYPE);
         return node;
     }
 
@@ -1565,7 +1565,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
 
     // Parse struct name
     if (parser->current_token->type != TOKEN_IDENTIFIER) {
-        PARSE_ERROR(parser, PE_EXPECTED_STRUCT_NAME);
+        PARSE_ERROR(parser, PE219_EXPECTED_STRUCT_NAME);
         return node;
     }
 
@@ -1618,7 +1618,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
 
         // Parse property name or method name
         if (parser->current_token->type != TOKEN_IDENTIFIER) {
-            PARSE_ERROR(parser, PE_EXPECTED_PROPERTY_OR_METHOD_NAME);
+            PARSE_ERROR(parser, PE223_EXPECTED_PROPERTY_OR_METHOD_NAME);
             return node;
         }
 
@@ -1670,7 +1670,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
 
                 // Parse parameter name
                 if (parser->current_token->type != TOKEN_IDENTIFIER) {
-                    PARSE_ERROR(parser, PE_EXPECTED_METHOD_PARAM_NAME);
+                    PARSE_ERROR(parser, PE220_EXPECTED_METHOD_PARAM_NAME);
                     free(member_name);
                     return node;
                 }
@@ -1685,7 +1685,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
                 // Parse type annotation (required for methods)
                 TypeInfo* param_type = parse_type_annotation(parser);
                 if (!param_type) {
-                    PARSE_ERROR(parser, PE_METHOD_PARAM_NEEDS_TYPE, param_name);
+                    PARSE_ERROR(parser, PE221_METHOD_PARAM_NEEDS_TYPE, param_name);
                     free(param_name);
                     free(member_name);
                     return node;
@@ -1706,7 +1706,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             // Parse return type annotation (required for methods)
             method->func_decl.return_type_hint = parse_type_annotation(parser);
             if (!method->func_decl.return_type_hint) {
-                PARSE_ERROR(parser, PE_METHOD_NEEDS_RETURN_TYPE, member_name);
+                PARSE_ERROR(parser, PE222_METHOD_NEEDS_RETURN_TYPE, member_name);
                 free(member_name);
                 return node;
             }
@@ -1724,7 +1724,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         // This is a property - parse type annotation (required)
         TypeInfo* prop_type = parse_type_annotation(parser);
         if (!prop_type) {
-            PARSE_ERROR(parser, PE_STRUCT_PROPERTY_NEEDS_TYPE, member_name);
+            PARSE_ERROR(parser, PE224_STRUCT_PROPERTY_NEEDS_TYPE, member_name);
             free(member_name);
             return node;
         }
@@ -1739,7 +1739,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             array_size_expr = parse_ternary(parser);
 
             if (!array_size_expr) {
-                PARSE_ERROR(parser, PE_EXPECTED_ARRAY_SIZE_IN_STRUCT);
+                PARSE_ERROR(parser, PE225_EXPECTED_ARRAY_SIZE_IN_STRUCT);
                 free(member_name);
                 return node;
             }
@@ -1749,7 +1749,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             array_size = 0;
 
             if (!parser_match(parser, TOKEN_RBRACKET)) {
-                PARSE_ERROR(parser, PE_EXPECTED_CLOSING_BRACKET_IN_STRUCT);
+                PARSE_ERROR(parser, PE226_EXPECTED_CLOSING_BRACKET_IN_STRUCT);
                 free(member_name);
                 return node;
             }
@@ -1772,7 +1772,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         // but we don't have array_size or array_size_expr, that means it's like "arr: i32[]"
         // This is only allowed if wrapped in a ref: "arr: ref i32[]"
         if (array_size == 0 && !array_size_expr && type_info_is_array(prop_type)) {
-            PARSE_ERROR(parser, PE_STRUCT_ARRAY_NEEDS_SIZE_OR_REF);
+            PARSE_ERROR(parser, PE227_STRUCT_ARRAY_NEEDS_SIZE_OR_REF);
             free(member_name);
             return node;
         }
@@ -1800,7 +1800,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             } else if (parser->current_token->type == TOKEN_TRUE || parser->current_token->type == TOKEN_FALSE) {
                 default_value = parse_primary(parser);
             } else {
-                PARSE_ERROR(parser, PE_DEFAULT_VALUE_MUST_BE_LITERAL);
+                PARSE_ERROR(parser, PE228_DEFAULT_VALUE_MUST_BE_LITERAL);
                 free(member_name);
                 return node;
             }
@@ -1864,7 +1864,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
 
     // Parse enum name
     if (parser->current_token->type != TOKEN_IDENTIFIER) {
-        PARSE_ERROR(parser, PE_EXPECTED_ENUM_NAME);
+        PARSE_ERROR(parser, PE240_EXPECTED_ENUM_NAME);
         return node;
     }
 
@@ -1894,7 +1894,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
 
         // Parse variant name
         if (parser->current_token->type != TOKEN_IDENTIFIER) {
-            PARSE_ERROR(parser, PE_EXPECTED_VARIANT_NAME);
+            PARSE_ERROR(parser, PE241_EXPECTED_VARIANT_NAME);
             return node;
         }
 
@@ -1933,7 +1933,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
 
             // Save first token to determine if it's named or unnamed
             if (parser->current_token->type != TOKEN_IDENTIFIER) {
-                PARSE_ERROR(parser, PE_EXPECTED_FIELD_NAME_IN_VARIANT);
+                PARSE_ERROR(parser, PE242_EXPECTED_FIELD_NAME_IN_VARIANT);
                 return node;
             }
 
@@ -1956,7 +1956,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
                 // parse_type_annotation expects to consume the colon itself
                 field_types[field_count] = parse_type_annotation(parser);
                 if (!field_types[field_count]) {
-                    PARSE_ERROR(parser, PE_FIELD_NEEDS_TYPE_IN_VARIANT, field_names[field_count]);
+                    PARSE_ERROR(parser, PE243_FIELD_NEEDS_TYPE_IN_VARIANT, field_names[field_count]);
                     field_types[field_count] = Type_Unknown;
                 }
                 field_count++;
@@ -1972,7 +1972,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
                     }
 
                     if (parser->current_token->type != TOKEN_IDENTIFIER) {
-                        PARSE_ERROR(parser, PE_EXPECTED_FIELD_NAME_IN_VARIANT);
+                        PARSE_ERROR(parser, PE242_EXPECTED_FIELD_NAME_IN_VARIANT);
                         free(field_names);
                         free(field_types);
                         return node;
@@ -1983,7 +1983,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
                     // parse_type_annotation expects to consume the colon itself
                     field_types[field_count] = parse_type_annotation(parser);
                     if (!field_types[field_count]) {
-                        PARSE_ERROR(parser, PE_FIELD_NEEDS_TYPE_IN_VARIANT, field_names[field_count]);
+                        PARSE_ERROR(parser, PE243_FIELD_NEEDS_TYPE_IN_VARIANT, field_names[field_count]);
                         field_types[field_count] = Type_Unknown;
                     }
                     field_count++;
@@ -2016,7 +2016,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
 
             parser_expect(parser, TOKEN_SEMICOLON);
         } else {
-            PARSE_ERROR(parser, PE_EXPECTED_SEMICOLON_OR_PAREN_AFTER_VARIANT);
+            PARSE_ERROR(parser, PE245_EXPECTED_SEMICOLON_OR_PAREN_AFTER_VARIANT);
         }
 
         node->enum_decl.variant_count++;
@@ -2149,7 +2149,7 @@ static ASTNode* parse_import_declaration(Parser* parser) {
     if (parser->current_token->type == TOKEN_AT) {
         parser_advance(parser);
         if (parser->current_token->type != TOKEN_IDENTIFIER) {
-            PARSE_ERROR(parser, PE_EXPECTED_MODULE_PATH);
+            PARSE_ERROR(parser, PE232_EXPECTED_MODULE_PATH);
             return node;
         }
         
@@ -2170,7 +2170,7 @@ static ASTNode* parse_import_declaration(Parser* parser) {
     // Standard syntax: import namespace from "path" or @builtin
     // Get namespace name
     if (parser->current_token->type != TOKEN_IDENTIFIER) {
-        PARSE_ERROR(parser, PE_EXPECTED_NAMESPACE_IDENTIFIER);
+        PARSE_ERROR(parser, PE230_EXPECTED_NAMESPACE_IDENTIFIER);
         return node;
     }
     node->import_decl.namespace_name = strdup(parser->current_token->value);
@@ -2178,7 +2178,7 @@ static ASTNode* parse_import_declaration(Parser* parser) {
 
     // Expect 'from'
     if (parser->current_token->type != TOKEN_FROM) {
-        PARSE_ERROR(parser, PE_EXPECTED_FROM_KEYWORD);
+        PARSE_ERROR(parser, PE231_EXPECTED_FROM_KEYWORD);
         return node;
     }
     parser_advance(parser);
@@ -2188,7 +2188,7 @@ static ASTNode* parse_import_declaration(Parser* parser) {
         // Builtin module: @identifier
         parser_advance(parser);
         if (parser->current_token->type != TOKEN_IDENTIFIER) {
-            PARSE_ERROR(parser, PE_EXPECTED_MODULE_PATH);
+            PARSE_ERROR(parser, PE232_EXPECTED_MODULE_PATH);
             return node;
         }
         // Store as "@name" to distinguish from file paths
@@ -2201,7 +2201,7 @@ static ASTNode* parse_import_declaration(Parser* parser) {
         node->import_decl.module_path = strdup(parser->current_token->value);
         parser_advance(parser);
     } else {
-        PARSE_ERROR(parser, PE_EXPECTED_MODULE_PATH);
+        PARSE_ERROR(parser, PE232_EXPECTED_MODULE_PATH);
         return node;
     }
 
@@ -2229,7 +2229,7 @@ static ASTNode* parse_export_declaration(Parser* parser) {
     } else if (parser_match(parser, TOKEN_ENUM)) {
         node->export_decl.declaration = parse_enum_declaration(parser);
     } else {
-        PARSE_ERROR(parser, PE_EXPECTED_SEMICOLON_AFTER_IMPORT);
+        PARSE_ERROR(parser, PE233_EXPECTED_SEMICOLON_AFTER_IMPORT);
         return node;
     }
 
@@ -2328,7 +2328,7 @@ ASTNode* parser_parse(Parser* parser) {
             parser->current_token->column == prev_col &&
             parser->current_token->type == prev_type &&
             !parser_match(parser, TOKEN_EOF)) {
-            PARSE_ERROR(parser, PE_STUCK_ON_TOKEN,
+            PARSE_ERROR(parser, PE229_STUCK_ON_TOKEN,
                     token_type_to_string(parser->current_token->type),
                     parser->current_token->value ? parser->current_token->value : "(null)");
             // Skip the problematic token to avoid infinite loop

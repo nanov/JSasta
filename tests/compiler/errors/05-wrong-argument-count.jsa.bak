@@ -1,9 +1,8 @@
 // jastat-summary: Error on wrong number of function arguments
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
 function add(a: i32, b: i32): i32 {
     return a + b;
 }
 
-// jastat_expect: TE_WRONG_ARGUMENT_COUNT
 let result = add(5);  // Wrong argument count

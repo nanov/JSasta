@@ -4,7 +4,6 @@
 #include "logger.h"
 #include "diagnostics.h"
 #include "module_loader.h"
-#include "string_utils.h"
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
 #include <stdio.h>
@@ -1972,14 +1971,14 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                             Module* imported_module = symbol_get_imported_module(entry);
                             const char* type_member = node->method_call.object->member_access.property;
                             const char* method_name = node->method_call.method_name;
-                            
+
                             // Build the mangled method name: TypeName.method
                             char mangled_method[256];
                             snprintf(mangled_method, sizeof(mangled_method), "%s.%s", type_member, method_name);
-                            
+
                             // Look for the struct declaration in the module
                             ExportedSymbol* type_export = module_find_export(imported_module, type_member);
-                            if (type_export && type_export->declaration && 
+                            if (type_export && type_export->declaration &&
                                 type_export->declaration->type == AST_STRUCT_DECL) {
                                 // Find the method in the struct
                                 ASTNode* struct_decl = type_export->declaration;
@@ -1997,7 +1996,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         }
                     }
                 }
-                
+
                 // Type info should already be set by type inference
                 obj_type = node->method_call.object->type_info;
                 if (!obj_type) {

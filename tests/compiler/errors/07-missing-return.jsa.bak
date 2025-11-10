@@ -1,7 +1,6 @@
 // jastat-summary: Error on missing return statement in non-void function
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
-// jastat_expect: TE_MISSING_RETURN
 function get_value(): i32 {
     let x: i32 = 42;
     // Missing return statement

@@ -1,5 +1,4 @@
 // jastat-summary: Error on array size mismatch with initializer
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
-// jastat_expect: TE_TYPE_MISMATCH
 let arr: i32[3] = {1, 2};  // Size mismatch: declared 3, initialized 2

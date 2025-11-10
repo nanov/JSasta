@@ -1,5 +1,5 @@
 // jastat-summary: Error on accessing non-existent struct field
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
 struct Point {
     x: i32;
@@ -7,5 +7,4 @@ struct Point {
 }
 
 let p = Point { x: 10, y: 20 };
-// jastat_expect: TE_FIELD_NOT_FOUND
 let z = p.z;  // Field 'z' does not exist

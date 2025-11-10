@@ -1,6 +1,5 @@
 // jastat-summary: Error on duplicate variable declaration in same scope
-// jastat: mode=compiler, capture=expect
+// jastat: mode=compiler, capture=stderr
 
 let x: i32 = 10;
-// jastat_expect: TE_DUPLICATE_VARIABLE
 let x: i32 = 20;  // Duplicate variable declaration

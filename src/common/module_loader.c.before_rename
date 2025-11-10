@@ -90,20 +90,20 @@ static bool io_format_validate(ASTNode* call_node, TypeContext* type_ctx, Diagno
 
     // Validate format string (first argument must be string literal)
     if (call_node->method_call.arg_count < 1) {
-        JSASTA_ERROR(diag, call_node->loc, VE_FORMAT_REQUIRES_ARG, func_name);
+        JSASTA_ERROR(diag, call_node->loc, VE301_FORMAT_REQUIRES_ARG, func_name);
         return false;
     }
 
     ASTNode* format_arg = call_node->method_call.args[0];
     if (format_arg->type != AST_STRING) {
-        JSASTA_ERROR(diag, format_arg->loc, VE_FORMAT_STRING_MUST_BE_LITERAL, func_name);
+        JSASTA_ERROR(diag, format_arg->loc, VE302_FORMAT_STRING_MUST_BE_LITERAL, func_name);
         return false;
     }
 
     // Parse format string and validate placeholder count
     FormatString* fs = format_string_parse(format_arg->string.value);
     if (!fs) {
-        JSASTA_ERROR(diag, format_arg->loc, VE_INVALID_FORMAT_STRING);
+        JSASTA_ERROR(diag, format_arg->loc, VE303_INVALID_FORMAT_STRING);
         return false;
     }
 
@@ -111,13 +111,13 @@ static bool io_format_validate(ASTNode* call_node, TypeContext* type_ctx, Diagno
     if (fs->placeholder_count != actual_args) {
         if (actual_args > fs->placeholder_count) {
             // More arguments than placeholders - warning (extra args are ignored)
-            JSASTA_WARNING(diag, call_node->loc, VW_FORMAT_EXTRA_ARGS,
+            JSASTA_WARNING(diag, call_node->loc, VW304_FORMAT_EXTRA_ARGS,
                 func_name,
                 fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
                 actual_args, actual_args == 1 ? "" : "s");
         } else {
             // Fewer arguments than placeholders - error
-            JSASTA_ERROR(diag, call_node->loc, VE_FORMAT_PLACEHOLDER_MISMATCH,
+            JSASTA_ERROR(diag, call_node->loc, VE304_FORMAT_PLACEHOLDER_MISMATCH,
                 func_name,
                 fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
                 actual_args, actual_args == 1 ? "" : "s");
@@ -136,14 +136,14 @@ static bool test_assert_that_validate(ASTNode* call_node, TypeContext* type_ctx,
 
     // Must have at least 1 argument (condition), optionally message + args
     if (call_node->method_call.arg_count < 1) {
-        JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_THAT_REQUIRES_ARG);
+        JSASTA_ERROR(diag, call_node->loc, VE308_ASSERT_THAT_REQUIRES_ARG);
         return false;
     }
 
     // First argument must be bool
     ASTNode* condition_arg = call_node->method_call.args[0];
     if (condition_arg->type_info != Type_Bool) {
-        JSASTA_ERROR(diag, condition_arg->loc, VE_ASSERT_THAT_CONDITION_MUST_BE_BOOL,
+        JSASTA_ERROR(diag, condition_arg->loc, VE309_ASSERT_THAT_CONDITION_MUST_BE_BOOL,
             condition_arg->type_info->type_name ? condition_arg->type_info->type_name : "unknown");
         return false;
     }
@@ -152,27 +152,27 @@ static bool test_assert_that_validate(ASTNode* call_node, TypeContext* type_ctx,
     if (call_node->method_call.arg_count >= 2) {
         ASTNode* msg_arg = call_node->method_call.args[1];
         if (msg_arg->type != AST_STRING) {
-            JSASTA_ERROR(diag, msg_arg->loc, VE_ASSERT_THAT_MESSAGE_MUST_BE_LITERAL);
+            JSASTA_ERROR(diag, msg_arg->loc, VE310_ASSERT_THAT_MESSAGE_MUST_BE_LITERAL);
             return false;
         }
 
         // Validate format string and placeholder count
         FormatString* fs = format_string_parse(msg_arg->string.value);
         if (!fs) {
-            JSASTA_ERROR(diag, msg_arg->loc, VE_ASSERT_THAT_INVALID_FORMAT);
+            JSASTA_ERROR(diag, msg_arg->loc, VE311_ASSERT_THAT_INVALID_FORMAT);
             return false;
         }
 
         int actual_args = call_node->method_call.arg_count - 2;  // Exclude condition and msg
         if (fs->placeholder_count != actual_args) {
             if (actual_args < fs->placeholder_count) {
-                JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_THAT_PLACEHOLDER_MISMATCH,
+                JSASTA_ERROR(diag, call_node->loc, VE312_ASSERT_THAT_PLACEHOLDER_MISMATCH,
                     fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
                     actual_args, actual_args == 1 ? "" : "s");
                 format_string_free(fs);
                 return false;
             } else {
-                JSASTA_WARNING(diag, call_node->loc, VW_ASSERT_THAT_EXTRA_ARGS,
+                JSASTA_WARNING(diag, call_node->loc, VW313_ASSERT_THAT_EXTRA_ARGS,
                     fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
                     actual_args, actual_args == 1 ? "" : "s");
             }
@@ -191,7 +191,7 @@ static bool test_assert_equals_validate(ASTNode* call_node, TypeContext* type_ct
 
     // Validate we have exactly 2 arguments
     if (call_node->method_call.arg_count != 2) {
-        JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_EQUALS_REQUIRES_TWO_ARGS, "assert_equals");
+        JSASTA_ERROR(diag, call_node->loc, VE305_ASSERT_EQUALS_REQUIRES_TWO_ARGS, "assert_equals");
         return false;
     }
 
@@ -207,7 +207,7 @@ static bool test_assert_equals_validate(ASTNode* call_node, TypeContext* type_ct
 
     // Check that both arguments have the same type
     if (arg0->type_info != arg1->type_info) {
-        JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_EQUALS_TYPE_MISMATCH, "assert_equals");
+        JSASTA_ERROR(diag, call_node->loc, VE306_ASSERT_EQUALS_TYPE_MISMATCH, "assert_equals");
         return false;
     }
 
@@ -217,7 +217,7 @@ static bool test_assert_equals_validate(ASTNode* call_node, TypeContext* type_ct
         TraitImpl* eq_impl = trait_find_impl(Trait_Eq, arg0->type_info, type_params, 1);
 
         if (!eq_impl) {
-            JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_EQUALS_NEEDS_EQ_TRAIT,
+            JSASTA_ERROR(diag, call_node->loc, VE307_ASSERT_EQUALS_NEEDS_EQ_TRAIT,
                 arg0->type_info->type_name ? arg0->type_info->type_name : "unknown");
             return false;
         }
@@ -232,7 +232,7 @@ static bool test_assert_not_equals_validate(ASTNode* call_node, TypeContext* typ
 
     // Validate we have exactly 2 arguments
     if (call_node->method_call.arg_count != 2) {
-        JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_NOT_EQUALS_REQUIRES_TWO_ARGS, "assert_not_equals");
+        JSASTA_ERROR(diag, call_node->loc, VE314_ASSERT_NOT_EQUALS_REQUIRES_TWO_ARGS, "assert_not_equals");
         return false;
     }
 
@@ -248,7 +248,7 @@ static bool test_assert_not_equals_validate(ASTNode* call_node, TypeContext* typ
 
     // Check that both arguments have the same type
     if (arg0->type_info != arg1->type_info) {
-        JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_NOT_EQUALS_TYPE_MISMATCH, "assert_not_equals");
+        JSASTA_ERROR(diag, call_node->loc, VE315_ASSERT_NOT_EQUALS_TYPE_MISMATCH, "assert_not_equals");
         return false;
     }
 
@@ -258,7 +258,7 @@ static bool test_assert_not_equals_validate(ASTNode* call_node, TypeContext* typ
         TraitImpl* eq_impl = trait_find_impl(Trait_Eq, arg0->type_info, type_params, 1);
 
         if (!eq_impl) {
-            JSASTA_ERROR(diag, call_node->loc, VE_ASSERT_NOT_EQUALS_NEEDS_EQ_TRAIT,
+            JSASTA_ERROR(diag, call_node->loc, VE316_ASSERT_NOT_EQUALS_NEEDS_EQ_TRAIT,
                 arg0->type_info->type_name ? arg0->type_info->type_name : "unknown");
             return false;
         }

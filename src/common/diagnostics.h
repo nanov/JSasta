@@ -88,4 +88,22 @@ int diagnostic_count(DiagnosticContext* ctx, DiagnosticSeverity severity);
 // Print summary of diagnostics
 void diagnostic_print_summary(DiagnosticContext* ctx);
 
+// ============================================================================
+// JSASTA ERROR CATALOG INTEGRATION
+// ============================================================================
+
+#include "jsasta_errors.h"
+
+// Report error using enum constant from error catalog
+#define JSASTA_ERROR(diag, loc, err, ...) \
+    diagnostic_error(diag, loc, JSASTA_GET_CODE(err), JSASTA_GET_TEMPLATE(err), ##__VA_ARGS__)
+
+// Report warning using enum constant from error catalog
+#define JSASTA_WARNING(diag, loc, warn, ...) \
+    diagnostic_warning(diag, loc, JSASTA_GET_CODE(warn), JSASTA_GET_TEMPLATE(warn), ##__VA_ARGS__)
+
+// Parser-specific error (when you have parser context)
+#define PARSER_ERROR(parser, err, ...) \
+    JSASTA_ERROR((parser)->diagnostics, (parser)->current_token->location, err, ##__VA_ARGS__)
+
 #endif // DIAGNOSTICS_H
