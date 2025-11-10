@@ -1,7 +1,8 @@
 // jastat-summary: Nested array access (if supported)
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 // Test with array of arrays allocated on heap
 let arr1 = new i32[2];
@@ -12,8 +13,12 @@ arr1[1] = 2;
 arr2[0] = 3;
 arr2[1] = 4;
 
-io.println("arr1: {}, {}", arr1[0], arr1[1]);
-io.println("arr2: {}, {}", arr2[0], arr2[1]);
+t.assert.equals(1, arr1[0]);
+t.assert.equals(2, arr1[1]);
+t.assert.equals(3, arr2[0]);
+t.assert.equals(4, arr2[1]);
+// io.println("arr1: {}, {}", arr1[0], arr1[1]);
+// io.println("arr2: {}, {}", arr2[0], arr2[1]);
 
 delete arr1;
 delete arr2;

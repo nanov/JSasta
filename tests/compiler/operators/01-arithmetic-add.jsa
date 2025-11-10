@@ -1,10 +1,12 @@
 // jastat-summary: Addition operator
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let a: i32 = 10;
 let b: i32 = 20;
 let sum: i32 = a + b;
 
-io.println("{} + {} = {}", a, b, sum);
+// io.println("{} + {} = {}", a, b, sum);
+t.assert.equals(30, sum);

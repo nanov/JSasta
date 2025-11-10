@@ -1,14 +1,22 @@
 // jastat-summary: Type inference from literals and expressions
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let a = 42;           // Inferred as i32
 let b = true;         // Inferred as bool
 let c = a + 10;       // Inferred as i32
 let d = b && false;   // Inferred as bool
 
-io.println("a = {}", a);
-io.println("b = {}", b);
-io.println("c = {}", c);
-io.println("d = {}", d);
+// io.println("a = {}", a);
+t.assert.equals(42, a);
+
+// io.println("b = {}", b);
+t.assert.equals(true, b);
+
+// io.println("c = {}", c);
+t.assert.equals(52, c);
+
+// io.println("d = {}", d);
+t.assert.equals(false, d);

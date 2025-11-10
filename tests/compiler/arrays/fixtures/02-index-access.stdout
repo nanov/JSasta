@@ -1,4 +1,0 @@
-int_arr[0] = 1
-int_arr[2] = 3
-bool_arr[0] = true
-bool_arr[1] = false

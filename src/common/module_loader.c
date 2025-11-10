@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "diagnostics.h"
 #include "format_string.h"
+#include "traits.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -82,7 +83,8 @@ void module_registry_free(ModuleRegistry* registry) {
 // === Builtin Module Functions ===
 
 // Validation callback for @io format functions (println, print, format)
-static bool io_format_validate(ASTNode* call_node, DiagnosticContext* diag) {
+static bool io_format_validate(ASTNode* call_node, TypeContext* type_ctx, DiagnosticContext* diag) {
+    (void)type_ctx;  // Not needed for format string validation (may be NULL)
     // Get function name from the call node
     const char* func_name = call_node->method_call.method_name;
 
@@ -133,6 +135,122 @@ static bool io_format_validate(ASTNode* call_node, DiagnosticContext* diag) {
     return true;
 }
 
+// Validation callback for test.assert_that
+static bool test_assert_that_validate(ASTNode* call_node, TypeContext* type_ctx, DiagnosticContext* diag) {
+    (void)type_ctx;
+
+    // Must have at least 1 argument (condition), optionally message + args
+    if (call_node->method_call.arg_count < 1) {
+        diagnostic_error(diag, call_node->loc, "E308",
+            "assert_that requires at least 1 argument (condition)");
+        return false;
+    }
+
+    // First argument must be bool
+    ASTNode* condition_arg = call_node->method_call.args[0];
+    if (condition_arg->type_info != Type_Bool) {
+        diagnostic_error(diag, condition_arg->loc, "E309",
+            "First argument to assert_that must be bool, got %s",
+            condition_arg->type_info->type_name ? condition_arg->type_info->type_name : "unknown");
+        return false;
+    }
+
+    // If there's a message (2nd argument), validate it like io.format
+    if (call_node->method_call.arg_count >= 2) {
+        ASTNode* msg_arg = call_node->method_call.args[1];
+        if (msg_arg->type != AST_STRING) {
+            diagnostic_error(diag, msg_arg->loc, "E310",
+                "Second argument to assert_that (message) must be a string literal");
+            return false;
+        }
+
+        // Validate format string and placeholder count
+        FormatString* fs = format_string_parse(msg_arg->string.value);
+        if (!fs) {
+            diagnostic_error(diag, msg_arg->loc, "E311",
+                "Invalid format string: unmatched braces");
+            return false;
+        }
+
+        int actual_args = call_node->method_call.arg_count - 2;  // Exclude condition and msg
+        if (fs->placeholder_count != actual_args) {
+            if (actual_args < fs->placeholder_count) {
+                diagnostic_error(diag, call_node->loc, "E312",
+                    "assert_that: format string has %d placeholder%s but only %d argument%s provided",
+                    fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
+                    actual_args, actual_args == 1 ? "" : "s");
+                format_string_free(fs);
+                return false;
+            } else {
+                diagnostic_warning(diag, call_node->loc, "W313",
+                    "assert_that: format string has %d placeholder%s but %d argument%s provided (extra arguments will be ignored)",
+                    fs->placeholder_count, fs->placeholder_count == 1 ? "" : "s",
+                    actual_args, actual_args == 1 ? "" : "s");
+            }
+        }
+
+        format_string_free(fs);
+    }
+
+    return true;
+}
+
+// Shared validation for assert_equals and assert_not_equals
+static bool validate_assert_equality(ASTNode* call_node, TypeContext* type_ctx, DiagnosticContext* diag,
+                                     const char* func_name, const char* err_arg_count, 
+                                     const char* err_type_mismatch, const char* err_no_eq_trait) {
+    (void)type_ctx;  // Not needed since traits are global
+
+    // Validate we have exactly 2 arguments
+    if (call_node->method_call.arg_count != 2) {
+        diagnostic_error(diag, call_node->loc, err_arg_count,
+            "%s requires exactly 2 arguments", func_name);
+        return false;
+    }
+
+    // Get the types of the arguments
+    ASTNode* arg0 = call_node->method_call.args[0];
+    ASTNode* arg1 = call_node->method_call.args[1];
+
+    // Check if both arguments have inferred types
+    if (!arg0->type_info || !arg1->type_info) {
+        // Type inference hasn't run yet, will be checked later
+        return true;
+    }
+
+    // Check that both arguments have the same type
+    if (arg0->type_info != arg1->type_info) {
+        diagnostic_error(diag, call_node->loc, err_type_mismatch,
+            "%s arguments must have the same type", func_name);
+        return false;
+    }
+
+    // Check that the type implements Eq trait
+    if (Trait_Eq) {
+        TypeInfo* type_params[] = { arg0->type_info };
+        TraitImpl* eq_impl = trait_find_impl(Trait_Eq, arg0->type_info, type_params, 1);
+
+        if (!eq_impl) {
+            diagnostic_error(diag, call_node->loc, err_no_eq_trait,
+                "Type '%s' does not implement the Eq trait, which is required for %s",
+                arg0->type_info->type_name ? arg0->type_info->type_name : "unknown", func_name);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Validation callback for test.assert_equals
+static bool test_assert_equals_validate(ASTNode* call_node, TypeContext* type_ctx, DiagnosticContext* diag) {
+    return validate_assert_equality(call_node, type_ctx, diag, "assert_equals", "E305", "E306", "E307");
+}
+
+// Validation callback for test.assert_not_equals
+static bool test_assert_not_equals_validate(ASTNode* call_node, TypeContext* type_ctx, DiagnosticContext* diag) {
+    return validate_assert_equality(call_node, type_ctx, diag, "assert_not_equals", "E314", "E315", "E316");
+}
+
 // Codegen callbacks for @io functions (implemented in compiler layer)
 extern LLVMValueRef io_println_codegen(void* context, ASTNode* node);
 extern LLVMValueRef io_print_codegen(void* context, ASTNode* node);
@@ -140,7 +258,11 @@ extern LLVMValueRef io_eprintln_codegen(void* context, ASTNode* node);
 extern LLVMValueRef io_eprint_codegen(void* context, ASTNode* node);
 extern LLVMValueRef io_format_codegen(void* context, ASTNode* node);
 extern LLVMValueRef debug_assert_codegen(void* context, ASTNode* node);
-extern LLVMValueRef test_assert_codegen(void* context, ASTNode* node);
+extern LLVMValueRef test_assert_fail_codegen(void* context, ASTNode* node);
+extern LLVMValueRef test_assert_pass_codegen(void* context, ASTNode* node);
+extern LLVMValueRef test_assert_equals_codegen(void* context, ASTNode* node);
+extern LLVMValueRef test_assert_not_equals_codegen(void* context, ASTNode* node);
+extern LLVMValueRef test_assert_that_codegen(void* context, ASTNode* node);
 
 // Create a synthetic AST node for a builtin function declaration
 static ASTNode* builtin_create_func_decl(const char* name, int param_count, char** params,
@@ -349,19 +471,75 @@ static Module* builtin_create_test_module(ModuleRegistry* registry) {
     module->is_parsed = true;  // Mark as parsed since we created it synthetically
     module->next = NULL;
 
-    // Create builtin functions
-    int func_count = 1;
-    module->ast->program.count = func_count;
-    module->ast->program.statements = (ASTNode**)malloc(sizeof(ASTNode*) * func_count);
+    // Create an "assert" struct type with static methods
+    module->ast->program.count = 1;
+    module->ast->program.statements = (ASTNode**)malloc(sizeof(ASTNode*) * 1);
 
-    // assert(condition: bool): void - assert that condition is true, exit if false (always active)
-    char** assert_params = (char**)malloc(sizeof(char*) * 1);
-    assert_params[0] = strdup("condition");
-    TypeInfo** assert_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    assert_param_types[0] = Type_Bool;
-    ASTNode* assert_func = builtin_create_func_decl("assert", 1, assert_params, assert_param_types, Type_Void, NULL, test_assert_codegen);
-    module->ast->program.statements[0] = assert_func;
-    module_add_export(module, "assert", assert_func);
+    ASTNode* assert_struct = (ASTNode*)calloc(1, sizeof(ASTNode));
+    assert_struct->type = AST_STRUCT_DECL;
+    assert_struct->struct_decl.name = strdup("assert");
+    assert_struct->struct_decl.property_count = 0;
+    assert_struct->struct_decl.property_names = NULL;
+    assert_struct->struct_decl.property_types = NULL;
+    assert_struct->struct_decl.default_values = NULL;
+    assert_struct->struct_decl.property_array_sizes = NULL;
+
+    // Create static methods
+    assert_struct->struct_decl.method_count = 4;
+    assert_struct->struct_decl.methods = (ASTNode**)malloc(sizeof(ASTNode*) * 4);
+
+    // equals(expected: T, actual: T): void - assert two values are equal
+    char** equals_params = (char**)malloc(sizeof(char*) * 2);
+    equals_params[0] = strdup("expected");
+    equals_params[1] = strdup("actual");
+    TypeInfo** equals_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 2);
+    equals_param_types[0] = Type_I32;  // Placeholder - will be inferred
+    equals_param_types[1] = Type_I32;  // Placeholder - will be inferred
+    // Method name should be just "equals" - it will be mangled to "assert.equals" by the struct processing
+    ASTNode* equals_func = builtin_create_func_decl("equals", 2, equals_params, equals_param_types, Type_Void, test_assert_equals_validate, test_assert_equals_codegen);
+    assert_struct->struct_decl.methods[0] = equals_func;
+
+    // not_equals(not_expected: T, actual: T): void - assert two values are not equal
+    char** not_equals_params = (char**)malloc(sizeof(char*) * 2);
+    not_equals_params[0] = strdup("not_expected");
+    not_equals_params[1] = strdup("actual");
+    TypeInfo** not_equals_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 2);
+    not_equals_param_types[0] = Type_I32;  // Placeholder - will be inferred
+    not_equals_param_types[1] = Type_I32;  // Placeholder - will be inferred
+    ASTNode* not_equals_func = builtin_create_func_decl("not_equals", 2, not_equals_params, not_equals_param_types, Type_Void, test_assert_not_equals_validate, test_assert_not_equals_codegen);
+    assert_struct->struct_decl.methods[1] = not_equals_func;
+
+    // false(msg: string, ...): void - always fails with formatted message
+    char** false_params = (char**)malloc(sizeof(char*) * 1);
+    false_params[0] = strdup("msg");
+    TypeInfo** false_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    false_param_types[0] = Type_String;
+    ASTNode* false_func = builtin_create_func_decl("false", 1, false_params, false_param_types, Type_Void, io_format_validate, test_assert_fail_codegen);
+    false_func->func_decl.is_variadic = true;
+    assert_struct->struct_decl.methods[2] = false_func;
+
+    // that(condition: bool, msg: string, ...): void - assert condition is true, fail with message if false
+    // Only condition is required, message is optional (handled via variadic)
+    char** that_params = (char**)malloc(sizeof(char*) * 1);
+    that_params[0] = strdup("condition");
+    TypeInfo** that_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
+    that_param_types[0] = Type_Bool;
+    ASTNode* that_func = builtin_create_func_decl("that", 1, that_params, that_param_types, Type_Void, test_assert_that_validate, test_assert_that_codegen);
+    that_func->func_decl.is_variadic = true;
+    assert_struct->struct_decl.methods[3] = that_func;
+
+    // Register the struct type in the module's TypeContext
+    TypeInfo* assert_type = type_context_create_struct_type(module->type_ctx, "assert", NULL, NULL, 0, assert_struct);
+    assert_struct->type_info = assert_type;
+
+    // Register the method as a function in the TypeContext
+    // Methods use mangled names: "assert.equals"
+    TypeInfo* equals_func_type = type_context_create_function_type(module->type_ctx, "assert.equals",
+                                                                     equals_param_types, 2, Type_Void, NULL, false);
+    equals_func->type_info = equals_func_type;
+
+    module->ast->program.statements[0] = assert_struct;
+    module_add_export(module, "assert", assert_struct);
 
     log_info("Created @test builtin module with %d exports", module->export_count);
 

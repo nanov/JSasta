@@ -34,15 +34,17 @@ static void promote_int_operands(CodeGen* gen, LLVMValueRef* left, LLVMValueRef*
 // Using macros to reduce duplication while keeping debuggability
 
 #define DEFINE_INT_BINARY_INTRINSIC(name, llvm_build_fn, result_name) \
-    static LLVMValueRef intrinsic_int_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_int_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
         (void)arg_count; \
+        (void)context; \
         promote_int_operands(gen, &args[0], &args[1]); \
         return llvm_build_fn(gen->builder, args[0], args[1], result_name); \
     }
 
 #define DEFINE_INT_CMP_INTRINSIC(name, cmp_op, result_name) \
-    static LLVMValueRef intrinsic_int_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_int_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
         (void)arg_count; \
+        (void)context; \
         promote_int_operands(gen, &args[0], &args[1]); \
         return LLVMBuildICmp(gen->builder, cmp_op, args[0], args[1], result_name); \
     }
@@ -72,8 +74,9 @@ DEFINE_INT_CMP_INTRINSIC(gt, LLVMIntSGT, "gt")
 DEFINE_INT_CMP_INTRINSIC(ge, LLVMIntSGE, "ge")
 
 // Unary operations
-static LLVMValueRef intrinsic_int_neg(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_neg(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
     (void)arg_count;
+    (void)context;
     return LLVMBuildNeg(gen->builder, args[0], "neg");
 }
 
@@ -81,8 +84,9 @@ static LLVMValueRef intrinsic_int_neg(CodeGen* gen, LLVMValueRef* args, int arg_
 // These perform the operation and return the new value to be stored
 
 #define DEFINE_INT_ASSIGN_INTRINSIC(name, llvm_build_fn, result_name) \
-    static LLVMValueRef intrinsic_int_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_int_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
         (void)arg_count; \
+        (void)context; \
         promote_int_operands(gen, &args[0], &args[1]); \
         return llvm_build_fn(gen->builder, args[0], args[1], result_name); \
     }
@@ -92,20 +96,23 @@ DEFINE_INT_ASSIGN_INTRINSIC(sub_assign, LLVMBuildSub, "sub_assign")
 DEFINE_INT_ASSIGN_INTRINSIC(mul_assign, LLVMBuildMul, "mul_assign")
 
 // Division needs signed/unsigned variants
-static LLVMValueRef intrinsic_int_div_assign(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_div_assign(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     promote_int_operands(gen, &args[0], &args[1]);
     return LLVMBuildSDiv(gen->builder, args[0], args[1], "div_assign");
 }
 
-static LLVMValueRef intrinsic_uint_div_assign(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_uint_div_assign(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     promote_int_operands(gen, &args[0], &args[1]);
     return LLVMBuildUDiv(gen->builder, args[0], args[1], "div_assign");
 }
 
 #define DEFINE_DOUBLE_ASSIGN_INTRINSIC(name, llvm_build_fn, result_name) \
-    static LLVMValueRef intrinsic_double_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_double_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         return llvm_build_fn(gen->builder, args[0], args[1], result_name); \
     }
@@ -117,70 +124,80 @@ DEFINE_DOUBLE_ASSIGN_INTRINSIC(div_assign, LLVMBuildFDiv, "div_assign")
 
 // === Intrinsic Codegen Functions for int + double (with promotion) ===
 
-static LLVMValueRef intrinsic_int_double_add(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_add(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFAdd(gen->builder, left_promoted, args[1], "fadd");
 }
 
-static LLVMValueRef intrinsic_int_double_sub(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_sub(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFSub(gen->builder, left_promoted, args[1], "fsub");
 }
 
-static LLVMValueRef intrinsic_int_double_mul(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_mul(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFMul(gen->builder, left_promoted, args[1], "fmul");
 }
 
-static LLVMValueRef intrinsic_int_double_div(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_div(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFDiv(gen->builder, left_promoted, args[1], "fdiv");
 }
 
-static LLVMValueRef intrinsic_int_double_eq(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_eq(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, left_promoted, args[1], "feq");
 }
 
-static LLVMValueRef intrinsic_int_double_ne(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_ne(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealONE, left_promoted, args[1], "fne");
 }
 
-static LLVMValueRef intrinsic_int_double_lt(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_lt(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOLT, left_promoted, args[1], "flt");
 }
 
-static LLVMValueRef intrinsic_int_double_le(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_le(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOLE, left_promoted, args[1], "fle");
 }
 
-static LLVMValueRef intrinsic_int_double_gt(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_gt(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOGT, left_promoted, args[1], "fgt");
 }
 
-static LLVMValueRef intrinsic_int_double_ge(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_int_double_ge(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef left_promoted = LLVMBuildSIToFP(gen->builder, args[0],
         LLVMDoubleTypeInContext(gen->context), "itod");
@@ -189,13 +206,15 @@ static LLVMValueRef intrinsic_int_double_ge(CodeGen* gen, LLVMValueRef* args, in
 
 // === Double Intrinsics ===
 #define DEFINE_DOUBLE_BINARY_INTRINSIC(name, llvm_build_fn, result_name) \
-    static LLVMValueRef intrinsic_double_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_double_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         return llvm_build_fn(gen->builder, args[0], args[1], result_name); \
     }
 
 #define DEFINE_DOUBLE_CMP_INTRINSIC(name, cmp_op, result_name) \
-    static LLVMValueRef intrinsic_double_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_double_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         return LLVMBuildFCmp(gen->builder, cmp_op, args[0], args[1], result_name); \
     }
@@ -215,77 +234,88 @@ DEFINE_DOUBLE_CMP_INTRINSIC(gt, LLVMRealOGT, "fgt")
 DEFINE_DOUBLE_CMP_INTRINSIC(ge, LLVMRealOGE, "fge")
 
 // Unary operations
-static LLVMValueRef intrinsic_double_neg(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_neg(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     return LLVMBuildFNeg(gen->builder, args[0], "fneg");
 }
 
 // === Intrinsic Codegen Functions for double + int (with promotion) ===
 
-static LLVMValueRef intrinsic_double_int_add(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_add(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFAdd(gen->builder, args[0], right_promoted, "fadd");
 }
 
-static LLVMValueRef intrinsic_double_int_sub(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_sub(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFSub(gen->builder, args[0], right_promoted, "fsub");
 }
 
-static LLVMValueRef intrinsic_double_int_mul(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_mul(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFMul(gen->builder, args[0], right_promoted, "fmul");
 }
 
-static LLVMValueRef intrinsic_double_int_div(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_div(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFDiv(gen->builder, args[0], right_promoted, "fdiv");
 }
 
-static LLVMValueRef intrinsic_double_int_eq(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_eq(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, args[0], right_promoted, "feq");
 }
 
-static LLVMValueRef intrinsic_double_int_ne(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_ne(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealONE, args[0], right_promoted, "fne");
 }
 
-static LLVMValueRef intrinsic_double_int_lt(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_lt(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOLT, args[0], right_promoted, "flt");
 }
 
-static LLVMValueRef intrinsic_double_int_le(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_le(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOLE, args[0], right_promoted, "fle");
 }
 
-static LLVMValueRef intrinsic_double_int_gt(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_gt(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
     return LLVMBuildFCmp(gen->builder, LLVMRealOGT, args[0], right_promoted, "fgt");
 }
 
-static LLVMValueRef intrinsic_double_int_ge(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_double_int_ge(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     LLVMValueRef right_promoted = LLVMBuildSIToFP(gen->builder, args[1],
         LLVMDoubleTypeInContext(gen->context), "itod");
@@ -297,14 +327,16 @@ static LLVMValueRef intrinsic_double_int_ge(CodeGen* gen, LLVMValueRef* args, in
 // === Unsigned Integer Intrinsics ===
 // Unsigned operations that differ from signed (div, rem, shr, comparisons)
 #define DEFINE_UINT_BINARY_INTRINSIC(name, llvm_build_fn, result_name) \
-    static LLVMValueRef intrinsic_uint_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_uint_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         promote_int_operands(gen, &args[0], &args[1]); \
         return llvm_build_fn(gen->builder, args[0], args[1], result_name); \
     }
 
 #define DEFINE_UINT_CMP_INTRINSIC(name, cmp_op, result_name) \
-    static LLVMValueRef intrinsic_uint_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_uint_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         promote_int_operands(gen, &args[0], &args[1]); \
         return LLVMBuildICmp(gen->builder, cmp_op, args[0], args[1], result_name); \
@@ -320,13 +352,15 @@ DEFINE_UINT_CMP_INTRINSIC(ge, LLVMIntUGE, "uge")
 
 // === Bool Intrinsics ===
 #define DEFINE_BOOL_BINARY_INTRINSIC(name, llvm_build_fn, result_name) \
-    static LLVMValueRef intrinsic_bool_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_bool_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         return llvm_build_fn(gen->builder, args[0], args[1], result_name); \
     }
 
 #define DEFINE_BOOL_CMP_INTRINSIC(name, cmp_op, result_name) \
-    static LLVMValueRef intrinsic_bool_##name(CodeGen* gen, LLVMValueRef* args, int arg_count) { \
+    static LLVMValueRef intrinsic_bool_##name(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) { \
+        (void)context; \
         (void)arg_count; \
         return LLVMBuildICmp(gen->builder, cmp_op, args[0], args[1], result_name); \
     }
@@ -341,7 +375,8 @@ DEFINE_BOOL_CMP_INTRINSIC(eq, LLVMIntEQ, "eq")
 DEFINE_BOOL_CMP_INTRINSIC(ne, LLVMIntNE, "ne")
 
 // Unary operations
-static LLVMValueRef intrinsic_bool_not(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_bool_not(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)arg_count;
     return LLVMBuildNot(gen->builder, args[0], "not");
 }
@@ -536,7 +571,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
                 TypeInfo* left = int_types[i]; \
                 TypeInfo* right = int_types[j]; \
                 TypeInfo* result = get_promoted_type(left, right); \
-                LLVMValueRef (*intrinsic)(CodeGen*, LLVMValueRef*, int); \
+                LLVMValueRef (*intrinsic)(CodeGen*, LLVMValueRef*, int, void*); \
                 if (strcmp(method_name_str, "add") == 0 || strcmp(method_name_str, "add_assign") == 0) intrinsic = add_fn; \
                 else if (strcmp(method_name_str, "sub") == 0 || strcmp(method_name_str, "sub_assign") == 0) intrinsic = sub_fn; \
                 else if (strcmp(method_name_str, "mul") == 0 || strcmp(method_name_str, "mul_assign") == 0) intrinsic = mul_fn; \
@@ -577,7 +612,7 @@ static TypeInfo* get_promoted_type(TypeInfo* left, TypeInfo* right) {
             for (int j = 0; j < 8; j++) { \
                 TypeInfo* left = int_types[i]; \
                 TypeInfo* right = int_types[j]; \
-                LLVMValueRef (*intrinsic)(CodeGen*, LLVMValueRef*, int); \
+                LLVMValueRef (*intrinsic)(CodeGen*, LLVMValueRef*, int, void*); \
                 if (strcmp(method_name_str, "shl") == 0) intrinsic = shl_fn; \
                 else intrinsic = GET_SHR_INTRINSIC(left); \
                 REGISTER_BINARY_OP(trait, left, right, left, method_name_str, intrinsic); \
@@ -847,4 +882,197 @@ void traits_register_builtin_impls(TraitRegistry* registry) {
     REGISTER_DISPLAY(Type_Double, "display_f64");
     
     #undef REGISTER_DISPLAY
+}
+
+// === Enum Equality Intrinsics ===
+
+// Intrinsic for enum equality (==)
+// For enums, we compare the tag/discriminant values directly
+// This works for both unit variants and data variants (tag comparison first)
+static LLVMValueRef intrinsic_enum_eq(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    (void)arg_count;
+    // args[0] and args[1] are enum values (represented as integers for unit variants)
+    // For now, we do simple integer comparison (tag comparison)
+    // TODO: For data variants, we need deeper comparison of fields
+    return LLVMBuildICmp(gen->builder, LLVMIntEQ, args[0], args[1], "enum_eq");
+}
+
+// Intrinsic for enum inequality (!=)
+static LLVMValueRef intrinsic_enum_ne(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    (void)arg_count;
+    return LLVMBuildICmp(gen->builder, LLVMIntNE, args[0], args[1], "enum_ne");
+}
+
+// === Auto-implement Eq trait for enum types ===
+
+// Register Eq trait implementation for an enum type
+// This is called automatically when an enum is declared
+void trait_register_eq_for_enum(TypeInfo* enum_type, TraitRegistry* registry) {
+    if (!enum_type || !registry || enum_type->kind != TYPE_KIND_ENUM) {
+        return;
+    }
+
+    // Check if Eq trait implementation already exists
+    TypeInfo* type_params[] = { enum_type };
+    TraitImpl* existing = trait_find_impl(Trait_Eq, enum_type, type_params, 1);
+    if (existing) {
+        return; // Already implemented
+    }
+
+    // Create method implementations for eq and ne
+    MethodImpl methods[2];
+    
+    // eq method
+    methods[0].method_name = "eq";
+    methods[0].signature = NULL;  // Will be filled in by trait system
+    methods[0].kind = METHOD_INTRINSIC;
+    methods[0].codegen = intrinsic_enum_eq;
+    methods[0].function_ptr = NULL;
+    methods[0].external_name = NULL;
+
+    // ne method  
+    methods[1].method_name = "ne";
+    methods[1].signature = NULL;
+    methods[1].kind = METHOD_INTRINSIC;
+    methods[1].codegen = intrinsic_enum_ne;
+    methods[1].function_ptr = NULL;
+    methods[1].external_name = NULL;
+
+    // Register the trait implementation
+    // For Eq<Rhs>, we use Rhs=Self (comparing enum with itself)
+    TypeInfo* rhs_binding[] = { enum_type };
+    TypeInfo* output_binding[] = { Type_Bool };  // Eq returns bool
+    
+    trait_impl_full(Trait_Eq, enum_type, rhs_binding, 1, output_binding, 1, methods, 2);
+}
+
+// Context structure for enum Display trait implementation
+typedef struct {
+    TypeInfo* enum_type;
+} EnumDisplayContext;
+
+// Generate Display implementation intrinsic for enums
+// The context parameter contains the TypeInfo for this specific enum
+static LLVMValueRef generate_enum_display_impl(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    if (arg_count != 2 || !context) return NULL;
+    
+    EnumDisplayContext* ctx = (EnumDisplayContext*)context;
+    TypeInfo* enum_type = ctx->enum_type;
+    
+    LLVMValueRef enum_val = args[0];       // The enum discriminant value (i32)
+    LLVMValueRef formatter_ptr = args[1];  // Pointer to Formatter struct
+    
+    // Get FILE* from Formatter.stream (field 0)
+    LLVMTypeRef file_struct = LLVMGetTypeByName2(gen->context, "struct._IO_FILE");
+    if (!file_struct) {
+        file_struct = LLVMStructCreateNamed(gen->context, "struct._IO_FILE");
+    }
+    
+    LLVMTypeRef formatter_type = LLVMStructType(
+        (LLVMTypeRef[]){LLVMPointerType(file_struct, 0)}, 1, false);
+    
+    LLVMValueRef stream_ptr_ptr = LLVMBuildStructGEP2(gen->builder, formatter_type, 
+                                                        formatter_ptr, 0, "stream_ptr");
+    LLVMValueRef stream = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_struct, 0),
+                                         stream_ptr_ptr, "stream");
+    
+    // Get fprintf function
+    LLVMValueRef fprintf_fn = LLVMGetNamedFunction(gen->module, "fprintf");
+    if (!fprintf_fn) {
+        LLVMTypeRef fprintf_type = LLVMFunctionType(
+            LLVMInt32Type(),
+            (LLVMTypeRef[]){LLVMPointerType(file_struct, 0), LLVMPointerType(LLVMInt8Type(), 0)},
+            2, true);
+        fprintf_fn = LLVMAddFunction(gen->module, "fprintf", fprintf_type);
+    }
+    
+    // Generate switch statement on enum discriminant
+    int variant_count = enum_type->data.enum_type.variant_count;
+    
+    // Create blocks for each variant + default
+    LLVMBasicBlockRef* variant_blocks = malloc(sizeof(LLVMBasicBlockRef) * variant_count);
+    LLVMBasicBlockRef default_block = LLVMAppendBasicBlock(
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), 
+        "enum_display_default");
+    LLVMBasicBlockRef end_block = LLVMAppendBasicBlock(
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), 
+        "enum_display_end");
+    
+    for (int i = 0; i < variant_count; i++) {
+        char block_name[256];
+        snprintf(block_name, sizeof(block_name), "enum_display_%s", 
+                 enum_type->data.enum_type.variant_names[i]);
+        variant_blocks[i] = LLVMAppendBasicBlock(
+            LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), 
+            block_name);
+    }
+    
+    // Build switch
+    LLVMValueRef switch_inst = LLVMBuildSwitch(gen->builder, enum_val, default_block, variant_count);
+    
+    // Generate case for each variant
+    for (int i = 0; i < variant_count; i++) {
+        LLVMAddCase(switch_inst, LLVMConstInt(LLVMInt32Type(), i, false), variant_blocks[i]);
+        
+        LLVMPositionBuilderAtEnd(gen->builder, variant_blocks[i]);
+        
+        // Create format string for this variant name
+        const char* variant_name = enum_type->data.enum_type.variant_names[i];
+        LLVMValueRef format_str = LLVMBuildGlobalStringPtr(gen->builder, variant_name, "variant_name_fmt");
+        
+        // Call fprintf(stream, variant_name)
+        LLVMValueRef fprintf_args[] = {stream, format_str};
+        LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), 
+                      fprintf_fn, fprintf_args, 2, "");
+        
+        LLVMBuildBr(gen->builder, end_block);
+    }
+    
+    // Default case: print "Unknown"
+    LLVMPositionBuilderAtEnd(gen->builder, default_block);
+    LLVMValueRef unknown_str = LLVMBuildGlobalStringPtr(gen->builder, "Unknown", "unknown_fmt");
+    LLVMValueRef unknown_args[] = {stream, unknown_str};
+    LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), 
+                  fprintf_fn, unknown_args, 2, "");
+    LLVMBuildBr(gen->builder, end_block);
+    
+    // End block
+    LLVMPositionBuilderAtEnd(gen->builder, end_block);
+    
+    free(variant_blocks);
+    
+    return NULL; // Display.fmt returns void
+}
+
+void trait_register_display_for_enum(TypeInfo* enum_type, TraitRegistry* registry) {
+    if (!enum_type || !registry || enum_type->kind != TYPE_KIND_ENUM) {
+        return;
+    }
+
+    // Check if Display trait implementation already exists
+    TraitImpl* existing = trait_find_impl(Trait_Display, enum_type, NULL, 0);
+    if (existing) {
+        return; // Already implemented
+    }
+
+    // Allocate context for this specific enum
+    EnumDisplayContext* context = malloc(sizeof(EnumDisplayContext));
+    context->enum_type = enum_type;
+
+    // Create method implementation for fmt
+    MethodImpl methods[1];
+    
+    // fmt method - uses intrinsic codegen with context
+    methods[0].method_name = "fmt";
+    methods[0].signature = NULL;  // Will be filled in by trait system
+    methods[0].kind = METHOD_INTRINSIC;
+    methods[0].codegen = generate_enum_display_impl;
+    methods[0].function_ptr = context;  // Pass TypeInfo through context
+    methods[0].external_name = NULL;
+
+    // Register the trait implementation
+    // Display has no type parameters
+    trait_impl_full(Trait_Display, enum_type, NULL, 0, NULL, 0, methods, 1);
 }

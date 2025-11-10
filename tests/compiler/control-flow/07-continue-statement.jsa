@@ -1,11 +1,17 @@
 // jastat-summary: Continue statement in loop
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
+let sum: i32 = 0;
 for (let i: i32 = 0; i < 5; i = i + 1) {
     if (i == 2) {
         continue;
     }
-    io.println("i = {}", i);
+    // io.println("i = {}", i);
+    sum = sum + i;
 }
+
+// Sum of 0, 1, 3, 4 = 8
+t.assert.equals(8, sum);

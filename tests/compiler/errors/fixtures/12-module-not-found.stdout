@@ -1,4 +1,3 @@
-[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/12-module-not-found.jsa...
 [ERROR]   Failed to read module file: /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/./nonexistent.jsa
 [ERROR]   Failed to parse module: ./nonexistent
 [ERROR]   Failed to load imported module: ./nonexistent.jsa

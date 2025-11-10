@@ -1,17 +1,21 @@
 // jastat-summary: Functions with reference parameters (mutation)
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 function increment(val: ref i32): void {
     val = val + 1;
 }
 
 let x: i32 = 10;
-io.println("Before: x = {}", x);
+// io.println("Before: x = {}", x);
+t.assert.equals(10, x);
 
 increment(ref x);
-io.println("After increment: x = {}", x);
+// io.println("After increment: x = {}", x);
+t.assert.equals(11, x);
 
 increment(ref x);
-io.println("After second increment: x = {}", x);
+// io.println("After second increment: x = {}", x);
+t.assert.equals(12, x);

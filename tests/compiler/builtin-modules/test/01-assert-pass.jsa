@@ -1,9 +1,0 @@
-// jastat-summary: Test assertions with true conditions pass
-// jastat: mode=run, capture=assert
-
-import test from @test;
-
-test.assert(true);
-test.assert(1 + 1 == 2);
-test.assert(5 > 3);
-test.assert(10 != 5);

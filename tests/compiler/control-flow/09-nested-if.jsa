@@ -1,17 +1,24 @@
 // jastat-summary: Nested if statements
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let x: i32 = 10;
 let y: i32 = 20;
 
+let branch: i32 = 0;
 if (x > 5) {
     if (y > 15) {
-        io.println("Both conditions true");
+        // io.println("Both conditions true");
+        branch = 1;
     } else {
-        io.println("Only first condition true");
+        // io.println("Only first condition true");
+        branch = 2;
     }
 } else {
-    io.println("First condition false");
+    // io.println("First condition false");
+    branch = 3;
 }
+
+t.assert.equals(1, branch);

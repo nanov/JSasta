@@ -1,7 +1,8 @@
 // jastat-summary: RefIndex trait for assignment on heap arrays
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let arr = new i32[3];
 
@@ -13,6 +14,10 @@ arr[0] = arr[0] * 2;
 arr[1] = arr[1] * 2;
 arr[2] = arr[2] * 2;
 
-io.println("After doubling: {}, {}, {}", arr[0], arr[1], arr[2]);
+t.assert.equals(20, arr[0]);
+t.assert.equals(40, arr[1]);
+t.assert.equals(60, arr[2]);
+
+// io.println("After doubling: {}, {}, {}", arr[0], arr[1], arr[2]);
 
 delete arr;

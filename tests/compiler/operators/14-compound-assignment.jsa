@@ -1,15 +1,19 @@
 // jastat-summary: Compound assignment operators (+=, -=, etc.)
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let x: i32 = 10;
 
 x = x + 5;
-io.println("After += 5: x = {}", x);
+// io.println("After += 5: x = {}", x);
+t.assert.equals(15, x);
 
 x = x - 3;
-io.println("After -= 3: x = {}", x);
+// io.println("After -= 3: x = {}", x);
+t.assert.equals(12, x);
 
 x = x * 2;
-io.println("After *= 2: x = {}", x);
+// io.println("After *= 2: x = {}", x);
+t.assert.equals(24, x);

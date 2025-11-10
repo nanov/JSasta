@@ -1,7 +1,8 @@
 // jastat-summary: Calling methods on nested struct members
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 struct Point {
     x: i32;
@@ -43,13 +44,21 @@ rect.top_left.y = 20;
 rect.bottom_right.x = 100;
 rect.bottom_right.y = 80;
 
-io.println("Top-left: ({}, {})", get_x(rect.top_left), get_y(rect.top_left));
-io.println("Bottom-right: ({}, {})", get_x(rect.bottom_right), get_y(rect.bottom_right));
-io.println("Width: {}", get_width(rect));
-io.println("Height: {}", get_height(rect));
+// io.println("Top-left: ({}, {})", get_x(rect.top_left), get_y(rect.top_left));
+// io.println("Bottom-right: ({}, {})", get_x(rect.bottom_right), get_y(rect.bottom_right));
+// io.println("Width: {}", get_width(rect));
+// io.println("Height: {}", get_height(rect));
+t.assert.equals(10, get_x(rect.top_left));
+t.assert.equals(20, get_y(rect.top_left));
+t.assert.equals(100, get_x(rect.bottom_right));
+t.assert.equals(80, get_y(rect.bottom_right));
+t.assert.equals(90, get_width(rect));
+t.assert.equals(60, get_height(rect));
 
 // Test mutation through nested struct method
 set_x(ref rect.top_left, 5);
 set_y(ref rect.top_left, 15);
 
-io.println("After mutation: ({}, {})", get_x(rect.top_left), get_y(rect.top_left));
+// io.println("After mutation: ({}, {})", get_x(rect.top_left), get_y(rect.top_left));
+t.assert.equals(5, get_x(rect.top_left));
+t.assert.equals(15, get_y(rect.top_left));

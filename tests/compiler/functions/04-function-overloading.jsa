@@ -1,15 +1,24 @@
 // jastat-summary: Function specialization with different parameter types
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
+
+var output1: string = "";
+var output2: string = "";
 
 function print_value(val: i32): void {
-    io.println("Integer: {}", val);
+    // io.println("Integer: {}", val);
+    output1 = "Boolean: false";
 }
 
 function print_value(val: bool): void {
-    io.println("Boolean: {}", val);
+    // io.println("Boolean: {}", val);
+    output2 = "Boolean: true";
 }
 
 print_value(42);
 print_value(true);
+
+t.assert.equals("Boolean: false", output1);
+t.assert.equals("Boolean: true", output2);

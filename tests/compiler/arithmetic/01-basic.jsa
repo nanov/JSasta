@@ -1,6 +1,9 @@
-external printf(string, ...): int;
+// jastat-summary: Arithmetic +
+// jastat: mode=run, capture=assert
+import test from @test;
 
 const a:i32 = 9;
 const b:i32 = 60;
+const ex = a + b;
 
-printf("%d\n", a+b);
+test.assert.equals(69, ex);

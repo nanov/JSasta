@@ -1,5 +1,3 @@
-[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/test-features/02-compiler-error-syntax-error.jsa...
-[INFO]    Loaded module: 02-compiler-error-syntax-error (0 exports, 0 dependencies)
 [error:T301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/test-features/02-compiler-error-syntax-error.jsa:5:1: Undefined variable: a
 
 === Diagnostic Summary ===

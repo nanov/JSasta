@@ -158,11 +158,12 @@ typedef struct ASTNode ASTNode;
 typedef struct SymbolTable SymbolTable;
 typedef struct SymbolEntry SymbolEntry;
 typedef struct DiagnosticContext DiagnosticContext;
+typedef struct TypeContext TypeContext;
 
 // Builtin function callbacks
 // Validation callback: called during type inference to validate call arguments
 // Returns true if validation passed, false otherwise
-typedef bool (*BuiltinValidateCallback)(ASTNode* call_node, DiagnosticContext* diag);
+typedef bool (*BuiltinValidateCallback)(ASTNode* call_node, TypeContext* type_ctx, DiagnosticContext* diag);
 
 // Codegen callback: called during code generation to emit custom LLVM IR
 // Returns the LLVM value representing the result of the call

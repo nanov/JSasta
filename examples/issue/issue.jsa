@@ -1,29 +1,12 @@
-import io from @io;
+import test from @test;
 
-struct winsize_t {
-	ws_row: u16;
-	ws_col: u16;
-	ws_xpixel: u16;
-	ws_ypixel: u16;
-};
+enum Value {
+    Int(val: i32);
+    Double(val: double);
+    Bool(val: bool);
+    String(val: string);
+}
 
-const TIOCGWINSZ:u64 = 1074295912;
-const STDOUT_FILENO = 1;
+let v1 = Value.Int { val: 42 };
 
-external ioctl(a: int, b: u64, ...): int;
-external get_errno(): int;
-external isatty(fd: int): int;
-
-io.println("Is stdout a tty? {}", isatty(STDOUT_FILENO));
-
-var w:winsize_t;
-
-var r = ioctl(STDOUT_FILENO, TIOCGWINSZ, ref w);
-io.println("ioctl result: {}, errno: {}, ws_row: {}, ws_col: {}", r, get_errno(), w.ws_row, w.ws_col);
-
-
-
-// Executable statements need to be after all declarations
-// Note: external functions with struct parameters are not currently supported
-// var w:winsize_t;
-// ioctl(STDOUT_FILENO, TIOCGWINSZ, ref w);
+t.assert.that(v1 is Value.Int(let val) && val == 42);

@@ -1,7 +1,2 @@
-[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa...
-[INFO]    Loaded module: 08-struct-field-not-found (0 exports, 0 dependencies)
 [ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:10:11: Property 'z' not found in object (property_index not set by type inference)
 [ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:10:11: Property 'z' not found in object (property_index not set by type inference)
-[INFO]    Code generation complete
-[INFO]    LLVM IR written to tests/compiler//errors/08-struct-field-not-found.tmp.ll
-[INFO]    No diagnostics

@@ -1,5 +1,0 @@
-[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/02-type-mismatch-assignment.jsa...
-[INFO]    Loaded module: 02-type-mismatch-assignment (0 exports, 0 dependencies)
-[INFO]    Code generation complete
-[INFO]    LLVM IR written to tests/compiler//errors/02-type-mismatch-assignment.tmp.ll
-[INFO]    No diagnostics

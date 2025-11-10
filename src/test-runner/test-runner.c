@@ -81,6 +81,7 @@ typedef struct {
     char suite_name[256];
     test_status_t status;
     char summary[512];  // Fixed-size buffer for pipe communication
+    char failure_output[1024];  // Captured assertion failure or error output
     int worker_id;  // Which worker is reporting this
 } ReportEvent;
 
@@ -151,7 +152,7 @@ char* read_from_pipe_nonblocking(int fd) {
     while (1) {
         bytes_read = neco_read(fd, buffer, sizeof(buffer));
         if (bytes_read <= 0) break;
-        
+
         char* new_output = (char*)realloc(output, total_len + bytes_read + 1);
         if (!new_output) { free(output); return NULL; }
         output = new_output;
@@ -185,9 +186,9 @@ int execute_and_capture_streams(const char* command, char** stdout_buf, char** s
     pid_t pid;
     char *argv[] = {"/bin/sh", "-c", (char*)command, NULL};
     int spawn_result = posix_spawn(&pid, "/bin/sh", &actions, NULL, argv, environ);
-    
+
     posix_spawn_file_actions_destroy(&actions);
-    
+
     if (spawn_result != 0) {
         close(stdout_pipe[0]); close(stdout_pipe[1]);
         close(stderr_pipe[0]); close(stderr_pipe[1]);
@@ -201,7 +202,7 @@ int execute_and_capture_streams(const char* command, char** stdout_buf, char** s
     // Read outputs using neco non-blocking I/O
     *stdout_buf = read_from_pipe_nonblocking(stdout_pipe[0]);
     *stderr_buf = read_from_pipe_nonblocking(stderr_pipe[0]);
-    
+
     close(stdout_pipe[0]);
     close(stderr_pipe[0]);
 
@@ -289,13 +290,15 @@ void parse_test_config(const char* source_path, TestConfig* config) {
 // =========================================================================
 
 // Pure test execution function - no output, just returns status
-test_status_t execute_test_silent(const char* suite_path, const char* test_filename) {
+// For CAPTURE_ASSERT mode failures, failure_output will contain the assertion message (caller must free)
+test_status_t execute_test_silent(const char* suite_path, const char* test_filename, char** failure_output) {
+    if (failure_output) *failure_output = NULL;
     char absolute_source_path[PATH_MAX], temp_executable_path[MAX_PATH], fixture_path[MAX_PATH], command[PATH_MAX * 2];
     char test_base_name[MAX_PATH];
     strncpy(test_base_name, test_filename, sizeof(test_base_name));
     char* dot = strrchr(test_base_name, '.'); if (dot) *dot = '\0';
     snprintf(absolute_source_path, sizeof(absolute_source_path), "%s/%s", suite_path, test_filename);
-    snprintf(temp_executable_path, sizeof(temp_executable_path), "%s/%s.tmp.ll", suite_path, test_base_name);
+    snprintf(temp_executable_path, sizeof(temp_executable_path), "%s/%s.tmp.exe", suite_path, test_base_name);
     snprintf(fixture_path, sizeof(fixture_path), "%s/fixtures/%s.stdout", suite_path, test_base_name);
     if (realpath(absolute_source_path, command) != NULL) { strcpy(absolute_source_path, command); }
 
@@ -303,7 +306,7 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
     parse_test_config(absolute_source_path, &config);
 
     test_status_t status = TEST_FAIL;
-    snprintf(command, sizeof(command), "./%s -o %s %s", COMPILER_PATH, temp_executable_path, absolute_source_path);
+    snprintf(command, sizeof(command), "./%s -q -o %s %s", COMPILER_PATH, temp_executable_path, absolute_source_path);
     char* compiler_stdout = NULL, *compiler_stderr = NULL;
     int compiler_exit_code = execute_and_capture_streams(command, &compiler_stdout, &compiler_stderr);
 
@@ -320,19 +323,15 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
             } else {
                 if (compiler_exit_code == 0) {
                     if (config.capture_stream == CAPTURE_ASSERT) {
+                        // For assert mode, delete fixture if it exists
+                        if (access(fixture_path, F_OK) == 0) {
+                            remove(fixture_path);
+                        }
                         status = TEST_PASS;
                     } else {
                         char* runtime_stdout = NULL, *runtime_stderr = NULL;
-                        char temp_exe[MAX_PATH];
-                        snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
-                        snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s",
-                                 temp_executable_path, temp_exe);
-                        char *link_stdout, *link_stderr;
-                        execute_and_capture_streams(command, &link_stdout, &link_stderr);
-                        free(link_stdout); free(link_stderr);
-                        snprintf(command, sizeof(command), "%s", temp_exe);
+                        snprintf(command, sizeof(command), "%s", temp_executable_path);
                         execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
-                        remove(temp_exe);
 
                         if (config.capture_stream == CAPTURE_STDOUT) { asprintf(&content_to_write, "%s", runtime_stdout); }
                         else if (config.capture_stream == CAPTURE_STDERR) { asprintf(&content_to_write, "%s", runtime_stderr); }
@@ -372,22 +371,20 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
             if (compiler_exit_code != 0) { status = TEST_FAIL; }
             else {
                 char* runtime_stdout = NULL, *runtime_stderr = NULL;
-                char temp_exe[MAX_PATH];
-                snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
-                snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s",
-                         temp_executable_path, temp_exe);
-                char *link_stdout, *link_stderr;
-                execute_and_capture_streams(command, &link_stdout, &link_stderr);
-                free(link_stdout); free(link_stderr);
-                snprintf(command, sizeof(command), "%s", temp_exe);
+                snprintf(command, sizeof(command), "%s", temp_executable_path);
                 int runtime_exit_code = execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
-                remove(temp_exe);
 
                 bool exit_code_ok;
                 if (config.expect_non_zero_exit_code) { exit_code_ok = (runtime_exit_code != 0);
                 } else { int expected = config.exit_code_was_set ? config.expected_exit_code : 0; exit_code_ok = (runtime_exit_code == expected); }
 
-                if (!exit_code_ok) { status = TEST_FAIL; }
+                if (!exit_code_ok) {
+                    status = TEST_FAIL;
+                    // For CAPTURE_ASSERT mode, capture stderr for the assertion failure message
+                    if (config.capture_stream == CAPTURE_ASSERT && failure_output && runtime_stderr) {
+                        *failure_output = strdup(runtime_stderr);
+                    }
+                }
                 else {
                     if (config.capture_stream == CAPTURE_ASSERT) {
                         status = TEST_PASS;
@@ -465,8 +462,11 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                 content_to_write = compiler_stderr;
             } else { // MODE_RUN
                 if (compiler_exit_code == 0) {
-                    // CAPTURE_ASSERT mode: no fixture to update, just mark as pass
+                    // CAPTURE_ASSERT mode: delete fixture if it exists
                     if (config.capture_stream == CAPTURE_ASSERT) {
+                        if (access(fixture_path, F_OK) == 0) {
+                            remove(fixture_path);
+                        }
                         status = TEST_PASS;
                     } else {
                         char* runtime_stdout = NULL, *runtime_stderr = NULL;
@@ -540,7 +540,16 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                 if (config.expect_non_zero_exit_code) { exit_code_ok = (runtime_exit_code != 0); snprintf(expected_code_str, sizeof(expected_code_str), "non-zero");
                 } else { int expected = config.exit_code_was_set ? config.expected_exit_code : 0; exit_code_ok = (runtime_exit_code == expected); snprintf(expected_code_str, sizeof(expected_code_str), "%d", expected); }
 
-                if (!exit_code_ok) { asprintf(&failure_reason, "Program exited with code %d, but expected %s.", runtime_exit_code, expected_code_str); status = TEST_FAIL; }
+                if (!exit_code_ok) {
+                    // For CAPTURE_ASSERT mode, capture stderr to show assertion failure
+                    if (config.capture_stream == CAPTURE_ASSERT) {
+                        asprintf(&failure_reason, "Assertion failed");
+                        actual_output_for_display = strdup(runtime_stderr);
+                    } else {
+                        asprintf(&failure_reason, "Program exited with code %d, but expected %s.", runtime_exit_code, expected_code_str);
+                    }
+                    status = TEST_FAIL;
+                }
                 else {
                     // CAPTURE_ASSERT mode: only check exit code, don't compare output
                     if (config.capture_stream == CAPTURE_ASSERT) {
@@ -583,7 +592,8 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
             fprintf(stderr, "      Expected: '%s'\n", expected_output_for_display);
             fprintf(stderr, "      Actual:   '%s'\n", actual_output_for_display);
         } else if (actual_output_for_display) {
-            fprintf(stderr, "      Output:\n---\n%s---\n", actual_output_for_display);
+            // For assert mode, display the assertion failure in red
+            fprintf(stderr, COLOR_RED "      %s" COLOR_RESET, actual_output_for_display);
         }
     }
 
@@ -622,7 +632,7 @@ void reporter(int argc, void *argv[]) {
 
     const char* spinner_frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
     const int spinner_count = 10;
-    
+
     // Track worker states
     WorkerState *workers = calloc(g_max_parallel_jobs, sizeof(WorkerState));
     int workers_reserved_lines = 0;  // How many lines we've reserved on screen
@@ -630,7 +640,7 @@ void reporter(int argc, void *argv[]) {
     while (1) {
         ReportEvent event;
         int rc = neco_chan_recv_dl(report_chan, &event, neco_now() + 100 * NECO_MILLISECOND);
-        
+
         // Timeout - update spinners
         if (rc == NECO_TIMEDOUT) {
             if (workers_reserved_lines > 0) {
@@ -640,13 +650,13 @@ void reporter(int argc, void *argv[]) {
                         workers[i].spinner_frame++;
                     }
                 }
-                
+
                 // Redraw worker lines
                 printf("\033[%dA", workers_reserved_lines);  // Move cursor up
                 for (int i = 0; i < g_max_parallel_jobs; i++) {
                     printf("\033[2K");  // Clear line
                     if (workers[i].active) {
-                        printf("  %s Running: %s", 
+                        printf("  %s Running: %s",
                                spinner_frames[workers[i].spinner_frame % spinner_count],
                                workers[i].test_name);
                     }
@@ -656,7 +666,7 @@ void reporter(int argc, void *argv[]) {
             }
             continue;
         }
-        
+
         if (rc != NECO_OK) {
             break; // Channel closed or error
         }
@@ -669,7 +679,7 @@ void reporter(int argc, void *argv[]) {
 
             case REPORT_TEST_START: {
                 int worker_id = event.worker_id;
-                
+
                 // Reserve lines if first time
                 if (workers_reserved_lines == 0) {
                     for (int i = 0; i < g_max_parallel_jobs; i++) {
@@ -677,18 +687,18 @@ void reporter(int argc, void *argv[]) {
                     }
                     workers_reserved_lines = g_max_parallel_jobs;
                 }
-                
+
                 // Update worker state
                 workers[worker_id].active = true;
                 workers[worker_id].spinner_frame = 0;
                 strncpy(workers[worker_id].test_name, event.test_name, sizeof(workers[worker_id].test_name) - 1);
-                
+
                 // Redraw all worker lines
                 printf("\033[%dA", workers_reserved_lines);  // Move cursor up
                 for (int i = 0; i < g_max_parallel_jobs; i++) {
                     printf("\033[2K");  // Clear line
                     if (workers[i].active) {
-                        printf("  %s Running: %s", 
+                        printf("  %s Running: %s",
                                spinner_frames[workers[i].spinner_frame % spinner_count],
                                workers[i].test_name);
                     }
@@ -701,7 +711,7 @@ void reporter(int argc, void *argv[]) {
             case REPORT_TEST_COMPLETE: {
                 int worker_id = event.worker_id;
                 workers[worker_id].active = false;
-                
+
                 const char* result_symbol = event.status == TEST_PASS ?
                     COLOR_GREEN "✅" COLOR_RESET :
                     (event.status == TEST_ERROR ? COLOR_RED "💥" COLOR_RESET : COLOR_RED "❌" COLOR_RESET);
@@ -712,27 +722,33 @@ void reporter(int argc, void *argv[]) {
 
                 // Move cursor up to start of worker area
                 printf("\033[%dA", workers_reserved_lines);
-                
+
                 // Clear the first worker line and print completed test
                 printf("\033[2K");  // Clear line
                 printf("  %s %s\n", event.test_name, result_symbol);
                 if (event.summary[0] != '\0') {
                     printf("\033[2K");  // Clear line for summary
-                    printf(COLOR_CYAN "     ↳ %s\n" COLOR_RESET, event.summary);
+                    if (event.failure_output[0] != '\0') {
+                        // Inline the failure output with the summary
+                        printf(COLOR_CYAN "     ↳ %s" COLOR_RESET " → " COLOR_RED "%s\n" COLOR_RESET,
+                               event.summary, event.failure_output);
+                    } else {
+                        printf(COLOR_CYAN "     ↳ %s\n" COLOR_RESET, event.summary);
+                    }
                 }
-                
+
                 // Redraw worker lines
                 for (int i = 0; i < g_max_parallel_jobs; i++) {
                     printf("\033[2K");  // Clear line
                     if (workers[i].active) {
-                        printf("  %s Running: %s\n", 
+                        printf("  %s Running: %s\n",
                                spinner_frames[workers[i].spinner_frame % spinner_count],
                                workers[i].test_name);
                     } else {
                         printf("\n");  // Empty line for inactive worker
                     }
                 }
-                
+
                 if (event.status == TEST_PASS) {
                     (*success_count)++;
                 } else {
@@ -817,7 +833,8 @@ void test_worker(int argc, void *argv[]) {
         neco_chan_send(report_chan, &start_event);
 
         // Execute the test silently (no output)
-        test_status_t status = execute_test_silent(job.suite_path, job.test_filename);
+        char* failure_output = NULL;
+        test_status_t status = execute_test_silent(job.suite_path, job.test_filename, &failure_output);
 
         // Report test completion
         ReportEvent complete_event = {
@@ -831,6 +848,15 @@ void test_worker(int argc, void *argv[]) {
             free(config.summary);
         } else {
             complete_event.summary[0] = '\0';
+        }
+
+        // For failed assertions, populate the failure_output field
+        if (status == TEST_FAIL && failure_output && config.capture_stream == CAPTURE_ASSERT) {
+            strncpy(complete_event.failure_output, failure_output, sizeof(complete_event.failure_output) - 1);
+            complete_event.failure_output[sizeof(complete_event.failure_output) - 1] = '\0';
+            free(failure_output);
+        } else {
+            complete_event.failure_output[0] = '\0';
         }
         strncpy(complete_event.test_name, test_display_name, sizeof(complete_event.test_name) - 1);
         neco_chan_send(report_chan, &complete_event);

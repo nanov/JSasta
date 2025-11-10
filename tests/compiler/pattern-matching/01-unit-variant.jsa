@@ -1,7 +1,8 @@
 // Test pattern matching with unit variants
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 enum Color {
     red;
@@ -11,12 +12,21 @@ enum Color {
 
 let c = Color.red;
 
+let branch1: i32 = 0;
 if (c is Color.red) {
-    io.println("Color is red");
+    // io.println("Color is red");
+    branch1 = 1;
 }
 
+t.assert.equals(1, branch1);
+
+let branch2: i32 = 0;
 if (c is Color.green) {
-    io.println("Color is green");
+    // io.println("Color is green");
+    branch2 = 1;
 } else {
-    io.println("Color is not green");
+    // io.println("Color is not green");
+    branch2 = 2;
 }
+
+t.assert.equals(2, branch2);

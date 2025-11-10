@@ -1,14 +1,18 @@
 // jastat-summary: Verify that new T[size] returns ref T[] type
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 // Type should be inferred as ref i32[]
 let arr = new i32[2];
 arr[0] = 42;
 arr[1] = 84;
 
-io.println("First: {}", arr[0]);
-io.println("Second: {}", arr[1]);
+// io.println("First: {}", arr[0]);
+// io.println("Second: {}", arr[1]);
+
+t.assert.equals(42, arr[0]);
+t.assert.equals(84, arr[1]);
 
 delete arr;

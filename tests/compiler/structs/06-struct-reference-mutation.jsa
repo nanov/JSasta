@@ -1,7 +1,8 @@
 // jastat-summary: Mutating struct through reference
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 struct Value {
     n: i32;
@@ -13,5 +14,7 @@ var v2 = ref v1;  // Reference
 
 v2.n = 20;
 
-io.println("v1.n = {}", v1.n);
-io.println("v2.n = {}", v2.n);
+// io.println("v1.n = {}", v1.n);
+// io.println("v2.n = {}", v2.n);
+t.assert.equals(20, v1.n);
+t.assert.equals(20, v2.n);

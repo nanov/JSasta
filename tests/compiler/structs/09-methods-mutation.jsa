@@ -1,7 +1,8 @@
 // jastat-summary: Methods that modify structs through references
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 struct Point {
     x: i32;
@@ -34,13 +35,21 @@ var sum: Point;
 set_point(ref p1, 10, 20);
 set_point(ref p2, 5, 15);
 
-print_point(p1, 1);
-print_point(p2, 2);
+// print_point(p1, 1);
+// print_point(p2, 2);
+t.assert.equals(10, p1.x);
+t.assert.equals(20, p1.y);
+t.assert.equals(5, p2.x);
+t.assert.equals(15, p2.y);
 
 set_point(ref sum, p1.x, p1.y);
 add_to(ref sum, p2);
-print_point(sum, 3);
+// print_point(sum, 3);
+t.assert.equals(15, sum.x);
+t.assert.equals(35, sum.y);
 
 set_point(ref sum, p1.x, p1.y);
 scale_by(ref sum, 3);
-print_point(sum, 4);
+// print_point(sum, 4);
+t.assert.equals(30, sum.x);
+t.assert.equals(60, sum.y);

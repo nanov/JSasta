@@ -1,0 +1,18 @@
+// jastat-summary: Display trait for unit enums
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+let red = Color.Red;
+let green = Color.Green;
+let blue = Color.Blue;
+
+io.println("{}", red);
+io.println("{}", green);
+io.println("{}", blue);

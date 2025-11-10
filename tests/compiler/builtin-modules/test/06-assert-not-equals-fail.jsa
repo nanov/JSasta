@@ -1,0 +1,9 @@
+// jastat-summary: assert.not_equals with equal values (should fail and abort)
+// jastat: mode=run, capture=stderr, expect_exit_code!=0
+
+import test from "@test";
+
+let value = 42;
+
+// This should fail because values are equal
+test.assert.not_equals(42, value);

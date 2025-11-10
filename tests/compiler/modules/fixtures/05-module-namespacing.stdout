@@ -1,2 +1,0 @@
-local double(5) = 11
-helper.double(5) = 10

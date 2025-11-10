@@ -39,9 +39,9 @@ typedef struct {
     MethodKind kind;               // How to invoke this method
 
     // For METHOD_INTRINSIC: direct LLVM codegen
-    LLVMValueRef (*codegen)(CodeGen* gen, LLVMValueRef* args, int arg_count);
+    LLVMValueRef (*codegen)(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context);
 
-    // For METHOD_FUNCTION: compiled JSasta function
+    // For METHOD_FUNCTION: compiled JSasta function or context for intrinsics
     void* function_ptr;
 
     // For METHOD_EXTERNAL: external C function
@@ -275,5 +275,12 @@ void trait_ensure_ref_index_impl(TypeInfo* type);
 
 // Ensure Length is implemented for builtin types with length (arrays, strings, etc.)
 void trait_ensure_length_impl(TypeInfo* type);
+
+// === Auto-implement Eq trait for enum types ===
+
+// Register Eq trait implementation for an enum type
+// This is called automatically when an enum is declared
+void trait_register_eq_for_enum(TypeInfo* enum_type, TraitRegistry* registry);
+void trait_register_display_for_enum(TypeInfo* enum_type, TraitRegistry* registry);
 
 #endif // JSASTA_TRAITS_H

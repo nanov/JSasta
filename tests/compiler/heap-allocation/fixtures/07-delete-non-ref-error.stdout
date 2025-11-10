@@ -1,5 +1,3 @@
-[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/heap-allocation/07-delete-non-ref-error.jsa...
-[INFO]    Loaded module: 07-delete-non-ref-error (0 exports, 0 dependencies)
 [error:T312] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/heap-allocation/07-delete-non-ref-error.jsa:5:8: delete requires a reference type, got i32
 [error:T312] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/heap-allocation/07-delete-non-ref-error.jsa:5:8: delete requires a reference type, got i32
 

@@ -1,10 +1,16 @@
 // jastat-summary: Nested loops
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
+let count: i32 = 0;
 for (let i: i32 = 0; i < 3; i = i + 1) {
     for (let j: i32 = 0; j < 2; j = j + 1) {
-        io.println("i={}, j={}", i, j);
+        // io.println("i={}, j={}", i, j);
+        count = count + 1;
     }
 }
+
+// 3 * 2 = 6 iterations
+t.assert.equals(6, count);

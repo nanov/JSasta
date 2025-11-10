@@ -1,10 +1,12 @@
 // jastat-summary: Division operator
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let a: i32 = 20;
 let b: i32 = 4;
 let quotient: i32 = a / b;
 
-io.println("{} / {} = {}", a, b, quotient);
+// io.println("{} / {} = {}", a, b, quotient);
+t.assert.equals(5, quotient);

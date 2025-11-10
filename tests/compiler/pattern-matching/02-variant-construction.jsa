@@ -1,7 +1,8 @@
 // Test enum variant construction with data
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 enum Color {
     red;
@@ -12,10 +13,18 @@ enum Color {
 let c1 = Color.red;
 let c2 = Color.green;
 
+let branch1: i32 = 0;
 if (c1 is Color.red) {
-    io.println("c1 is red");
+    // io.println("c1 is red");
+    branch1 = 1;
 }
 
+t.assert.equals(1, branch1);
+
+let branch2: i32 = 0;
 if (c2 is Color.green) {
-    io.println("c2 is green");
+    // io.println("c2 is green");
+    branch2 = 1;
 }
+
+t.assert.equals(1, branch2);

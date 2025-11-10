@@ -604,7 +604,15 @@ TypeInfo* type_context_create_enum_type(TypeContext* ctx, const char* enum_name,
         }
     }
 
-    return type_context_register_type(ctx, enum_type);
+    TypeInfo* registered_enum = type_context_register_type(ctx, enum_type);
+    
+    // Auto-implement Eq and Display traits for this enum
+    if (ctx->trait_registry) {
+        trait_register_eq_for_enum(registered_enum, ctx->trait_registry);
+        trait_register_display_for_enum(registered_enum, ctx->trait_registry);
+    }
+    
+    return registered_enum;
 }
 
 // Find an enum type by name

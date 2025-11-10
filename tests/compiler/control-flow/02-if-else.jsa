@@ -1,12 +1,18 @@
 // jastat-summary: If-else statement
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let x: i32 = 3;
 
+let branch: i32 = 0;
 if (x > 5) {
-    io.println("x is greater than 5");
+    // io.println("x is greater than 5");
+    branch = 1;
 } else {
-    io.println("x is not greater than 5");
+    // io.println("x is not greater than 5");
+    branch = 2;
 }
+
+t.assert.equals(2, branch);

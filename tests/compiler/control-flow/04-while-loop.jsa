@@ -1,11 +1,15 @@
 // jastat-summary: Basic while loop
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let i: i32 = 0;
 
 while (i < 5) {
-    io.println("i = {}", i);
+    // io.println("i = {}", i);
+    t.assert.equals(i, i);
     i = i + 1;
 }
+
+t.assert.equals(5, i);

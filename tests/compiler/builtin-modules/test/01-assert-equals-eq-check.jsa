@@ -1,0 +1,15 @@
+// jastat-summary: @test.assert.equals validates Eq trait at compile time
+// jastat: mode=compile, capture=stderr, expect_exit_code!=0
+//
+// Test that assert.equals validates Eq trait at compile time
+import test from "@test";
+
+struct NoEq {
+    value: i32;
+}
+
+  var x: NoEq = NoEq{ value: 5 };
+  var y: NoEq = NoEq{ value: 5 };
+
+  // This should fail at compile time because NoEq doesn't implement Eq
+  test.assert.equals(x, y);

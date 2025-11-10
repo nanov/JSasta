@@ -1,0 +1,21 @@
+// jastat-summary: assert.not_equals with different values (should pass)
+// jastat: mode=run, capture=stdout
+
+import test from "@test";
+
+let a = 42;
+let b = 100;
+
+// These should all pass (values are different)
+test.assert.not_equals(10, a);
+test.assert.not_equals(0, b);
+test.assert.not_equals(a, b);
+
+// Test with different types
+let x: i8 = 5;
+let y: i8 = 10;
+test.assert.not_equals(x, y);
+
+let flag1 = true;
+let flag2 = false;
+test.assert.not_equals(flag1, flag2);

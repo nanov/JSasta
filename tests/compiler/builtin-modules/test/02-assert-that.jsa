@@ -1,0 +1,18 @@
+// jastat-summary: @test.assert.that() with passing conditions
+// jastat: mode=run, capture=assert
+//
+// Test assert.that() with condition
+import t from @test;
+
+// Test assert.that with true condition (should pass)
+t.assert.that(true);
+
+// Test assert.that with evaluated condition (should pass)
+var x: i32 = 5;
+t.assert.that(x == 5);
+
+// Test assert.that with custom message (should pass)
+t.assert.that(x > 0, "x should be positive");
+
+// All assertions passed
+t.assert.equals(1, 1);

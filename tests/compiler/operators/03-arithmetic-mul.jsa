@@ -1,10 +1,12 @@
 // jastat-summary: Multiplication operator
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let a: i32 = 7;
 let b: i32 = 6;
 let product: i32 = a * b;
 
-io.println("{} * {} = {}", a, b, product);
+// io.println("{} * {} = {}", a, b, product);
+t.assert.equals(42, product);

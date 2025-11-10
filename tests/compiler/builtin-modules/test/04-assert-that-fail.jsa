@@ -1,0 +1,10 @@
+// jastat-summary: @test.assert.that() failure with custom message
+// jastat: mode=run, capture=stderr, expect_fail=true
+//
+// Test assert.that() failure with custom message
+import t from @test;
+
+var x: i32 = 5;
+
+// This should fail with custom message
+t.assert.that(x > 10, "Expected x to be greater than 10, but got {}", x);

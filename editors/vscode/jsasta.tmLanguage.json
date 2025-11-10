@@ -12,6 +12,7 @@
 		{ "include": "#storage-modifiers" },
 		{ "include": "#storage-types" },
 		{ "include": "#struct-declaration" },
+		{ "include": "#enum-declaration" },
 		{ "include": "#function-declaration" },
 		{ "include": "#function-calls" },
 		{ "include": "#type-annotations" },
@@ -104,8 +105,12 @@
 					"match": "\\b(import|export|from)\\b"
 				},
 				{
+					"name": "keyword.operator.type.jsasta",
+					"match": "\\b(is|as)\\b"
+				},
+				{
 					"name": "keyword.other.jsasta",
-					"match": "\\b(new|delete)\\b"
+					"match": "\\b(new|delete|let)\\b"
 				}
 			]
 		},
@@ -125,7 +130,7 @@
 				},
 				{
 					"name": "storage.type.struct.jsasta",
-					"match": "\\b(struct)\\b"
+					"match": "\\b(struct|enum|trait|impl)\\b"
 				},
 				{
 					"name": "storage.type.function.jsasta",
@@ -162,6 +167,36 @@
 								"1": { "name": "variable.other.property.jsasta" },
 								"2": { "name": "entity.name.type.jsasta" },
 								"3": { "name": "meta.array.brackets.jsasta" }
+							}
+						},
+						{ "include": "#punctuation" }
+					]
+				}
+			]
+		},
+		"enum-declaration": {
+			"patterns": [
+				{
+					"name": "meta.enum.jsasta",
+					"begin": "\\b(enum)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\{",
+					"end": "\\}",
+					"beginCaptures": {
+						"1": { "name": "storage.type.enum.jsasta" },
+						"2": { "name": "entity.name.type.enum.jsasta" }
+					},
+					"patterns": [
+						{ "include": "#comments" },
+						{
+							"name": "meta.enum.variant.jsasta",
+							"match": "([a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*\\{([^}]*)\\})?",
+							"captures": {
+								"1": { "name": "variable.other.enummember.jsasta" },
+								"2": {
+									"patterns": [
+										{ "include": "#type-annotations" },
+										{ "include": "#punctuation" }
+									]
+								}
 							}
 						},
 						{ "include": "#punctuation" }

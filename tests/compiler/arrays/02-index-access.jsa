@@ -1,12 +1,17 @@
 // jastat-summary: Array index access with different types
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let int_arr: i32[3] = {1, 2, 3};
 let bool_arr: bool[2] = {true, false};
 
-io.println("int_arr[0] = {}", int_arr[0]);
-io.println("int_arr[2] = {}", int_arr[2]);
-io.println("bool_arr[0] = {}", bool_arr[0]);
-io.println("bool_arr[1] = {}", bool_arr[1]);
+t.assert.equals(1, int_arr[0]);
+t.assert.equals(3, int_arr[2]);
+t.assert.equals(true, bool_arr[0]);
+t.assert.equals(false, bool_arr[1]);
+// io.println("int_arr[0] = {}", int_arr[0]);
+// io.println("int_arr[2] = {}", int_arr[2]);
+// io.println("bool_arr[0] = {}", bool_arr[0]);
+// io.println("bool_arr[1] = {}", bool_arr[1]);

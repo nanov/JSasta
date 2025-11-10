@@ -1411,9 +1411,19 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     infer_literal_types(node->method_call.object, symbols, type_ctx, diag);
                 }
             } else {
-                node->method_call.is_static = false;
-                // Infer type for the object - it's an expression
+                // Infer type for the object - it's an expression (could be namespace.Type)
                 infer_literal_types(node->method_call.object, symbols, type_ctx, diag);
+                
+                // After inference, check if the object resolved to a type (e.g., test.assert)
+                // If so, this is a static method call
+                if (node->method_call.object->type_info && type_info_is_object(node->method_call.object->type_info)) {
+                    node->method_call.is_static = true;
+                    log_verbose("[METHOD_CALL infer_literal] Treating as static call on type: %s",
+                               node->method_call.object->type_info->type_name);
+                } else {
+                    node->method_call.is_static = false;
+                }
+                
                 log_verbose("[METHOD_CALL infer_literal] object type after infer: %s",
                            node->method_call.object->type_info ?
                            node->method_call.object->type_info->type_name : "NULL");
@@ -2097,6 +2107,14 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         } else if (decl->type == AST_VAR_DECL) {
                             // For constants, get the type from the declaration
                             node->type_info = decl->type_info ? decl->type_info : Type_Unknown;
+                        } else if (decl->type == AST_STRUCT_DECL) {
+                            // For struct types (e.g., test.assert), look up the type in the module's TypeContext
+                            TypeInfo* struct_type = type_context_find_struct_type(imported_module->type_ctx, member_name);
+                            if (struct_type) {
+                                node->type_info = struct_type;
+                            } else {
+                                node->type_info = Type_Unknown;
+                            }
                         } else {
                             node->type_info = Type_Unknown;
                         }
@@ -2519,8 +2537,9 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                         ASTNode* func_decl = exported->declaration;
 
                         // Call validation callback if present
+                        // Use the caller's TypeContext for validation (types/traits are in caller's context)
                         if (func_decl->func_decl.validate_callback) {
-                            if (!func_decl->func_decl.validate_callback(node, diag)) {
+                            if (!func_decl->func_decl.validate_callback(node, ctx, diag)) {
                                 // Validation failed, error already reported
                                 break;
                             }
@@ -2553,7 +2572,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                                 break;
                             }
 
-                            // Skip specialization for variadic or external functions (no body)
+                            // For variadic or external (builtin) functions, still set return type but skip body specialization
                             if (func_decl->func_decl.is_variadic || func_decl->func_decl.body == NULL) {
                                 // External/builtin functions don't need specialization
                                 // Just set the return type from the function declaration
@@ -2585,6 +2604,46 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                         free(arg_types);
                         free(mangled_name);
                         break;
+                    }
+                }
+            }
+
+            // Check if this is a static method on an imported type (e.g., test.assert.equals())
+            if (node->method_call.is_static && node->method_call.object->type == AST_MEMBER_ACCESS) {
+                ASTNode* member_obj = node->method_call.object->member_access.object;
+                if (member_obj->type == AST_IDENTIFIER) {
+                    SymbolEntry* entry = symbol_table_lookup(symbols, member_obj->identifier.name);
+                    if (symbol_is_namespace(entry)) {
+                        // This is namespace.Type.method() - handle validation
+                        Module* imported_module = symbol_get_imported_module(entry);
+                        const char* type_member = node->method_call.object->member_access.property;
+                        
+                        // Look for the struct declaration
+                        ExportedSymbol* type_export = module_find_export(imported_module, type_member);
+                        if (type_export && type_export->declaration && 
+                            type_export->declaration->type == AST_STRUCT_DECL) {
+                            // Find the method in the struct
+                            ASTNode* struct_decl = type_export->declaration;
+                            const char* method_name = node->method_call.method_name;
+                            
+                            // Build mangled method name
+                            char mangled_method[256];
+                            snprintf(mangled_method, sizeof(mangled_method), "%s.%s", type_member, method_name);
+                            
+                            for (int i = 0; i < struct_decl->struct_decl.method_count; i++) {
+                                ASTNode* method = struct_decl->struct_decl.methods[i];
+                                if (strcmp(method->func_decl.name, mangled_method) == 0) {
+                                    // Found the method - call validation callback if present
+                                    if (method->func_decl.validate_callback) {
+                                        if (!method->func_decl.validate_callback(node, ctx, diag)) {
+                                            // Validation failed, error already reported
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3117,13 +3176,32 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 }
             }
 
+            // Check if this is a static method call on an imported type (e.g., test.assert.equals())
+            // In this case, the object is a member access like "test.assert"
+            TypeContext* lookup_ctx = ctx; // Default to caller's context
+            if (node->method_call.is_static && node->method_call.object->type == AST_MEMBER_ACCESS) {
+                ASTNode* member_obj = node->method_call.object->member_access.object;
+                if (member_obj->type == AST_IDENTIFIER) {
+                    SymbolEntry* entry = symbol_table_lookup(symbols, member_obj->identifier.name);
+                    if (symbol_is_namespace(entry)) {
+                        // This is namespace.Type.method() - use the module's TypeContext
+                        Module* imported_module = symbol_get_imported_module(entry);
+                        lookup_ctx = imported_module->type_ctx;
+                        log_verbose("[METHOD_CALL] Using imported module's TypeContext for lookup: %s",
+                                   imported_module->relative_path);
+                    }
+                }
+            }
+
             // Build the mangled function name: StructName.method_name
             char mangled_name[256];
             TypeInfo* target_type = NULL;  // For instance methods, stores unwrapped object type
 
             if (node->method_call.is_static) {
                 // Static method: Type.method
-                const char* type_name = node->method_call.object->identifier.name;
+                // Get type name from type_info (works for both identifier and namespace.Type cases)
+                const char* type_name = node->method_call.object->type_info ? 
+                                        node->method_call.object->type_info->type_name : "unknown";
                 snprintf(mangled_name, sizeof(mangled_name), "%s.%s", type_name, node->method_call.method_name);
             } else {
                 // Instance method: need to determine the type from the object
@@ -3190,7 +3268,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             }
 
             FunctionSpecialization* spec = specialization_context_find_by_type_info(
-                ctx, mangled_name, arg_types, total_args);
+                lookup_ctx, mangled_name, arg_types, total_args);
 
             if (spec) {
                 node->type_info = spec->return_type_info;
@@ -3201,10 +3279,26 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                            spec->return_type_info ? spec->return_type_info->type_name : "NULL",
                            spec->specialized_name);
             } else {
-                log_verbose("[METHOD_CALL] %s -> NOT FOUND", mangled_name);
-                TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found or type mismatch", mangled_name);
-                node->type_info = Type_Unknown;
-                node->method_call.resolved_spec = NULL;
+                // Specialization not found - check if this is a builtin/external function
+                TypeInfo* method_func_type = type_context_find_function_type(lookup_ctx, mangled_name);
+                if (method_func_type && method_func_type->data.function.original_body == NULL) {
+                    // Builtin function - use return type hint directly
+                    if (method_func_type->data.function.return_type) {
+                        node->type_info = method_func_type->data.function.return_type;
+                        node->method_call.resolved_spec = NULL; // No specialization for builtins
+                        log_verbose("[METHOD_CALL] %s -> builtin, return type: %s",
+                                   mangled_name,
+                                   node->type_info ? node->type_info->type_name : "NULL");
+                    } else {
+                        node->type_info = Type_Unknown;
+                        node->method_call.resolved_spec = NULL;
+                    }
+                } else {
+                    log_verbose("[METHOD_CALL] %s -> NOT FOUND", mangled_name);
+                    TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found or type mismatch", mangled_name);
+                    node->type_info = Type_Unknown;
+                    node->method_call.resolved_spec = NULL;
+                }
             }
 
             free(arg_types);

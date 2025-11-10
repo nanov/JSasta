@@ -1,8 +1,13 @@
 // jastat-summary: Basic for loop
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
+let count: i32 = 0;
 for (let i: i32 = 0; i < 5; i = i + 1) {
-    io.println("i = {}", i);
+    // io.println("i = {}", i);
+    count = count + 1;
 }
+
+t.assert.equals(5, count);

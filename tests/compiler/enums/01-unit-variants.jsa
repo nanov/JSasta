@@ -1,7 +1,8 @@
 // jastat-summary: Basic enum with unit variants only
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 enum Status {
     Pending;
@@ -14,18 +15,7 @@ let s2 = Status.Running;
 let s3 = Status.Complete;
 
 // Test that variants are distinct
-if (s1 == Status.Pending) {
-    io.println("s1 is Pending");
-}
-
-if (s2 is Status.Running) {
-    io.println("s2 is Running");
-}
-
-if (s3 is Status.Complete) {
-    io.println("s3 is Complete");
-}
-
-if (!(s1 is Status.Running)) {
-    io.println("s1 is not Running");
-}
+t.assert.equals(Status.Pending, s1);
+t.assert.equals(Status.Running, s2);
+t.assert.equals(Status.Complete, s3);
+t.assert.not_equals(Status.Running, s1);

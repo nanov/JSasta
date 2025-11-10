@@ -1,7 +1,8 @@
 // jastat-summary: Nested struct declarations and access
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 struct Point {
     x: i32;
@@ -19,5 +20,9 @@ rect.top_left.y = 0;
 rect.bottom_right.x = 100;
 rect.bottom_right.y = 50;
 
-io.println("Top-left: ({}, {})", rect.top_left.x, rect.top_left.y);
-io.println("Bottom-right: ({}, {})", rect.bottom_right.x, rect.bottom_right.y);
+// io.println("Top-left: ({}, {})", rect.top_left.x, rect.top_left.y);
+// io.println("Bottom-right: ({}, {})", rect.bottom_right.x, rect.bottom_right.y);
+t.assert.equals(0, rect.top_left.x);
+t.assert.equals(0, rect.top_left.y);
+t.assert.equals(100, rect.bottom_right.x);
+t.assert.equals(50, rect.bottom_right.y);

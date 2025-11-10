@@ -1,7 +1,8 @@
 // jastat-summary: Basic struct declaration and initialization
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 struct Point {
     x: i32;
@@ -12,5 +13,7 @@ var p: Point;
 p.x = 10;
 p.y = 20;
 
-io.println("p.x = {}", p.x);
-io.println("p.y = {}", p.y);
+// io.println("p.x = {}", p.x);
+// io.println("p.y = {}", p.y);
+t.assert.equals(10, p.x);
+t.assert.equals(20, p.y);

@@ -2140,11 +2140,35 @@ static ASTNode* parse_while_statement(Parser* parser) {
 }
 
 // import namespace from "path";
+// import @builtin; (convenience syntax for builtin modules)
 static ASTNode* parse_import_declaration(Parser* parser) {
     parser_advance(parser); // skip 'import'
 
     ASTNode* node = AST_NODE(parser, AST_IMPORT_DECL);
 
+    // Check for convenience syntax: import @builtin;
+    if (parser->current_token->type == TOKEN_AT) {
+        parser_advance(parser);
+        if (parser->current_token->type != TOKEN_IDENTIFIER) {
+            PARSE_ERROR(parser, "E232", "Expected identifier after '@' for builtin module");
+            return node;
+        }
+        
+        // Use the builtin name as both namespace and module path
+        const char* builtin_name = parser->current_token->value;
+        node->import_decl.namespace_name = strdup(builtin_name);
+        
+        // Store as "@name" for the module path
+        char builtin_path[256];
+        snprintf(builtin_path, sizeof(builtin_path), "@%s", builtin_name);
+        node->import_decl.module_path = strdup(builtin_path);
+        
+        parser_advance(parser);
+        parser_expect(parser, TOKEN_SEMICOLON);
+        return node;
+    }
+
+    // Standard syntax: import namespace from "path" or @builtin
     // Get namespace name
     if (parser->current_token->type != TOKEN_IDENTIFIER) {
         PARSE_ERROR(parser, "E230", "Expected namespace identifier after 'import'");

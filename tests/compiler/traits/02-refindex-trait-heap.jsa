@@ -1,15 +1,20 @@
 // jastat-summary: RefIndex trait for heap-allocated arrays
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let arr = new i32[3];
 arr[0] = 100;
 arr[1] = 200;
 arr[2] = 300;
 
-io.println("arr[0] = {}", arr[0]);
-io.println("arr[1] = {}", arr[1]);
-io.println("arr[2] = {}", arr[2]);
+t.assert.equals(100, arr[0]);
+t.assert.equals(200, arr[1]);
+t.assert.equals(300, arr[2]);
+
+// io.println("arr[0] = {}", arr[0]);
+// io.println("arr[1] = {}", arr[1]);
+// io.println("arr[2] = {}", arr[2]);
 
 delete arr;

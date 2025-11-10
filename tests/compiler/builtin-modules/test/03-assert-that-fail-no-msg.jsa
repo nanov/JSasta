@@ -1,0 +1,10 @@
+// jastat-summary: @test.assert.that() failure without custom message
+// jastat: mode=run, capture=stderr, expect_fail=true
+//
+// Test assert.that() failure without custom message
+import t from @test;
+
+var x: i32 = 5;
+
+// This should fail with default message
+t.assert.that(x > 10);

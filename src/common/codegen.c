@@ -1152,7 +1152,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         // Call intrinsic codegen function
                         // Note: left and right values are already auto-dereferenced by AST_IDENTIFIER codegen
                         LLVMValueRef args[] = { left, right };
-                        return method->codegen(gen, args, 2);
+                        return method->codegen(gen, args, 2, method->function_ptr);
                     } else {
                         log_error_at(&node->loc, "No trait implementation found for %s %s %s",
                                    left_target->type_name, node->binary_op.op, right_target->type_name);
@@ -1327,7 +1327,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
                 if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
                     LLVMValueRef args[] = { current, one };
-                    new_value = method->codegen(gen, args, 2);
+                    new_value = method->codegen(gen, args, 2, method->function_ptr);
                 }
             }
 
@@ -1710,7 +1710,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
                 if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
                     LLVMValueRef args[] = { current, rhs };
-                    new_value = method->codegen(gen, args, 2);
+                    new_value = method->codegen(gen, args, 2, method->function_ptr);
                 }
             }
 
@@ -1962,6 +1962,42 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             if (is_static) {
                 // Static method call: Type.method(args)
+                // Check if this is a call on an imported type (e.g., test.assert.equals())
+                if (node->method_call.object->type == AST_MEMBER_ACCESS) {
+                    ASTNode* member_obj = node->method_call.object->member_access.object;
+                    if (member_obj->type == AST_IDENTIFIER) {
+                        SymbolEntry* entry = symbol_table_lookup(gen->symbols, member_obj->identifier.name);
+                        if (symbol_is_namespace(entry)) {
+                            // This is namespace.Type.method() - handle like namespace.function()
+                            Module* imported_module = symbol_get_imported_module(entry);
+                            const char* type_member = node->method_call.object->member_access.property;
+                            const char* method_name = node->method_call.method_name;
+                            
+                            // Build the mangled method name: TypeName.method
+                            char mangled_method[256];
+                            snprintf(mangled_method, sizeof(mangled_method), "%s.%s", type_member, method_name);
+                            
+                            // Look for the struct declaration in the module
+                            ExportedSymbol* type_export = module_find_export(imported_module, type_member);
+                            if (type_export && type_export->declaration && 
+                                type_export->declaration->type == AST_STRUCT_DECL) {
+                                // Find the method in the struct
+                                ASTNode* struct_decl = type_export->declaration;
+                                for (int i = 0; i < struct_decl->struct_decl.method_count; i++) {
+                                    ASTNode* method = struct_decl->struct_decl.methods[i];
+                                    if (strcmp(method->func_decl.name, mangled_method) == 0) {
+                                        // Found the method - check for codegen callback
+                                        if (method->func_decl.codegen_callback) {
+                                            return method->func_decl.codegen_callback(gen, node);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 // Type info should already be set by type inference
                 obj_type = node->method_call.object->type_info;
                 if (!obj_type) {

@@ -1,2 +1,0 @@
-compute(5, 3, true) = 15
-compute(5, 3, false) = 8

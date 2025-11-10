@@ -1,10 +1,15 @@
 // jastat-summary: Basic if statement
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let x: i32 = 10;
 
+let executed: bool = false;
 if (x > 5) {
-    io.println("x is greater than 5");
+    // io.println("x is greater than 5");
+    executed = true;
 }
+
+t.assert.equals(true, executed);

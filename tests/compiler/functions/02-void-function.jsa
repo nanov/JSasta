@@ -1,11 +1,23 @@
 // jastat-summary: Void function with no return value
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
+
+var output1: string = "";
+var output2: string = "";
 
 function greet(name: string): void {
-    io.println("Hello, {}!", name);
+    // io.println("Hello, {}!", name);
+    if (name == "World") {
+        output1 = "Hello, World!";
+    } else if (name == "JSasta") {
+        output2 = "Hello, JSasta!";
+    }
 }
 
 greet("World");
 greet("JSasta");
+
+t.assert.equals("Hello, World!", output1);
+t.assert.equals("Hello, JSasta!", output2);

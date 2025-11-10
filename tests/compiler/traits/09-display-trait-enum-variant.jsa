@@ -1,0 +1,18 @@
+// jastat-summary: Display trait for enums with data variants
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Message {
+    Text(content: string);
+    Number(value: i32);
+    Quit;
+}
+
+let msg1 = Message.Text { content: "Hello" };
+let msg2 = Message.Number { value: 42 };
+let msg3 = Message.Quit;
+
+io.println("{}", msg1);
+io.println("{}", msg2);
+io.println("{}", msg3);

@@ -1,10 +1,13 @@
 // jastat-summary: Not equal operator
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let a: i32 = 10;
 let b: i32 = 20;
 
-io.println("{} != {} is {}", a, b, a != b);
-io.println("{} != {} is {}", a, a, a != a);
+// io.println("{} != {} is {}", a, b, a != b);
+// io.println("{} != {} is {}", a, a, a != a);
+t.assert.equals(true, a != b);
+t.assert.equals(false, a != a);

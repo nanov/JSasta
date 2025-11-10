@@ -680,7 +680,8 @@ void traits_init_builtins(TraitRegistry* registry) {
 //
 // For future intrinsics that can be fully self-contained, they should
 // be callable with just args[] and return a value.
-static LLVMValueRef intrinsic_array_index(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_array_index(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)gen;
     (void)args;
     (void)arg_count;
@@ -770,7 +771,8 @@ void trait_ensure_index_impl(TypeInfo* type) {
 // This is a placeholder that is never actually called - the codegen for
 // AST_INDEX_ASSIGNMENT handles the implementation inline because it needs
 // access to the AST node structure and symbol table information
-static LLVMValueRef intrinsic_array_ref_index(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_array_ref_index(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)gen;
     (void)args;
     (void)arg_count;
@@ -826,7 +828,8 @@ void trait_ensure_ref_index_impl(TypeInfo* type) {
 // Intrinsic for array length - returns the length of the array
 // This is a placeholder that is never actually called - the codegen for
 // member access to "length" handles the implementation inline
-static LLVMValueRef intrinsic_array_length(CodeGen* gen, LLVMValueRef* args, int arg_count) {
+static LLVMValueRef intrinsic_array_length(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
     (void)gen;
     (void)args;
     (void)arg_count;

@@ -1,7 +1,8 @@
 // jastat-summary: Functions that return struct values by copy
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 struct Point {
     x: i32;
@@ -30,13 +31,21 @@ function scale_point(p: Point, factor: i32): Point {
 }
 
 var p1 = create_point(10, 20);
-io.println("p1: ({}, {})", p1.x, p1.y);
+// io.println("p1: ({}, {})", p1.x, p1.y);
+t.assert.equals(10, p1.x);
+t.assert.equals(20, p1.y);
 
 var p2 = create_point(5, 15);
-io.println("p2: ({}, {})", p2.x, p2.y);
+// io.println("p2: ({}, {})", p2.x, p2.y);
+t.assert.equals(5, p2.x);
+t.assert.equals(15, p2.y);
 
 var sum = add_points(p1, p2);
-io.println("sum: ({}, {})", sum.x, sum.y);
+// io.println("sum: ({}, {})", sum.x, sum.y);
+t.assert.equals(15, sum.x);
+t.assert.equals(35, sum.y);
 
 var scaled = scale_point(p1, 3);
-io.println("scaled: ({}, {})", scaled.x, scaled.y);
+// io.println("scaled: ({}, {})", scaled.x, scaled.y);
+t.assert.equals(30, scaled.x);
+t.assert.equals(60, scaled.y);

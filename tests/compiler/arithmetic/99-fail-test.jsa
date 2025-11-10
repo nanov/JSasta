@@ -1,0 +1,9 @@
+// jastat-summary: Failing assertion test
+// jastat: mode=run, capture=assert
+import test from @test;
+
+const a:i32 = 10;
+const b:i32 = 20;
+const result = a + b;
+
+test.assert.equals(100, result);

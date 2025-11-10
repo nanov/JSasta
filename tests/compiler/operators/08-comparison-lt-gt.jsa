@@ -1,12 +1,17 @@
 // jastat-summary: Less than and greater than operators
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let a: i32 = 10;
 let b: i32 = 20;
 
-io.println("{} < {} is {}", a, b, a < b);
-io.println("{} > {} is {}", a, b, a > b);
-io.println("{} < {} is {}", b, a, b < a);
-io.println("{} > {} is {}", b, a, b > a);
+// io.println("{} < {} is {}", a, b, a < b);
+// io.println("{} > {} is {}", a, b, a > b);
+// io.println("{} < {} is {}", b, a, b < a);
+// io.println("{} > {} is {}", b, a, b > a);
+t.assert.equals(true, a < b);
+t.assert.equals(false, a > b);
+t.assert.equals(false, b < a);
+t.assert.equals(true, b > a);

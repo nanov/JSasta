@@ -1,7 +1,8 @@
 // jastat-summary: Early return from function
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 function abs(n: i32): i32 {
     if (n < 0) {
@@ -10,5 +11,8 @@ function abs(n: i32): i32 {
     return n;
 }
 
-io.println("abs(-5) = {}", abs(-5));
-io.println("abs(5) = {}", abs(5));
+// io.println("abs(-5) = {}", abs(-5));
+// io.println("abs(5) = {}", abs(5));
+
+t.assert.equals(5, abs(-5));
+t.assert.equals(5, abs(5));

@@ -1,0 +1,18 @@
+// jastat-summary: Display trait for enum in format strings
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Status {
+    Success;
+    Error(code: i32);
+    Warning(msg: string);
+}
+
+let s1 = Status.Success;
+let s2 = Status.Error { code: 404 };
+let s3 = Status.Warning { msg: "Low memory" };
+
+io.println("Status: {}", s1);
+io.println("Result: {} with extra text", s2);
+io.println("Got {} and {}", s1, s3);

@@ -1,7 +1,8 @@
 // Test pattern matching with data extraction
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 enum Message {
     quit;
@@ -10,12 +11,23 @@ enum Message {
 
 let msg = Message.move{x: 10, y: 20};
 
+let branch1: i32 = 0;
 if (msg is Message.move(let x, let y)) {
-    io.println("Move to x={}, y={}", x, y);
+    // io.println("Move to x={}, y={}", x, y);
+    t.assert.equals(10, x);
+    t.assert.equals(20, y);
+    branch1 = 1;
 }
 
+t.assert.equals(1, branch1);
+
+let branch2: i32 = 0;
 if (msg is Message.quit) {
-    io.println("Quit");
+    // io.println("Quit");
+    branch2 = 1;
 } else {
-    io.println("Not quit");
+    // io.println("Not quit");
+    branch2 = 2;
 }
+
+t.assert.equals(2, branch2);

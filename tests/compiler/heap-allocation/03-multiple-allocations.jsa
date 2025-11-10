@@ -1,7 +1,8 @@
 // jastat-summary: Multiple independent heap allocations
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 let arr1 = new i32[2];
 let arr2 = new i32[2];
@@ -11,10 +12,15 @@ arr1[1] = 20;
 arr2[0] = 30;
 arr2[1] = 40;
 
-io.println("arr1[0] = {}", arr1[0]);
-io.println("arr1[1] = {}", arr1[1]);
-io.println("arr2[0] = {}", arr2[0]);
-io.println("arr2[1] = {}", arr2[1]);
+// io.println("arr1[0] = {}", arr1[0]);
+// io.println("arr1[1] = {}", arr1[1]);
+// io.println("arr2[0] = {}", arr2[0]);
+// io.println("arr2[1] = {}", arr2[1]);
+
+t.assert.equals(10, arr1[0]);
+t.assert.equals(20, arr1[1]);
+t.assert.equals(30, arr2[0]);
+t.assert.equals(40, arr2[1]);
 
 delete arr1;
 delete arr2;

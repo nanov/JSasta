@@ -168,7 +168,10 @@ int compile_file(const char* input_file, const char* output_file,
     ModuleRegistry* registry = module_registry_create(input_file);
 
     // Load entry module (will recursively load imports)
-    Module* entry_module = module_load(registry, input_file, NULL);
+    // Convert to absolute path first to avoid double-pathing with relative paths like ./file.jsa
+    char* entry_abs = module_get_absolute_path(input_file);
+    Module* entry_module = module_load(registry, entry_abs, NULL);
+    free(entry_abs);
 
     if (!entry_module) {
         log_error("Failed to load entry module");
@@ -293,7 +296,16 @@ int compile_file(const char* input_file, const char* output_file,
         }
     } else {
         // Compile to object file or binary
-        const char* obj_file = compile_only ? output_file : "/tmp/jsasta_temp.o";
+        char temp_obj_file[256];
+        const char* obj_file;
+        
+        if (compile_only) {
+            obj_file = output_file;
+        } else {
+            // Create unique temporary file using process ID to avoid collisions in parallel execution
+            snprintf(temp_obj_file, sizeof(temp_obj_file), "/tmp/jsasta_temp_%d.o", getpid());
+            obj_file = temp_obj_file;
+        }
 
         log_section("Compilation");
         if (compile_to_object_or_asm(gen->module, obj_file, opt_level, false) != 0) {

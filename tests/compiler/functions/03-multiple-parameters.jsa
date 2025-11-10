@@ -1,7 +1,8 @@
 // jastat-summary: Function with multiple parameters of different types
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
 function compute(a: i32, b: i32, multiply: bool): i32 {
     if (multiply) {
@@ -11,5 +12,8 @@ function compute(a: i32, b: i32, multiply: bool): i32 {
     }
 }
 
-io.println("compute(5, 3, true) = {}", compute(5, 3, true));
-io.println("compute(5, 3, false) = {}", compute(5, 3, false));
+// io.println("compute(5, 3, true) = {}", compute(5, 3, true));
+// io.println("compute(5, 3, false) = {}", compute(5, 3, false));
+
+t.assert.equals(15, compute(5, 3, true));
+t.assert.equals(8, compute(5, 3, false));

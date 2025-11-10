@@ -1,7 +1,10 @@
 // jastat-summary: Logical NOT operator
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import io from @io;
+import t from @test;
 
-io.println("!true = {}", !true);
-io.println("!false = {}", !false);
+// io.println("!true = {}", !true);
+// io.println("!false = {}", !false);
+t.assert.equals(false, !true);
+t.assert.equals(true, !false);

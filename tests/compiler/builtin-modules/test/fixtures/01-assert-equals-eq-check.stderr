@@ -1,0 +1,4 @@
+[error:E307] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/builtin-modules/test/01-assert-equals-eq-check.jsa:15:21: Type 'NoEq' does not implement the Eq trait, which is required for assert_equals
+
+=== Diagnostic Summary ===
+  Errors: 1
