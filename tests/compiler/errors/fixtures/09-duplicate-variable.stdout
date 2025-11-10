@@ -1,5 +1,5 @@
 [INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/09-duplicate-variable.jsa...
 [INFO]    Loaded module: 09-duplicate-variable (0 exports, 0 dependencies)
 [INFO]    Code generation complete
-[INFO]    LLVM IR written to ./tests/compiler/errors/09-duplicate-variable.tmp.ll
+[INFO]    LLVM IR written to tests/compiler//errors/09-duplicate-variable.tmp.ll
 [INFO]    No diagnostics

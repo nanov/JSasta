@@ -1,5 +1,7 @@
 [INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa...
-[error:E100] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:7:1: Expected ;, got }
-[error:E202] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:9:18: Unexpected token in expression: :
-[ERROR]   Failed to parse module: 08-struct-field-not-found
-[ERROR]   Failed to load entry module
+[INFO]    Loaded module: 08-struct-field-not-found (0 exports, 0 dependencies)
+[ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:10:11: Property 'z' not found in object (property_index not set by type inference)
+[ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:10:11: Property 'z' not found in object (property_index not set by type inference)
+[INFO]    Code generation complete
+[INFO]    LLVM IR written to tests/compiler//errors/08-struct-field-not-found.tmp.ll
+[INFO]    No diagnostics

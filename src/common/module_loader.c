@@ -388,6 +388,8 @@ static Module* module_load_builtin(ModuleRegistry* registry, const char* builtin
         module = builtin_create_io_module(registry);
     } else if (strcmp(builtin_name, "debug") == 0) {
         module = builtin_create_debug_module(registry);
+    } else if (strcmp(builtin_name, "test") == 0) {
+        module = builtin_create_test_module(registry);
     } else {
         log_error("Unknown builtin module: @%s", builtin_name);
         return NULL;

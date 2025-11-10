@@ -4,8 +4,8 @@
 import io from @io;
 
 struct Point {
-    x: i32,
-    y: i32
+    x: i32;
+    y: i32;
 }
 
 function make_point(x: i32, y: i32): Point {

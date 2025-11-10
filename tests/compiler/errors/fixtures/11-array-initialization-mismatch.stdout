@@ -1,5 +1,5 @@
 [INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/11-array-initialization-mismatch.jsa...
 [INFO]    Loaded module: 11-array-initialization-mismatch (0 exports, 0 dependencies)
 [INFO]    Code generation complete
-[INFO]    LLVM IR written to ./tests/compiler/errors/11-array-initialization-mismatch.tmp.ll
+[INFO]    LLVM IR written to tests/compiler//errors/11-array-initialization-mismatch.tmp.ll
 [INFO]    No diagnostics
