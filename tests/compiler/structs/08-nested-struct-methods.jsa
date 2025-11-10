@@ -1,0 +1,55 @@
+// jastat-summary: Calling methods on nested struct members
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function get_x(self: Point): i32 {
+    return self.x;
+}
+
+function get_y(self: Point): i32 {
+    return self.y;
+}
+
+function set_x(self: ref Point, new_x: i32): void {
+    self.x = new_x;
+}
+
+function set_y(self: ref Point, new_y: i32): void {
+    self.y = new_y;
+}
+
+struct Rectangle {
+    top_left: Point;
+    bottom_right: Point;
+}
+
+function get_width(self: Rectangle): i32 {
+    return get_x(self.bottom_right) - get_x(self.top_left);
+}
+
+function get_height(self: Rectangle): i32 {
+    return get_y(self.bottom_right) - get_y(self.top_left);
+}
+
+var rect: Rectangle;
+rect.top_left.x = 10;
+rect.top_left.y = 20;
+rect.bottom_right.x = 100;
+rect.bottom_right.y = 80;
+
+io.println("Top-left: ({}, {})", get_x(rect.top_left), get_y(rect.top_left));
+io.println("Bottom-right: ({}, {})", get_x(rect.bottom_right), get_y(rect.bottom_right));
+io.println("Width: {}", get_width(rect));
+io.println("Height: {}", get_height(rect));
+
+// Test mutation through nested struct method
+set_x(ref rect.top_left, 5);
+set_y(ref rect.top_left, 15);
+
+io.println("After mutation: ({}, {})", get_x(rect.top_left), get_y(rect.top_left));

@@ -1,0 +1,42 @@
+// jastat-summary: Functions that return struct values by copy
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function create_point(x: i32, y: i32): Point {
+    var p: Point;
+    p.x = x;
+    p.y = y;
+    return p;
+}
+
+function add_points(a: Point, b: Point): Point {
+    var result: Point;
+    result.x = a.x + b.x;
+    result.y = a.y + b.y;
+    return result;
+}
+
+function scale_point(p: Point, factor: i32): Point {
+    var result: Point;
+    result.x = p.x * factor;
+    result.y = p.y * factor;
+    return result;
+}
+
+var p1 = create_point(10, 20);
+io.println("p1: ({}, {})", p1.x, p1.y);
+
+var p2 = create_point(5, 15);
+io.println("p2: ({}, {})", p2.x, p2.y);
+
+var sum = add_points(p1, p2);
+io.println("sum: ({}, {})", sum.x, sum.y);
+
+var scaled = scale_point(p1, 3);
+io.println("scaled: ({}, {})", scaled.x, scaled.y);

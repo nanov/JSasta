@@ -1,0 +1,16 @@
+// jastat-summary: Error when using pattern binding after ||
+// jastat: mode=compiler, capture=stderr
+
+import io from @io;
+
+enum Message {
+    quit;
+    move(x: i32, y: i32);
+}
+
+let msg = Message.move{x: 10, y: 20};
+
+// ERROR: x is used after || so it's not available
+if (msg is Message.move(let x, let y) || x > 5) {
+    io.println("x={}", x);
+}

@@ -13,6 +13,11 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <termios.h>
+#include <fcntl.h>
+#include <spawn.h>
+#include "neco.h"
+
+extern char **environ;
 
 // --- Definitions and Globals ---
 #define MAX_PATH 1024
@@ -39,6 +44,7 @@
 bool g_update_fixtures = false;
 bool g_verbose_mode = false;
 int g_max_parallel_jobs = 1;  // Default: sequential
+bool g_suppress_output = false;  // Used in parallel mode to suppress direct output
 
 typedef enum { TEST_PASS, TEST_FAIL, TEST_ERROR } test_status_t;
 
@@ -54,6 +60,33 @@ typedef struct {
     bool expect_non_zero_exit_code;
     char* summary;
 } TestConfig;
+
+// --- Parallel test execution structures ---
+typedef struct {
+    char suite_display_name[256];
+    char suite_path[MAX_PATH];
+    char test_filename[256];
+    bool is_end_marker;  // Used to signal workers to terminate
+} TestJob;
+
+typedef enum {
+    REPORT_TEST_START,
+    REPORT_TEST_COMPLETE,
+    REPORT_SUITE_START,
+    REPORT_DONE
+} ReportEventType;
+
+typedef struct {
+    ReportEventType type;
+    char test_name[512];
+    char suite_name[256];
+    test_status_t status;
+    char summary[512];  // Fixed-size buffer for pipe communication
+} ReportEvent;
+
+typedef struct {
+    test_status_t status;
+} TestResult;
 
 // Forward declarations
 void process_directory(const char* root_dir, const char* current_dir, int* success_count, int* error_count);
@@ -110,6 +143,7 @@ char* read_from_pipe(int fd) {
     if (!output) return NULL;
     output[0] = '\0';
 
+    // Simple blocking read - will block until data available or EOF
     while ((bytes_read = read(fd, buffer, sizeof(buffer))) > 0) {
         char* new_output = (char*)realloc(output, total_len + bytes_read + 1);
         if (!new_output) { free(output); return NULL; }
@@ -125,38 +159,68 @@ int execute_and_capture_streams(const char* command, char** stdout_buf, char** s
     int stdout_pipe[2], stderr_pipe[2];
     *stdout_buf = NULL; *stderr_buf = NULL;
 
+    fprintf(stderr, "[DEBUG] execute: command='%s'\n", command);
+    fflush(stderr);
+
     if (pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0) { perror("pipe"); return -1; }
 
-    pid_t pid = fork();
-    if (pid < 0) { perror("fork"); return -1; }
+    // Use posix_spawn - doesn't copy parent memory, so no neco state issues
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, stderr_pipe[1], STDERR_FILENO);
+    // Close the original pipe fds in child so parent's read() gets EOF when child exits
+    posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
+    posix_spawn_file_actions_addclose(&actions, stdout_pipe[1]);
+    posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
+    posix_spawn_file_actions_addclose(&actions, stderr_pipe[1]);
 
-    if (pid == 0) { // Child process
-        close(stdout_pipe[0]); close(stderr_pipe[0]);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-        close(stdout_pipe[1]); close(stderr_pipe[1]);
-        execl("/bin/sh", "sh", "-c", command, (char *) NULL);
-        perror("execl"); _exit(127);
+    char *argv[] = {"/bin/sh", "-c", (char*)command, NULL};
+    pid_t pid;
+    int spawn_result = posix_spawn(&pid, "/bin/sh", &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+
+    if (spawn_result != 0) {
+        errno = spawn_result;
+        perror("posix_spawn");
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        close(stderr_pipe[0]); close(stderr_pipe[1]);
+        return -1;
     }
 
     // Parent process
     close(stdout_pipe[1]); close(stderr_pipe[1]);
+
+    fprintf(stderr, "[DEBUG] execute: spawned pid=%d, reading pipes with regular read\n", pid);
+    fflush(stderr);
+
+    // Use regular blocking read - will block but subprocess will finish quickly
     *stdout_buf = read_from_pipe(stdout_pipe[0]);
     *stderr_buf = read_from_pipe(stderr_pipe[0]);
     close(stdout_pipe[0]); close(stderr_pipe[0]);
 
+    fprintf(stderr, "[DEBUG] execute: pipes read, now calling waitpid to get exit status\n");
+
+    // Non-blocking wait for child to exit
     int status;
-    waitpid(pid, &status, 0);
+    int wait_result;
+    while ((wait_result = waitpid(pid, &status, WNOHANG)) == 0) {
+        neco_sleep(10 * NECO_MILLISECOND);
+    }
+    fprintf(stderr, "[DEBUG] execute: waitpid returned %d, status=%d\n", wait_result, status);
 
     // Handle both normal exits and signal termination
     if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
+        int exit_code = WEXITSTATUS(status);
+        fprintf(stderr, "[DEBUG] execute: child exited with code %d\n", exit_code);
+        return exit_code;
     } else if (WIFSIGNALED(status)) {
-        // Process was terminated by a signal (e.g., SIGABRT from abort())
-        // Return 128 + signal number (common convention)
-        return 128 + WTERMSIG(status);
+        int sig = WTERMSIG(status);
+        fprintf(stderr, "[DEBUG] execute: child terminated by signal %d\n", sig);
+        return 128 + sig;
     }
-    return -1; // Should not reach here
+    fprintf(stderr, "[DEBUG] execute: unexpected status\n");
+    return -1;
 }
 
 void trim_trailing_whitespace(char* str) {
@@ -229,8 +293,10 @@ void parse_test_config(const char* source_path, TestConfig* config) {
 // =========================================================================
 
 test_status_t run_test_case(const char* suite_display_name, const char* suite_path, const char* test_filename) {
+    fprintf(stderr, "[DEBUG] run_test_case: ENTRY suite=%s, path=%s, file=%s\n", suite_display_name, suite_path, test_filename);
     char absolute_source_path[PATH_MAX], temp_executable_path[MAX_PATH], fixture_path[MAX_PATH], command[PATH_MAX * 2];
     char test_base_name[MAX_PATH];
+    fprintf(stderr, "[DEBUG] run_test_case: about to strncpy\n");
     strncpy(test_base_name, test_filename, sizeof(test_base_name));
     char* dot = strrchr(test_base_name, '.'); if (dot) *dot = '\0';
     snprintf(absolute_source_path, sizeof(absolute_source_path), "%s/%s", suite_path, test_filename);
@@ -243,14 +309,17 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
 
     char test_display_name[256];
     snprintf(test_display_name, sizeof(test_display_name), "%s/%s", suite_display_name, test_base_name);
-    printf("  %-60s", test_display_name);
-    fflush(stdout);
-    const char* spinner = "|/-\\"; for (int i=0; i<4; ++i) { printf("\b%c", spinner[i]); fflush(stdout); usleep(100000); } printf("\b");
+    if (!g_suppress_output) {
+        printf("  Running: %s\n", test_display_name);
+        fflush(stdout);
+    }
 
     test_status_t status = TEST_FAIL;
     snprintf(command, sizeof(command), "./%s -o %s %s", COMPILER_PATH, temp_executable_path, absolute_source_path);
     char* compiler_stdout = NULL, *compiler_stderr = NULL;
+    fprintf(stderr, "[DEBUG] run_test_case: compiling\n");
     int compiler_exit_code = execute_and_capture_streams(command, &compiler_stdout, &compiler_stderr);
+    fprintf(stderr, "[DEBUG] run_test_case: compile done, exit_code=%d\n", compiler_exit_code);
 
     char* failure_reason = NULL;
     char* actual_output_for_display = NULL;
@@ -281,9 +350,13 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                         // Compile and link with runtime instead of using lli
                         char temp_exe[MAX_PATH];
                         snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
-                        snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null",
+                        snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s",
                                  temp_executable_path, temp_exe);
-                        system(command);
+                        fprintf(stderr, "[DEBUG] run_test_case: linking\n");
+                        char *link_stdout, *link_stderr;
+                        execute_and_capture_streams(command, &link_stdout, &link_stderr);
+                        free(link_stdout); free(link_stderr);
+                        fprintf(stderr, "[DEBUG] run_test_case: running executable\n");
                         snprintf(command, sizeof(command), "%s", temp_exe);
                         execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
                         remove(temp_exe);
@@ -333,9 +406,13 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
                 // Compile and link with runtime instead of using lli
                 char temp_exe[MAX_PATH];
                 snprintf(temp_exe, sizeof(temp_exe), "%s.exe", temp_executable_path);
-                snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s 2>/dev/null",
+                snprintf(command, sizeof(command), "clang %s " RUNTIME_PATH "/jsasta_runtime.o " RUNTIME_PATH "/display.o -o %s",
                          temp_executable_path, temp_exe);
-                system(command);
+                fprintf(stderr, "[DEBUG] run_test_case: linking (TEST mode)\n");
+                char *link_stdout, *link_stderr;
+                execute_and_capture_streams(command, &link_stdout, &link_stderr);
+                free(link_stdout); free(link_stderr);
+                fprintf(stderr, "[DEBUG] run_test_case: running executable (TEST mode)\n");
                 snprintf(command, sizeof(command), "%s", temp_exe);
                 int runtime_exit_code = execute_and_capture_streams(command, &runtime_stdout, &runtime_stderr);
                 remove(temp_exe);
@@ -374,19 +451,22 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
     }
 
     // --- Final Output ---
-    const char* result_symbol = status == TEST_PASS ? COLOR_GREEN "[ ✅ ]" COLOR_RESET : COLOR_RED "[ ❌ ]" COLOR_RESET;
-    if (g_update_fixtures && status == TEST_PASS) { result_symbol = COLOR_YELLOW "[ 📝 UPDATED ]" COLOR_RESET; }
-    if (status == TEST_ERROR) { result_symbol = COLOR_RED "[ " ERROR_SYMBOL " ERROR ]" COLOR_RESET; }
+    if (!g_suppress_output) {
+        const char* result_symbol = status == TEST_PASS ? COLOR_GREEN "[ ✅ ]" COLOR_RESET : COLOR_RED "[ ❌ ]" COLOR_RESET;
+        if (g_update_fixtures && status == TEST_PASS) { result_symbol = COLOR_YELLOW "[ 📝 UPDATED ]" COLOR_RESET; }
+        if (status == TEST_ERROR) { result_symbol = COLOR_RED "[ " ERROR_SYMBOL " ERROR ]" COLOR_RESET; }
 
-    printf("%s\n", result_symbol);
-    if (config.summary) { printf(COLOR_CYAN "     ↳ %s\n" COLOR_RESET, config.summary); }
-    if (failure_reason) {
-        fprintf(stderr, "      FAIL: %s\n", failure_reason);
-        if (expected_output_for_display && actual_output_for_display) {
-            fprintf(stderr, "      Expected: '%s'\n", expected_output_for_display);
-            fprintf(stderr, "      Actual:   '%s'\n", actual_output_for_display);
-        } else if (actual_output_for_display) {
-             fprintf(stderr, "      Output:\n---\n%s---\n", actual_output_for_display);
+        // Print the result with proper indentation
+        printf("    Result: %s\n", result_symbol);
+        if (config.summary) { printf(COLOR_CYAN "     ↳ %s\n" COLOR_RESET, config.summary); }
+        if (failure_reason) {
+            fprintf(stderr, "      FAIL: %s\n", failure_reason);
+            if (expected_output_for_display && actual_output_for_display) {
+                fprintf(stderr, "      Expected: '%s'\n", expected_output_for_display);
+                fprintf(stderr, "      Actual:   '%s'\n", actual_output_for_display);
+            } else if (actual_output_for_display) {
+                fprintf(stderr, "      Output:\n---\n%s---\n", actual_output_for_display);
+            }
         }
     }
 
@@ -397,6 +477,168 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
     remove(temp_executable_path);
     return status;
 }
+
+// =========================================================================
+// PARALLEL TEST EXECUTION WITH NECO
+// =========================================================================
+
+// Pure neco channels - no pthreads needed since all I/O is non-blocking
+typedef struct {
+    neco_chan *job_chan;
+    neco_chan *report_chan;
+    neco_waitgroup *wg;
+} WorkerContext;
+
+typedef struct {
+    neco_chan *report_chan;
+    int *success_count;
+    int *error_count;
+} ReporterContext;
+
+// Reporting coroutine - handles all output synchronization
+void reporter(int argc, void *argv[]) {
+    (void)argc;
+    fprintf(stderr, "[DEBUG] Reporter starting\n");
+    // Copy arguments immediately (as per neco docs)
+    neco_chan *report_chan = *(neco_chan**)argv[0];
+    int *success_count = (int*)argv[1];
+    int *error_count = (int*)argv[2];
+    fprintf(stderr, "[DEBUG] Reporter: chan=%p, success=%p, error=%p\n", (void*)report_chan, (void*)success_count, (void*)error_count);
+
+    while (1) {
+        ReportEvent event;
+        fprintf(stderr, "[DEBUG] Reporter waiting for event...\n");
+        int rc = neco_chan_recv(report_chan, &event);
+        fprintf(stderr, "[DEBUG] Reporter recv rc=%d\n", rc);
+        if (rc != NECO_OK) {
+            break; // Channel closed or error
+        }
+
+        switch (event.type) {
+            case REPORT_SUITE_START:
+                printf("\nRunning Suite: %s\n", event.suite_name);
+                fflush(stdout);
+                break;
+
+            case REPORT_TEST_START: {
+                printf("  Running: %s", event.test_name);
+                fflush(stdout);
+                break;
+            }
+
+            case REPORT_TEST_COMPLETE: {
+                const char* result_symbol = event.status == TEST_PASS ?
+                    COLOR_GREEN " ✅" COLOR_RESET :
+                    (event.status == TEST_ERROR ? COLOR_RED " 💥" COLOR_RESET : COLOR_RED " ❌" COLOR_RESET);
+
+                if (g_update_fixtures && event.status == TEST_PASS) {
+                    result_symbol = COLOR_YELLOW " 📝" COLOR_RESET;
+                }
+
+                printf(" %s\n", result_symbol);
+
+                if (event.summary[0] != '\0') {
+                    printf(COLOR_CYAN "     ↳ %s\n" COLOR_RESET, event.summary);
+                }
+
+                if (event.status == TEST_PASS) {
+                    (*success_count)++;
+                } else {
+                    (*error_count)++;
+                }
+
+                fflush(stdout);
+                break;
+            }
+
+            case REPORT_DONE:
+                neco_chan_release(report_chan);
+                return;
+        }
+    }
+    neco_chan_release(report_chan);
+}
+
+// Worker coroutine that processes test jobs
+void test_worker(int argc, void *argv[]) {
+    (void)argc;
+    fprintf(stderr, "[DEBUG] Worker starting\n");
+    // Copy arguments immediately (as per neco docs)
+    neco_chan *job_chan = *(neco_chan**)argv[0];
+    neco_chan *report_chan = *(neco_chan**)argv[1];
+    neco_waitgroup *wg = *(neco_waitgroup**)argv[2];
+    fprintf(stderr, "[DEBUG] Worker: job_chan=%p, report_chan=%p, wg=%p\n", (void*)job_chan, (void*)report_chan, (void*)wg);
+
+    while (1) {
+        TestJob job;
+        fprintf(stderr, "[DEBUG] Worker waiting for job...\n");
+        int rc = neco_chan_recv(job_chan, &job);
+        fprintf(stderr, "[DEBUG] Worker recv rc=%d\n", rc);
+        if (rc != NECO_OK) {
+            break; // Channel closed or error
+        }
+
+        // Check for termination marker
+        if (job.is_end_marker) {
+            neco_chan_release(job_chan);
+            neco_chan_release(report_chan);
+            neco_waitgroup_done(wg);
+            fprintf(stderr, "[DEBUG] Worker done\n");
+            return;
+        }
+
+        // Build absolute source path to extract config
+        char absolute_source_path[PATH_MAX];
+        char test_base_name[MAX_PATH];
+        strncpy(test_base_name, job.test_filename, sizeof(test_base_name));
+        char* dot = strrchr(test_base_name, '.');
+        if (dot) *dot = '\0';
+
+        snprintf(absolute_source_path, sizeof(absolute_source_path), "%s/%s", job.suite_path, job.test_filename);
+
+        // Parse test config to get summary
+        TestConfig config;
+        parse_test_config(absolute_source_path, &config);
+
+        // Report test start
+        char test_display_name[512];
+        snprintf(test_display_name, sizeof(test_display_name), "%s/%s",
+                 job.suite_display_name, test_base_name);
+
+        ReportEvent start_event = {
+            .type = REPORT_TEST_START,
+        };
+        start_event.summary[0] = '\0';
+        strncpy(start_event.test_name, test_display_name, sizeof(start_event.test_name) - 1);
+        fprintf(stderr, "[DEBUG] Worker sending start event\n");
+        neco_chan_send(report_chan, &start_event);
+        fprintf(stderr, "[DEBUG] Worker sent start event, now executing test\n");
+
+        // Execute the test with output suppressed
+        g_suppress_output = true;
+        fprintf(stderr, "[DEBUG] Worker calling run_test_case\n");
+        test_status_t status = run_test_case(job.suite_display_name, job.suite_path, job.test_filename);
+        fprintf(stderr, "[DEBUG] Worker run_test_case returned with status=%d\n", status);
+        g_suppress_output = false;
+
+        // Report test completion
+        ReportEvent complete_event = {
+            .type = REPORT_TEST_COMPLETE,
+            .status = status,
+        };
+        if (config.summary) {
+            strncpy(complete_event.summary, config.summary, sizeof(complete_event.summary) - 1);
+            complete_event.summary[sizeof(complete_event.summary) - 1] = '\0';
+            free(config.summary);
+        } else {
+            complete_event.summary[0] = '\0';
+        }
+        strncpy(complete_event.test_name, test_display_name, sizeof(complete_event.test_name) - 1);
+        neco_chan_send(report_chan, &complete_event);
+    }
+}
+
+
 
 // =========================================================================
 // DIRECTORY TRAVERSAL AND MAIN
@@ -425,61 +667,102 @@ void process_directory(const char* root_dir, const char* current_dir, int* succe
     if (test_file_count > 0) {
         const char* suite_display_name = current_dir + strlen(root_dir);
         if (*suite_display_name == '/') suite_display_name++;
-        printf("\nRunning Suite: %s\n", *suite_display_name ? suite_display_name : ".");
 
+        fprintf(stderr, "[DEBUG] test_file_count=%d, g_max_parallel_jobs=%d\n", test_file_count, g_max_parallel_jobs);
         if (g_max_parallel_jobs == 1) {
             // Sequential execution
+            printf("\nRunning Suite: %s\n", *suite_display_name ? suite_display_name : ".");
             for (int i = 0; i < test_file_count; i++) {
                 test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
                 if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
                 free(test_files[i]);
             }
         } else {
-            // Parallel execution
-            int active_processes = 0;
-            int next_test = 0;
+            fprintf(stderr, "[DEBUG] Starting parallel execution\n");
+            // Parallel execution with pure neco coroutines using channels
+            neco_chan *job_chan = NULL;
+            neco_chan *report_chan = NULL;
+            neco_waitgroup wg;
 
-            while (next_test < test_file_count || active_processes > 0) {
-                // Spawn new processes up to the limit
-                while (active_processes < g_max_parallel_jobs && next_test < test_file_count) {
-                    pid_t pid = fork();
-                    if (pid == 0) {
-                        // Child process - run test and exit
-                        test_status_t status = run_test_case(suite_display_name, current_dir, test_files[next_test]);
-                        exit(status == TEST_PASS ? 0 : 1);
-                    } else if (pid > 0) {
-                        // Parent process
-                        active_processes++;
-                        next_test++;
-                    } else {
-                        // Fork failed - fall back to sequential
-                        fprintf(stderr, "Warning: fork() failed, falling back to sequential execution\n");
-                        for (int i = next_test; i < test_file_count; i++) {
-                            test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
-                            if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
-                        }
-                        goto cleanup_files;
-                    }
+            fprintf(stderr, "[DEBUG] About to create channels and waitgroup\n");
+            // Create waitgroup to track worker completion
+            int wg_rc = neco_waitgroup_init(&wg);
+            fprintf(stderr, "[DEBUG] neco_waitgroup_init returned: %d\n", wg_rc);
+            if (wg_rc != NECO_OK) {
+                fprintf(stderr, "Warning: Failed to create waitgroup (rc=%d), falling back to sequential execution\n", wg_rc);
+                printf("\nRunning Suite: %s\n", *suite_display_name ? suite_display_name : ".");
+                for (int i = 0; i < test_file_count; i++) {
+                    test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
+                    if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
+                    free(test_files[i]);
+                }
+            } else if (neco_chan_make(&job_chan, sizeof(TestJob), 100) != NECO_OK ||
+                neco_chan_make(&report_chan, sizeof(ReportEvent), 100) != NECO_OK) {
+                perror("pipe");
+                fprintf(stderr, "Warning: Failed to create pipes, falling back to sequential execution\n");
+                printf("\nRunning Suite: %s\n", *suite_display_name ? suite_display_name : ".");
+                for (int i = 0; i < test_file_count; i++) {
+                    test_status_t status = run_test_case(suite_display_name, current_dir, test_files[i]);
+                    if (status == TEST_PASS) { (*success_count)++; } else { (*error_count)++; }
+                    free(test_files[i]);
+                }
+            } else {
+                // Send suite start event
+                ReportEvent suite_event = {
+                    .type = REPORT_SUITE_START,
+                };
+                suite_event.summary[0] = '\0';
+                strncpy(suite_event.suite_name, *suite_display_name ? suite_display_name : ".",
+                        sizeof(suite_event.suite_name) - 1);
+                neco_chan_send(report_chan, &suite_event);
+
+                // Start reporter coroutine
+                fprintf(stderr, "[DEBUG] Starting reporter\n");
+                neco_chan_retain(report_chan);
+                neco_start(reporter, 3, &report_chan, success_count, error_count);
+
+                // Start worker coroutines
+                fprintf(stderr, "[DEBUG] Starting %d workers\n", g_max_parallel_jobs);
+                for (int i = 0; i < g_max_parallel_jobs; i++) {
+                    neco_waitgroup_add(&wg, 1);
+                    neco_chan_retain(job_chan);
+                    neco_chan_retain(report_chan);
+                    neco_start(test_worker, 3, &job_chan, &report_chan, &wg);
                 }
 
-                // Wait for any child to complete
-                if (active_processes > 0) {
-                    int status;
-                    pid_t finished = wait(&status);
-                    if (finished > 0) {
-                        active_processes--;
-                        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                            (*success_count)++;
-                        } else {
-                            (*error_count)++;
-                        }
-                    }
+                fprintf(stderr, "[DEBUG] Sending %d test jobs\n", test_file_count);
+                // Send all test jobs
+                for (int i = 0; i < test_file_count; i++) {
+                    TestJob job = { .is_end_marker = false };
+                    strncpy(job.suite_display_name, suite_display_name, sizeof(job.suite_display_name) - 1);
+                    strncpy(job.suite_path, current_dir, sizeof(job.suite_path) - 1);
+                    strncpy(job.test_filename, test_files[i], sizeof(job.test_filename) - 1);
+                    neco_chan_send(job_chan, &job);
+                    free(test_files[i]);
                 }
-            }
 
-cleanup_files:
-            for (int i = 0; i < test_file_count; i++) {
-                free(test_files[i]);
+                // Send termination markers to workers
+                TestJob end_marker = { .is_end_marker = true };
+                for (int i = 0; i < g_max_parallel_jobs; i++) {
+                    neco_chan_send(job_chan, &end_marker);
+                }
+
+                // Wait for all workers to complete
+                fprintf(stderr, "[DEBUG] Waiting for workers to finish\n");
+                neco_waitgroup_wait(&wg);
+                fprintf(stderr, "[DEBUG] All workers finished\n");
+
+                // Signal reporter to finish
+                fprintf(stderr, "[DEBUG] Sending DONE to reporter\n");
+                ReportEvent done_event = { .type = REPORT_DONE };
+                neco_chan_send(report_chan, &done_event);
+
+                // Give reporter time to process final event
+                neco_sleep(100 * NECO_MILLISECOND);
+
+                // Clean up
+                neco_chan_release(job_chan);
+                neco_chan_release(report_chan);
             }
         }
     }
@@ -509,11 +792,48 @@ void print_usage(const char* prog_name) {
     fprintf(stderr, "  -j, --jobs <N>          Run N tests in parallel (default: cores/2, use -j1 for sequential).\n");
 }
 
-int main(int argc, char* argv[]) {
-	struct winsize w;
-	ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-	printf("w: %zU, %d\n", TIOCGWINSZ, w.ws_col);
-	return 0;
+// Global variables for main coroutine
+static const char* g_root_tests_dir = NULL;
+static int g_final_exit_code = 0;
+
+// Main coroutine that runs the test suite
+void test_runner_main(int argc, void *argv[]) {
+    (void)argc;
+    (void)argv;
+
+    fprintf(stderr, "[DEBUG] test_runner_main started\n");
+    fprintf(stderr, "[DEBUG] about to printf\n");
+    printf("Starting test runner in %s mode...\n", g_update_fixtures ? "UPDATE" : "TEST");
+    fprintf(stderr, "[DEBUG] printf done\n");
+    if (g_verbose_mode) printf(COLOR_BLUE "Verbose mode enabled.\n" COLOR_RESET);
+
+    fprintf(stderr, "[DEBUG] calling process_directory\n");
+    int success_count = 0, error_count = 0;
+    process_directory(g_root_tests_dir, g_root_tests_dir, &success_count, &error_count);
+    fprintf(stderr, "[DEBUG] process_directory returned\n");
+
+    printf("\n----------------------------------------\n");
+    if (g_update_fixtures) {
+        printf("Fixture Generation Summary:\n");
+        printf(COLOR_YELLOW "  Fixtures updated: %d\n" COLOR_RESET, success_count);
+        if (error_count > 0) {
+             printf(COLOR_RED   "  Errors updating fixtures: %d\n" COLOR_RESET, error_count);
+        }
+    } else {
+        printf("Test Summary:\n");
+        printf(COLOR_GREEN "  Passed: %d\n" COLOR_RESET, success_count);
+        printf(COLOR_RED   "  Failed: %d\n" COLOR_RESET, error_count);
+        printf("  Total:  %d\n", success_count + error_count);
+    }
+    if (error_count > 0 && !g_update_fixtures) {
+        printf(COLOR_RED "  Errors/Failures encountered: %d\n" COLOR_RESET, error_count);
+    }
+    printf("----------------------------------------\n");
+
+    g_final_exit_code = (error_count > 0) ? 1 : 0;
+}
+
+int main(int argc, char *argv[]) {
     if (argc < 2) { print_usage(argv[0]); return 1; }
 
     // Set default parallel jobs to cores/2
@@ -534,6 +854,11 @@ int main(int argc, char* argv[]) {
                 if (g_max_parallel_jobs < 1) g_max_parallel_jobs = 1;
             }
         }
+        else if (strncmp(argv[i], "-j", 2)==0 && isdigit(argv[i][2])) {
+            // Handle -j1, -j2, etc. format
+            g_max_parallel_jobs = atoi(argv[i] + 2);
+            if (g_max_parallel_jobs < 1) g_max_parallel_jobs = 1;
+        }
         else if (argv[i][0] != '-') {
             root_tests_dir = argv[i];
         }
@@ -545,29 +870,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    printf("Starting test runner in %s mode...\n", g_update_fixtures ? "UPDATE" : "TEST");
-    if (g_verbose_mode) printf(COLOR_BLUE "Verbose mode enabled.\n" COLOR_RESET);
+    // Set global for coroutine to access
+    g_root_tests_dir = root_tests_dir;
 
-    int success_count = 0, error_count = 0;
-    process_directory(root_tests_dir, root_tests_dir, &success_count, &error_count);
+    // Call test runner main coroutine
+    test_runner_main(0, NULL);
 
-    printf("\n----------------------------------------\n");
-    if (g_update_fixtures) {
-        printf("Fixture Generation Summary:\n");
-        printf(COLOR_YELLOW "  Fixtures updated: %d\n" COLOR_RESET, success_count);
-        if (error_count > 0) {
-             printf(COLOR_RED   "  Errors updating fixtures: %d\n" COLOR_RESET, error_count);
-        }
-    } else {
-        printf("Test Summary:\n");
-        printf(COLOR_GREEN "  Passed: %d\n" COLOR_RESET, success_count);
-        printf(COLOR_RED   "  Failed: %d\n" COLOR_RESET, error_count);
-        printf("  Total:  %d\n", success_count + error_count);
-    }
-    if (error_count > 0 && !g_update_fixtures) {
-        printf(COLOR_RED "  Errors/Failures encountered: %d\n" COLOR_RESET, error_count);
-    }
-    printf("----------------------------------------\n");
-
-    return (error_count > 0) ? 1 : 0;
+    return g_final_exit_code;
 }

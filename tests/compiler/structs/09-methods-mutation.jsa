@@ -1,0 +1,46 @@
+// jastat-summary: Methods that modify structs through references
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function set_point(self: ref Point, x: i32, y: i32): void {
+    self.x = x;
+    self.y = y;
+}
+
+function add_to(self: ref Point, other: Point): void {
+    self.x = self.x + other.x;
+    self.y = self.y + other.y;
+}
+
+function scale_by(self: ref Point, factor: i32): void {
+    self.x = self.x * factor;
+    self.y = self.y * factor;
+}
+
+function print_point(self: Point, name: i32): void {
+    io.println("p{}: ({}, {})", name, self.x, self.y);
+}
+
+var p1: Point;
+var p2: Point;
+var sum: Point;
+
+set_point(ref p1, 10, 20);
+set_point(ref p2, 5, 15);
+
+print_point(p1, 1);
+print_point(p2, 2);
+
+set_point(ref sum, p1.x, p1.y);
+add_to(ref sum, p2);
+print_point(sum, 3);
+
+set_point(ref sum, p1.x, p1.y);
+scale_by(ref sum, 3);
+print_point(sum, 4);

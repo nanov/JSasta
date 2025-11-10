@@ -21,22 +21,22 @@ struct Module {
     char* absolute_path;         // Absolute path to the module file
     char* relative_path;         // Relative path from project root
     char* module_prefix;         // Mangled prefix for symbols (e.g., "math_lib")
-    
+
     char* source_code;           // Source code content
     ASTNode* ast;                // Parsed AST
     SymbolTable* module_scope;   // Module's global scope (NOT accessible from outside)
     TypeContext* type_ctx;       // Type context (shared with registry)
     struct DiagnosticContext* diagnostics; // Diagnostics for this module
-    
+
     ExportedSymbol* exports;     // Linked list of exported symbols
     int export_count;
-    
+
     Module** dependencies;       // Modules this module imports
     int dependency_count;
-    
+
     bool is_loading;             // Currently being loaded (for cyclic import detection)
     bool is_parsed;              // Has been parsed
-    
+
     struct Module* next;         // For registry linked list
 };
 
@@ -44,7 +44,7 @@ struct Module {
 struct ModuleRegistry {
     Module* modules;             // Linked list of all loaded modules
     int module_count;
-    
+
     char* project_root;          // Absolute path to project root
     TypeContext* type_ctx;       // Shared type context
     struct DiagnosticContext* diagnostics; // Shared diagnostics

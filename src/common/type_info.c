@@ -3,6 +3,44 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Global type variable definitions (declared as extern in jsasta_compiler.h)
+TypeInfo* Type_Unknown = NULL;
+TypeInfo* Type_Bool = NULL;
+TypeInfo* Type_Void = NULL;
+
+TypeInfo* Type_I8 = NULL;
+TypeInfo* Type_I16 = NULL;
+TypeInfo* Type_I32 = NULL;
+TypeInfo* Type_I64 = NULL;
+
+TypeInfo* Type_U8 = NULL;
+TypeInfo* Type_U16 = NULL;
+TypeInfo* Type_U32 = NULL;
+TypeInfo* Type_U64 = NULL;
+
+TypeInfo* Type_Int = NULL;
+
+TypeInfo* Type_Usize = NULL;
+TypeInfo* Type_Nint = NULL;
+TypeInfo* Type_Uint = NULL;
+
+TypeInfo* Type_Double = NULL;
+TypeInfo* Type_Object = NULL;
+TypeInfo* Type_String = NULL;
+
+TypeInfo* Type_Array_Int = NULL;
+TypeInfo* Type_Array_I8 = NULL;
+TypeInfo* Type_Array_I16 = NULL;
+TypeInfo* Type_Array_I32 = NULL;
+TypeInfo* Type_Array_I64 = NULL;
+TypeInfo* Type_Array_U8 = NULL;
+TypeInfo* Type_Array_U16 = NULL;
+TypeInfo* Type_Array_U32 = NULL;
+TypeInfo* Type_Array_U64 = NULL;
+TypeInfo* Type_Array_Bool = NULL;
+TypeInfo* Type_Array_Double = NULL;
+TypeInfo* Type_Array_String = NULL;
+
 // Create a basic TypeInfo with just a base type
 TypeInfo* type_info_create(TypeKind kind, char* name) {
     TypeInfo* info = (TypeInfo*)malloc(sizeof(TypeInfo));
@@ -241,10 +279,10 @@ static TypeInfo* type_info_clone_internal(TypeInfo* type_info, CloneContext* ctx
 // Returns the original pointer for global singletons
 TypeInfo* type_info_clone(TypeInfo* type_info) {
     if (!type_info) return NULL;
-    
+
     // Global types (like primitives) are shared, don't clone them - just return the reference
     if (type_info->is_global) return type_info;
-    
+
     // ALL struct/object types registered in TypeContext should not be cloned
     // This includes both named structs (like "counter_t") and anonymous objects (like "Object_123")
     // They are managed by TypeContext and should be treated as singletons

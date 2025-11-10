@@ -146,6 +146,7 @@ typedef enum {
     AST_PREFIX_OP,      // ++i, --i
     AST_POSTFIX_OP,     // i++, i--
     AST_OBJECT_LITERAL, // Object literal { key: value, ... }
+    AST_STRUCT_LITERAL,
     AST_NEW_EXPR,       // new T[size] - heap allocation
     AST_DELETE_EXPR,    // delete expr - heap deallocation
 } ASTNodeType;
@@ -288,6 +289,7 @@ struct FunctionSpecialization {
     int param_count;
     TypeInfo* return_type_info;    // Return type as TypeInfo
     ASTNode* specialized_body;     // Cloned and type-analyzed function body (just the body, not the whole function)
+    LLVMValueRef llvm_func;        // Generated LLVM function for this specialization
     struct FunctionSpecialization* next;  // Linked list
 };
 
@@ -330,7 +332,7 @@ struct ASTNode {
             TypeInfo** param_type_hints;  // Optional for user functions, required for external
             TypeInfo* return_type_hint;   // Optional for user functions, required for external
             bool is_variadic;             // Variable arguments support (... in parameter list)
-            
+
             // Builtin function callbacks (NULL for regular user functions)
             BuiltinValidateCallback validate_callback;  // Custom validation logic
             BuiltinCodegenCallback codegen_callback;    // Custom codegen logic
@@ -424,6 +426,7 @@ struct ASTNode {
             ASTNode** args;         // Method arguments
             int arg_count;
             bool is_static;         // true if Type.method(), false if obj.method()
+            FunctionSpecialization* resolved_spec;  // Resolved specialization for the method call
         } method_call;
 
         struct {
@@ -480,13 +483,13 @@ struct ASTNode {
             char* variant_name;         // Name of the variant (e.g., "Ok")
             TypeInfo* enum_type;        // Resolved enum type (set during type inference)
             int variant_index;          // Index of variant in enum (set during type inference)
-            
+
             // Pattern bindings
             char** binding_names;       // Array of binding names (e.g., ["value"] or ["x", "y"])
             int binding_count;          // Number of bindings
             bool* binding_is_mutable;   // Array of mutability flags (var vs let/const)
             bool* binding_is_wildcard;  // Array of wildcard flags (true if binding is "_")
-            
+
             // Resolved during type inference
             TypeInfo** binding_types;   // Types of bound variables (NULL until type inference)
             bool is_struct_binding;     // true if single binding for all fields as struct
@@ -541,6 +544,13 @@ struct ASTNode {
             ASTNode** values; // Property values
             int count;        // Number of properties
         } object_literal;
+
+        struct {
+            char* struct_name;        // Name of the struct type
+            char** field_names;       // Field names
+            ASTNode** field_values;   // Field values
+            int field_count;          // Number of fields
+        } struct_literal;
 
         struct {
             TypeInfo* element_type;  // Type of array elements (e.g., int)
@@ -899,6 +909,7 @@ typedef struct CodeGen {
     RuntimeFunction* runtime_functions;
     TypeContext* type_ctx;                      // Type context for TypeInfo and specializations
     TraitRegistry* trait_registry;              // Trait registry (shared with type_ctx)
+    DiagnosticContext* diag;                    // Diagnostics for error reporting
 
     // Loop control - for break/continue
     LLVMBasicBlockRef loop_exit_block;          // Block to jump to on 'break'
@@ -919,7 +930,7 @@ typedef struct CodeGen {
 
 CodeGen* codegen_create(const char* module_name);
 void codegen_free(CodeGen* gen);
-void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module);
+void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module, DiagnosticContext* diag);
 void codegen_emit_llvm_ir(CodeGen* gen, const char* filename);
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node);
 LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info);
@@ -936,7 +947,7 @@ TypeInfo* runtime_get_function_type(const char* name);
 
 // Utility functions
 char* read_file(const char* filename);
-int compile_file(const char* input_file, const char* output_file, 
+int compile_file(const char* input_file, const char* output_file,
                  bool emit_llvm, bool emit_asm, bool compile_only, int opt_level,
                  const char* sanitizer, bool enable_debug_symbols, bool enable_debug);
 

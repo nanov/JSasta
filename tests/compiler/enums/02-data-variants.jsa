@@ -1,0 +1,20 @@
+// jastat-summary: Enum with data variants
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Message {
+    Text(content: string);
+    Number(value: i32);
+}
+
+let msg1 = Message.Text { content: "Hello" };
+let msg2 = Message.Number { value: 42 };
+
+if (msg1 is Message.Text(let content)) {
+    io.println("Text message: {}", content);
+}
+
+if (msg2 is Message.Number(let value)) {
+    io.println("Number message: {}", value);
+}

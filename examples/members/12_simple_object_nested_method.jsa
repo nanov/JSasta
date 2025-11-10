@@ -1,0 +1,28 @@
+external printf(string, ...): void;
+
+struct caller_t {
+	a: i32;
+	inc(s: ref caller_t):void {
+		s.a++;
+	}
+}
+
+struct counter_t {
+	i: i32;
+	c: caller_t;
+	hi (self: ref counter_t):void {
+		printf("hi");
+	}
+	inc (self: ref counter_t):void {
+		self.hi();
+	 self.i++;
+	self.c.inc();
+	 printf("%d\n", self.c.a);
+	}
+}
+
+var c:counter_t;
+
+c.inc(); // 0
+c.inc(); // 1
+printf("%d\n", c.i); // 2

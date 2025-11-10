@@ -1,0 +1,36 @@
+// jastat-summary: Nested pattern matching with enums
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Option {
+    Some(value: i32);
+    None;
+}
+
+enum Result {
+    Ok(value: i32);
+    Err(code: i32);
+}
+
+let r1 = Result.Ok { value: 42 };
+let r2 = Result.Err { code: 1 };
+
+let opt1 = Option.Some { value: 100 };
+let opt2 = Option.None;
+
+if (r1 is Result.Ok(let value)) {
+    io.println("Ok with value: {}", value);
+}
+
+if (r2 is Result.Err(let code)) {
+    io.println("Error code: {}", code);
+}
+
+if (opt1 is Option.Some(let value)) {
+    io.println("Some({})", value);
+}
+
+if (opt2 is Option.None) {
+    io.println("None");
+}

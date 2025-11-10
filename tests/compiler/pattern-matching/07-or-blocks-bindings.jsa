@@ -1,0 +1,22 @@
+// Test that || blocks pattern bindings in if body
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Message {
+    quit;
+    move(x: i32, y: i32);
+}
+
+let msg = Message.move{x: 10, y: 20};
+
+// This should work - no || so bindings are available
+if (msg is Message.move(let x, let y) && x == 10) {
+    io.println("With &&: x={}, y={}", x, y);
+}
+
+// This should also work - || is allowed if bindings aren't used after it
+if (msg is Message.move(let a, let b) || false) {
+    // a and b are NOT available here due to ||
+    io.println("With ||: bindings not available");
+}

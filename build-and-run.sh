@@ -9,5 +9,5 @@ DEBUG=1 make compiler
 mkdir -p compiled
 cd compiled
 # Use -d for debug mode instead of -DDEBUG (which is a C preprocessor flag)
-../build/debug/jsastac -O0 -g -d -o $output_name $script
+../build/debug/jsastac -O0 -g --sanitize=address -d -o $output_name $script
 ./$output_name

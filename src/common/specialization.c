@@ -33,16 +33,28 @@ FunctionSpecialization* specialization_context_find_by_type_info(TypeContext* ct
                                                                   const char* func_name,
                                                                   TypeInfo** param_type_info,
                                                                   int param_count) {
-    if (!ctx || !func_name) return NULL;
+    if (!ctx || !func_name) {
+        log_verbose("[SPEC_LOOKUP] ctx or func_name is NULL");
+        return NULL;
+    }
 
     // Find the function type
     TypeInfo* func_type = type_context_find_function_type(ctx, func_name);
     if (!func_type) {
+        log_verbose("[SPEC_LOOKUP] Function type not found for: %s", func_name);
         return NULL;
     }
 
+    log_verbose("[SPEC_LOOKUP] Found function type for: %s", func_name);
+
     // Find specialization in the function type
-    return type_context_find_specialization(ctx, func_type, param_type_info, param_count);
+    FunctionSpecialization* spec = type_context_find_specialization(ctx, func_type, param_type_info, param_count);
+    if (spec) {
+        log_verbose("[SPEC_LOOKUP] Found specialization: %s", spec->specialized_name);
+    } else {
+        log_verbose("[SPEC_LOOKUP] No matching specialization found");
+    }
+    return spec;
 }
 
 // Print all specializations (for debugging)

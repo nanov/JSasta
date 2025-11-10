@@ -581,25 +581,25 @@ TypeInfo* type_context_create_enum_type(TypeContext* ctx, const char* enum_name,
             size_t type_name_len = strlen(enum_name) + strlen(variant_names[i]) + 2; // +2 for '.' and '\0'
             char* struct_type_name = (char*)malloc(type_name_len);
             snprintf(struct_type_name, type_name_len, "%s.%s", enum_name, variant_names[i]);
-            
+
             // Create the struct type (using TYPE_KIND_OBJECT which has the fields we need)
             TypeInfo* struct_type = type_info_create(TYPE_KIND_OBJECT, struct_type_name);
             struct_type->data.object.property_names = (char**)malloc(sizeof(char*) * variant_field_counts[i]);
             struct_type->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * variant_field_counts[i]);
-            
+
             // Copy field names and types from the variant
             for (int j = 0; j < variant_field_counts[i]; j++) {
                 struct_type->data.object.property_names[j] = strdup(variant_field_names[i][j]);
                 struct_type->data.object.property_types[j] = variant_field_types[i][j];
             }
-            
+
             struct_type->data.object.property_count = variant_field_counts[i];
             struct_type->data.object.struct_decl_node = NULL;  // No declaration node for generated types
-            
+
             // Register the struct type in the type context
             type_context_register_type(ctx, struct_type);
-            
-            log_verbose("Created struct type '%s' for enum variant with %d fields", 
+
+            log_verbose("Created struct type '%s' for enum variant with %d fields",
                        struct_type_name, variant_field_counts[i]);
         }
     }
@@ -712,6 +712,7 @@ FunctionSpecialization* type_context_add_specialization(TypeContext* ctx, TypeIn
 
     spec->return_type_info = NULL;  // Will be inferred
     spec->specialized_body = NULL;  // Will be set during specialization pass
+    spec->llvm_func = NULL;         // Will be set during codegen_declare_functions
 
     // Add to head of list
     spec->next = func_type->data.function.specializations;

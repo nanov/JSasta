@@ -10,10 +10,10 @@
 static bool generate_format_output(CodeGen* gen, ASTNode* node, LLVMValueRef output_stream) {
     ASTNode* format_arg = node->method_call.args[0];
     const char* format_str = format_arg->string.value;
-    
+
     // Parse the format string (already validated)
     FormatString* fs = format_string_parse(format_str);
-    
+
     // Get fprintf function for writing to specific stream
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef fprintf_fn = LLVMGetNamedFunction(gen->module, "fprintf");
@@ -66,7 +66,7 @@ static bool generate_format_output(CodeGen* gen, ASTNode* node, LLVMValueRef out
             LLVMTypeRef formatter_type = LLVMStructType(
                 (LLVMTypeRef[]){LLVMPointerType(file_type, 0)}, 1, false);
             LLVMValueRef formatter = LLVMBuildAlloca(gen->builder, formatter_type, "formatter");
-            
+
             // Store output_stream in formatter.stream
             LLVMValueRef stream_ptr = LLVMBuildStructGEP2(gen->builder, formatter_type, formatter, 0, "stream_ptr");
             LLVMBuildStore(gen->builder, output_stream, stream_ptr);
@@ -94,7 +94,7 @@ static bool generate_format_output(CodeGen* gen, ASTNode* node, LLVMValueRef out
 // Codegen callback for io.println
 LLVMValueRef io_println_codegen(void* context, ASTNode* node) {
     CodeGen* gen = (CodeGen*)context;
-    
+
     // Get stdout
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef global_stdout = LLVMGetNamedGlobal(gen->module, "__jsasta_stdout");
@@ -103,23 +103,23 @@ LLVMValueRef io_println_codegen(void* context, ASTNode* node) {
         LLVMSetLinkage(global_stdout, LLVMExternalLinkage);
     }
     LLVMValueRef stdout_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_type, 0), global_stdout, "stdout");
-    
+
     // Generate format output
     generate_format_output(gen, node, stdout_ptr);
-    
+
     // Add newline using fprintf
     LLVMValueRef fprintf_fn = LLVMGetNamedFunction(gen->module, "fprintf");
     LLVMValueRef newline_str = LLVMBuildGlobalStringPtr(gen->builder, "\n", "newline");
     LLVMValueRef args[] = {stdout_ptr, newline_str};
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, args, 2, "");
-    
+
     return NULL;
 }
 
 // Codegen callback for io.print
 LLVMValueRef io_print_codegen(void* context, ASTNode* node) {
     CodeGen* gen = (CodeGen*)context;
-    
+
     // Get stdout
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef global_stdout = LLVMGetNamedGlobal(gen->module, "__jsasta_stdout");
@@ -128,10 +128,10 @@ LLVMValueRef io_print_codegen(void* context, ASTNode* node) {
         LLVMSetLinkage(global_stdout, LLVMExternalLinkage);
     }
     LLVMValueRef stdout_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_type, 0), global_stdout, "stdout");
-    
+
     // Generate format output (no newline)
     generate_format_output(gen, node, stdout_ptr);
-    
+
     return NULL;
 }
 
@@ -147,7 +147,7 @@ LLVMValueRef io_format_codegen(void* context, ASTNode* node) {
 // Codegen callback for io.eprintln (stderr with newline)
 LLVMValueRef io_eprintln_codegen(void* context, ASTNode* node) {
     CodeGen* gen = (CodeGen*)context;
-    
+
     // Get stderr
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef global_stderr = LLVMGetNamedGlobal(gen->module, "__jsasta_stderr");
@@ -156,10 +156,10 @@ LLVMValueRef io_eprintln_codegen(void* context, ASTNode* node) {
         LLVMSetLinkage(global_stderr, LLVMExternalLinkage);
     }
     LLVMValueRef stderr_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_type, 0), global_stderr, "stderr");
-    
+
     // Generate format output
     generate_format_output(gen, node, stderr_ptr);
-    
+
     // Add newline (using fprintf to stderr)
     LLVMValueRef fprintf_fn = LLVMGetNamedFunction(gen->module, "fprintf");
     if (!fprintf_fn) {
@@ -169,18 +169,18 @@ LLVMValueRef io_eprintln_codegen(void* context, ASTNode* node) {
             2, true);
         fprintf_fn = LLVMAddFunction(gen->module, "fprintf", fprintf_type);
     }
-    
+
     LLVMValueRef newline_str = LLVMBuildGlobalStringPtr(gen->builder, "\n", "newline");
     LLVMValueRef args[] = {stderr_ptr, newline_str};
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, args, 2, "");
-    
+
     return NULL;
 }
 
 // Codegen callback for io.eprint (stderr without newline)
 LLVMValueRef io_eprint_codegen(void* context, ASTNode* node) {
     CodeGen* gen = (CodeGen*)context;
-    
+
     // Get stderr
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef global_stderr = LLVMGetNamedGlobal(gen->module, "__jsasta_stderr");
@@ -189,36 +189,36 @@ LLVMValueRef io_eprint_codegen(void* context, ASTNode* node) {
         LLVMSetLinkage(global_stderr, LLVMExternalLinkage);
     }
     LLVMValueRef stderr_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_type, 0), global_stderr, "stderr");
-    
+
     // Generate format output (no newline)
     generate_format_output(gen, node, stderr_ptr);
-    
+
     return NULL;
 }
 
 // Codegen callback for debug.assert
 LLVMValueRef debug_assert_codegen(void* context, ASTNode* node) {
     CodeGen* gen = (CodeGen*)context;
-    
+
     // If debug mode is not enabled, don't generate any code (becomes a no-op)
     if (!gen->enable_debug) {
         return NULL;
     }
-    
+
     // Get the condition argument
     ASTNode* condition_arg = node->method_call.args[0];
     LLVMValueRef condition = codegen_node(gen, condition_arg);
-    
+
     // Create blocks for assertion failure and continuation
     LLVMBasicBlockRef fail_block = LLVMAppendBasicBlock(LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), "assert_fail");
     LLVMBasicBlockRef continue_block = LLVMAppendBasicBlock(LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), "assert_continue");
-    
+
     // Branch: if condition is false, go to fail_block, otherwise continue
     LLVMBuildCondBr(gen->builder, condition, continue_block, fail_block);
-    
+
     // Generate fail block: print error message and abort
     LLVMPositionBuilderAtEnd(gen->builder, fail_block);
-    
+
     // Reuse io module's stderr infrastructure
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef global_stderr = LLVMGetNamedGlobal(gen->module, "__jsasta_stderr");
@@ -227,7 +227,7 @@ LLVMValueRef debug_assert_codegen(void* context, ASTNode* node) {
         LLVMSetLinkage(global_stderr, LLVMExternalLinkage);
     }
     LLVMValueRef stderr_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_type, 0), global_stderr, "stderr");
-    
+
     // Use fprintf (already available from io module)
     LLVMValueRef fprintf_fn = LLVMGetNamedFunction(gen->module, "fprintf");
     if (!fprintf_fn) {
@@ -237,16 +237,16 @@ LLVMValueRef debug_assert_codegen(void* context, ASTNode* node) {
             2, true);
         fprintf_fn = LLVMAddFunction(gen->module, "fprintf", fprintf_type);
     }
-    
+
     // Build error message with location info
     const char* filename = condition_arg->loc.filename ? condition_arg->loc.filename : "unknown";
     char error_msg[512];
-    snprintf(error_msg, sizeof(error_msg), "Assertion failed at %s:%zu:%zu\n", 
+    snprintf(error_msg, sizeof(error_msg), "Assertion failed at %s:%zu:%zu\\n",
              filename, condition_arg->loc.line, condition_arg->loc.column);
     LLVMValueRef error_str = LLVMBuildGlobalStringPtr(gen->builder, error_msg, "assert_error");
     LLVMValueRef fprintf_args[] = {stderr_ptr, error_str};
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, fprintf_args, 2, "");
-    
+
     // Call abort() to terminate
     LLVMValueRef abort_fn = LLVMGetNamedFunction(gen->module, "abort");
     if (!abort_fn) {
@@ -255,31 +255,31 @@ LLVMValueRef debug_assert_codegen(void* context, ASTNode* node) {
     }
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(abort_fn), abort_fn, NULL, 0, "");
     LLVMBuildUnreachable(gen->builder);
-    
+
     // Continue block: normal execution
     LLVMPositionBuilderAtEnd(gen->builder, continue_block);
-    
+
     return NULL;
 }
 
 // Codegen callback for test.assert (always active, not dependent on debug mode)
 LLVMValueRef test_assert_codegen(void* context, ASTNode* node) {
     CodeGen* gen = (CodeGen*)context;
-    
+
     // Get the condition argument
     ASTNode* condition_arg = node->method_call.args[0];
     LLVMValueRef condition = codegen_node(gen, condition_arg);
-    
+
     // Create blocks for assertion failure and continuation
     LLVMBasicBlockRef fail_block = LLVMAppendBasicBlock(LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), "test_assert_fail");
     LLVMBasicBlockRef continue_block = LLVMAppendBasicBlock(LLVMGetBasicBlockParent(LLVMGetInsertBlock(gen->builder)), "test_assert_continue");
-    
+
     // Branch: if condition is false, go to fail_block, otherwise continue
     LLVMBuildCondBr(gen->builder, condition, continue_block, fail_block);
-    
+
     // Generate fail block: print error message and abort
     LLVMPositionBuilderAtEnd(gen->builder, fail_block);
-    
+
     // Reuse io module's stderr infrastructure
     LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
     LLVMValueRef global_stderr = LLVMGetNamedGlobal(gen->module, "__jsasta_stderr");
@@ -288,7 +288,7 @@ LLVMValueRef test_assert_codegen(void* context, ASTNode* node) {
         LLVMSetLinkage(global_stderr, LLVMExternalLinkage);
     }
     LLVMValueRef stderr_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(file_type, 0), global_stderr, "stderr");
-    
+
     // Use fprintf (already available from io module)
     LLVMValueRef fprintf_fn = LLVMGetNamedFunction(gen->module, "fprintf");
     if (!fprintf_fn) {
@@ -298,16 +298,16 @@ LLVMValueRef test_assert_codegen(void* context, ASTNode* node) {
             2, true);
         fprintf_fn = LLVMAddFunction(gen->module, "fprintf", fprintf_type);
     }
-    
+
     // Build error message with location info
     const char* filename = condition_arg->loc.filename ? condition_arg->loc.filename : "unknown";
     char error_msg[512];
-    snprintf(error_msg, sizeof(error_msg), "Test assertion failed at %s:%zu:%zu\n", 
+    snprintf(error_msg, sizeof(error_msg), "Test assertion failed at %s:%zu:%zu\\n",
              filename, condition_arg->loc.line, condition_arg->loc.column);
     LLVMValueRef error_str = LLVMBuildGlobalStringPtr(gen->builder, error_msg, "test_assert_error");
     LLVMValueRef fprintf_args[] = {stderr_ptr, error_str};
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, fprintf_args, 2, "");
-    
+
     // Call abort() to terminate
     LLVMValueRef abort_fn = LLVMGetNamedFunction(gen->module, "abort");
     if (!abort_fn) {
@@ -316,9 +316,9 @@ LLVMValueRef test_assert_codegen(void* context, ASTNode* node) {
     }
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(abort_fn), abort_fn, NULL, 0, "");
     LLVMBuildUnreachable(gen->builder);
-    
+
     // Continue block: normal execution
     LLVMPositionBuilderAtEnd(gen->builder, continue_block);
-    
+
     return NULL;
 }

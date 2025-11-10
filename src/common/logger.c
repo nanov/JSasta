@@ -295,6 +295,4 @@ void logger_reset_error_count() {
     logger_state.error_count = 0;
 }
 
-bool logger_has_errors() {
-    return logger_state.error_count > 0;
-}
+// Removed: logger_has_errors() - use diagnostics instead for instance-based error tracking

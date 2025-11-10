@@ -61,7 +61,7 @@ void log_section(const char* format, ...);
 // Error counting
 int logger_get_error_count();
 void logger_reset_error_count();
-bool logger_has_errors();
+// Removed: bool logger_has_errors(); - use diagnostics instead
 
 // Helper macro to create source location
 #define SRC_LOC(file, ln, col) &(SourceLocation){.filename = file, .line = ln, .column = col}

@@ -1,0 +1,22 @@
+// jastat-summary: Zero-argument function calls
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+function greet(): void {
+    io.println("Hello!");
+}
+
+function get_magic_number(): i32 {
+    return 42;
+}
+
+function calculate(): i32 {
+    return get_magic_number() * 2;
+}
+
+greet();
+greet();
+
+io.println("Magic number: {}", get_magic_number());
+io.println("Calculated: {}", calculate());

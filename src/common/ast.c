@@ -300,6 +300,16 @@ void ast_free(ASTNode* node) {
             // Type info is stored in node->type_info (handled generically)
             break;
 
+        case AST_STRUCT_LITERAL:
+            free(node->struct_literal.struct_name);
+            for (int i = 0; i < node->struct_literal.field_count; i++) {
+                free(node->struct_literal.field_names[i]);
+                ast_free(node->struct_literal.field_values[i]);
+            }
+            free(node->struct_literal.field_names);
+            free(node->struct_literal.field_values);
+            break;
+
         case AST_INDEX_ASSIGNMENT:
             ast_free(node->index_assignment.object);
             ast_free(node->index_assignment.index);
@@ -674,14 +684,14 @@ ASTNode* ast_clone(ASTNode* node) {
             clone->pattern_match.variant_index = node->pattern_match.variant_index;
             clone->pattern_match.binding_count = node->pattern_match.binding_count;
             clone->pattern_match.is_struct_binding = node->pattern_match.is_struct_binding;
-            
+
             // Clone binding arrays
             if (node->pattern_match.binding_count > 0) {
                 clone->pattern_match.binding_names = malloc(sizeof(char*) * node->pattern_match.binding_count);
                 clone->pattern_match.binding_is_mutable = malloc(sizeof(bool) * node->pattern_match.binding_count);
                 clone->pattern_match.binding_is_wildcard = malloc(sizeof(bool) * node->pattern_match.binding_count);
                 clone->pattern_match.binding_types = malloc(sizeof(TypeInfo*) * node->pattern_match.binding_count);
-                
+
                 for (int i = 0; i < node->pattern_match.binding_count; i++) {
                     clone->pattern_match.binding_names[i] = strdup(node->pattern_match.binding_names[i]);
                     clone->pattern_match.binding_is_mutable[i] = node->pattern_match.binding_is_mutable[i];
@@ -730,6 +740,17 @@ ASTNode* ast_clone(ASTNode* node) {
                 clone->object_literal.values[i] = ast_clone(node->object_literal.values[i]);
             }
             // TypeInfo is cloned in the generic clone->type_info at the top of ast_clone
+            break;
+
+        case AST_STRUCT_LITERAL:
+            clone->struct_literal.struct_name = strdup(node->struct_literal.struct_name);
+            clone->struct_literal.field_count = node->struct_literal.field_count;
+            clone->struct_literal.field_names = (char**)malloc(sizeof(char*) * node->struct_literal.field_count);
+            clone->struct_literal.field_values = (ASTNode**)malloc(sizeof(ASTNode*) * node->struct_literal.field_count);
+            for (int i = 0; i < node->struct_literal.field_count; i++) {
+                clone->struct_literal.field_names[i] = strdup(node->struct_literal.field_names[i]);
+                clone->struct_literal.field_values[i] = ast_clone(node->struct_literal.field_values[i]);
+            }
             break;
 
         case AST_INDEX_ASSIGNMENT:

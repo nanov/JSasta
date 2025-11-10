@@ -37,11 +37,11 @@ int compile_to_object_or_asm(LLVMModuleRef module, const char* output_file, int 
     // Initialize LLVM targets
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
-    
+
     // Get the default target triple
     char* target_triple = LLVMGetDefaultTargetTriple();
     LLVMSetTarget(module, target_triple);
-    
+
     // Get the target
     LLVMTargetRef target;
     char* error = NULL;
@@ -51,7 +51,7 @@ int compile_to_object_or_asm(LLVMModuleRef module, const char* output_file, int 
         LLVMDisposeMessage(target_triple);
         return 1;
     }
-    
+
     // Create target machine
     LLVMCodeGenOptLevel llvm_opt_level;
     switch (opt_level) {
@@ -61,7 +61,7 @@ int compile_to_object_or_asm(LLVMModuleRef module, const char* output_file, int 
         case 3: llvm_opt_level = LLVMCodeGenLevelAggressive; break;
         default: llvm_opt_level = LLVMCodeGenLevelNone; break;
     }
-    
+
     LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
         target,
         target_triple,
@@ -71,14 +71,14 @@ int compile_to_object_or_asm(LLVMModuleRef module, const char* output_file, int 
         LLVMRelocPIC,
         LLVMCodeModelDefault
     );
-    
+
     LLVMDisposeMessage(target_triple);
-    
+
     if (!machine) {
         log_error("Failed to create target machine");
         return 1;
     }
-    
+
     // Emit object or assembly file
     LLVMCodeGenFileType file_type = emit_assembly ? LLVMAssemblyFile : LLVMObjectFile;
     if (LLVMTargetMachineEmitToFile(machine, module, (char*)output_file, file_type, &error)) {
@@ -87,7 +87,7 @@ int compile_to_object_or_asm(LLVMModuleRef module, const char* output_file, int 
         LLVMDisposeTargetMachine(machine);
         return 1;
     }
-    
+
     log_verbose("%s written to %s", emit_assembly ? "Assembly" : "Object file", output_file);
     LLVMDisposeTargetMachine(machine);
     return 0;
@@ -108,51 +108,51 @@ int link_executable(const char* obj_file, const char* output_file, const char* s
     } else {
         compiler_path[len] = '\0';
     }
-    
+
     // Get directory of compiler binary
     char* last_slash = strrchr(compiler_path, '/');
     if (last_slash) {
         *last_slash = '\0';
     }
-    
+
     // Runtime is in ../runtime relative to compiler binary
     char runtime_path[PATH_MAX];
     snprintf(runtime_path, sizeof(runtime_path), "%s/runtime", compiler_path);
-    
-    // Build clang command
+
+    // Build clang command - use system clang to avoid Homebrew LLVM 21 LTO bug
     char command[4096];
     int pos = snprintf(command, sizeof(command), "clang %s", obj_file);
-    
+
     // Add runtime object files
     pos += snprintf(command + pos, sizeof(command) - pos, " %s/display.o", runtime_path);
     pos += snprintf(command + pos, sizeof(command) - pos, " %s/jsasta_runtime.o", runtime_path);
-    
+
     // Add sanitizer flags
     if (sanitizer) {
         pos += snprintf(command + pos, sizeof(command) - pos, " -fsanitize=%s", sanitizer);
     }
-    
+
     // Add debug symbols flag
     if (debug_symbols) {
         pos += snprintf(command + pos, sizeof(command) - pos, " -g");
     }
-    
+
     // Add output file
     pos += snprintf(command + pos, sizeof(command) - pos, " -o %s", output_file);
-    
+
     log_verbose("Linking: %s", command);
-    
+
     int result = system(command);
     if (result != 0) {
         log_error("Linking failed");
         return 1;
     }
-    
+
     log_info("Executable written to %s", output_file);
     return 0;
 }
 
-int compile_file(const char* input_file, const char* output_file, 
+int compile_file(const char* input_file, const char* output_file,
                  bool emit_llvm, bool emit_asm, bool compile_only, int opt_level,
                  const char* sanitizer, bool enable_debug_symbols, bool enable_debug) {
     log_info("Compiling %s...", input_file);
@@ -269,12 +269,12 @@ int compile_file(const char* input_file, const char* output_file,
         if (mod == entry_module) continue; // Skip entry module, do it last
 
         log_verbose("Generating code for module: %s", mod->relative_path);
-        codegen_generate(gen, mod->ast, false); // Not entry module
+        codegen_generate(gen, mod->ast, false, registry->diagnostics); // Not entry module
     }
 
     // Finally, generate code for the entry module
     log_verbose("Generating code for entry module: %s", entry_module->relative_path);
-    codegen_generate(gen, entry_module->ast, true); // Is entry module
+    codegen_generate(gen, entry_module->ast, true, registry->diagnostics); // Is entry module
 
     log_info("Code generation complete");
 
@@ -294,14 +294,14 @@ int compile_file(const char* input_file, const char* output_file,
     } else {
         // Compile to object file or binary
         const char* obj_file = compile_only ? output_file : "/tmp/jsasta_temp.o";
-        
+
         log_section("Compilation");
         if (compile_to_object_or_asm(gen->module, obj_file, opt_level, false) != 0) {
             codegen_free(gen);
             module_registry_free(registry);
             return 1;
         }
-        
+
         if (!compile_only) {
             // Link to create executable
             log_section("Linking");
@@ -310,12 +310,12 @@ int compile_file(const char* input_file, const char* output_file,
                 module_registry_free(registry);
                 return 1;
             }
-            
+
             // Clean up temporary object file
             unlink(obj_file);
         }
     }
-    
+
     diagnostic_print_summary(registry->diagnostics);
 
     // Cleanup
@@ -440,7 +440,7 @@ int main(int argc, char** argv) {
     }
 
     const char* input_file = argv[optind];
-    
+
     // Set default output file if not specified
     if (!output_file) {
         if (emit_llvm) {
@@ -466,6 +466,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    return compile_file(input_file, output_file, emit_llvm, emit_asm, compile_only, 
+    return compile_file(input_file, output_file, emit_llvm, emit_asm, compile_only,
                        opt_level, sanitizer, enable_debug_symbols, enable_debug);
 }

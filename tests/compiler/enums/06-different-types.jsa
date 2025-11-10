@@ -1,0 +1,40 @@
+// jastat-summary: Enum variants with different data types
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Value {
+    Int(val: i32);
+    Double(val: double);
+    Bool(val: bool);
+    String(val: string);
+}
+
+let v1 = Value.Int { val: 42 };
+let v2 = Value.Double { val: 3.14 };
+let v3 = Value.Bool { val: true };
+let v4 = Value.String { val: "test" };
+
+if (v1 is Value.Int(let val)) {
+    io.println("Int: {}", val);
+}
+
+if (v2 is Value.Double(let val)) {
+    io.println("Double: {}", val);
+}
+
+if (v3 is Value.Bool(let val)) {
+    io.println("Bool: {}", val);
+}
+
+if (v4 is Value.String(let val)) {
+    io.println("String: {}", val);
+}
+
+if (!(v1 is Value.Double(let x))) {
+    io.println("v1 is not Double");
+}
+
+if (!(v2 is Value.Int(let x))) {
+    io.println("v2 is not Int");
+}

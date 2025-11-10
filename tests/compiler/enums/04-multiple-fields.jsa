@@ -1,0 +1,26 @@
+// jastat-summary: Enum variants with multiple fields
+// jastat: mode=run, capture=stdout
+
+import io from @io;
+
+enum Event {
+    Click(x: i32, y: i32);
+    KeyPress(key: i32, shift: bool);
+    Resize(width: i32, height: i32);
+}
+
+let e1 = Event.Click { x: 100, y: 200 };
+let e2 = Event.KeyPress { key: 65, shift: true };
+let e3 = Event.Resize { width: 800, height: 600 };
+
+if (e1 is Event.Click(let x, let y)) {
+    io.println("Click at ({}, {})", x, y);
+}
+
+if (e2 is Event.KeyPress(let key, let shift)) {
+    io.println("Key: {}, Shift: {}", key, shift);
+}
+
+if (e3 is Event.Resize(let width, let height)) {
+    io.println("Resize to {}x{}", width, height);
+}

@@ -43,14 +43,14 @@ static inline TypeInfo* get_enum_type(const char* name, TypeContext* type_ctx) {
 // Walks the namespace chain from left to right: a.b.c.Type means
 // - Look up 'a' in current symbols (must be namespace)
 // - Look up 'b' in module 'a' (must be namespace)
-// - Look up 'c' in module 'b' (must be namespace)  
+// - Look up 'c' in module 'b' (must be namespace)
 // - Look up 'Type' in module 'c' (the actual type)
 // Returns the resolved TypeInfo* or NULL if not found
 static TypeInfo* resolve_namespaced_type(const char* type_path, SymbolTable* symbols, TypeContext* type_ctx) {
     if (!type_path || !symbols) return NULL;
-    
+
     log_verbose("Resolving type path: %s", type_path);
-    
+
     // Check if this is a namespaced type (contains a dot)
     if (!strchr(type_path, '.')) {
         // Not namespaced, just look it up directly in the TypeContext
@@ -62,29 +62,29 @@ static TypeInfo* resolve_namespaced_type(const char* type_path, SymbolTable* sym
         log_verbose("  Direct lookup '%s': %s", type_path, result ? "found" : "not found");
         return result;
     }
-    
+
     // Split the path into parts: "a.b.c.Type" -> ["a", "b", "c", "Type"]
     char path_copy[512];
     strncpy(path_copy, type_path, sizeof(path_copy) - 1);
     path_copy[sizeof(path_copy) - 1] = '\0';
-    
+
     char* parts[32]; // Max 32 levels of nesting
     int part_count = 0;
-    
+
     char* token = strtok(path_copy, ".");
     while (token && part_count < 32) {
         parts[part_count++] = token;
         token = strtok(NULL, ".");
     }
-    
+
     if (part_count < 2) {
         log_error("Invalid type path: %s", type_path);
         return NULL;
     }
-    
+
     // The last part is the type name, everything before is namespace chain
     const char* type_name = parts[part_count - 1];
-    
+
     // For now, only support single-level namespaces: namespace.Type
     // Deeply nested like a.b.c.Type would require modules to re-export other modules
     if (part_count > 2) {
@@ -92,39 +92,39 @@ static TypeInfo* resolve_namespaced_type(const char* type_path, SymbolTable* sym
         log_error("Only single-level namespaces like 'namespace.Type' are supported");
         return NULL;
     }
-    
+
     // Single level: namespace.Type
     const char* namespace_name = parts[0];
     log_verbose("  Looking up namespace '%s'", namespace_name);
-    
+
     // Look up the namespace in the current symbol table
     SymbolEntry* entry = symbol_table_lookup(symbols, namespace_name);
     if (!entry || !symbol_is_namespace(entry)) {
         log_error("Unknown namespace '%s' in type path '%s'", namespace_name, type_path);
         return NULL;
     }
-    
+
     // Get the module for this namespace
     Module* current_module = symbol_get_imported_module(entry);
     if (!current_module) {
         log_error("Failed to get module for namespace '%s'", namespace_name);
         return NULL;
     }
-    
+
     log_verbose("  Found module: %s", current_module->relative_path);
-    
+
     // Now look up the actual type in the final module's TypeContext
     if (!current_module || !current_module->type_ctx) {
         log_error("No module or type context for type lookup");
         return NULL;
     }
-    
+
     TypeInfo* resolved = type_context_find_struct_type(current_module->type_ctx, type_name);
     if (!resolved) {
         log_error("Type '%s' not found in final namespace", type_name);
         return NULL;
     }
-    
+
     log_verbose("  Resolved to type: %s", resolved->type_name);
     return resolved;
 }
@@ -476,6 +476,7 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
             return Type_Unknown;
         }
         case AST_OBJECT_LITERAL:
+        case AST_STRUCT_LITERAL:
             return node->type_info;
         case AST_MEMBER_ACCESS: {
             // Try to infer the property type using TypeInfo
@@ -756,27 +757,27 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
             TypeInfo* return_type_hint = node->func_decl.return_type_hint;
             ASTNode* body = node->func_decl.body;  // NULL for external functions
             bool is_variadic = node->func_decl.is_variadic;
-            
+
             // Resolve namespaced type hints in parameters
             for (int i = 0; i < param_count; i++) {
-                if (param_type_hints[i] && 
+                if (param_type_hints[i] &&
                     param_type_hints[i]->kind == TYPE_KIND_UNKNOWN &&
                     param_type_hints[i]->type_name) {
                     TypeInfo* resolved = resolve_namespaced_type(param_type_hints[i]->type_name, symbols, type_ctx);
                     if (resolved) {
                         param_type_hints[i] = resolved;
                     } else {
-                        TYPE_ERROR(diag, node->loc, "T101", 
-                            "Cannot resolve parameter type '%s' in function '%s'", 
+                        TYPE_ERROR(diag, node->loc, "T101",
+                            "Cannot resolve parameter type '%s' in function '%s'",
                             param_type_hints[i]->type_name, func_name);
                         param_type_hints[i] = Type_Unknown;
                     }
                 }
             }
-            
+
             // Resolve namespaced return type hint
             // Skip Type_Unknown (which has type_name "unknown" but shouldn't be resolved)
-            if (return_type_hint && 
+            if (return_type_hint &&
                 return_type_hint->kind == TYPE_KIND_UNKNOWN &&
                 return_type_hint != Type_Unknown &&
                 return_type_hint->type_name) {
@@ -785,8 +786,8 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
                     node->func_decl.return_type_hint = resolved;
                     return_type_hint = resolved;
                 } else {
-                    TYPE_ERROR(diag, node->loc, "T101", 
-                        "Cannot resolve return type '%s' in function '%s'", 
+                    TYPE_ERROR(diag, node->loc, "T101",
+                        "Cannot resolve return type '%s' in function '%s'",
                         return_type_hint->type_name, func_name);
                     node->func_decl.return_type_hint = Type_Unknown;
                     return_type_hint = Type_Unknown;
@@ -906,6 +907,98 @@ static void collect_function_signatures(ASTNode* node, SymbolTable* symbols, Typ
     }
 }
 
+// Helper: Check if an expression contains a logical OR (||) operator
+static bool expression_contains_or(ASTNode* node) {
+    if (!node) return false;
+
+    switch (node->type) {
+        case AST_BINARY_OP:
+            if (strcmp(node->binary_op.op, "||") == 0) {
+                return true;
+            }
+            return expression_contains_or(node->binary_op.left) ||
+                   expression_contains_or(node->binary_op.right);
+
+        case AST_UNARY_OP:
+            return expression_contains_or(node->unary_op.operand);
+
+        case AST_PATTERN_MATCH:
+            return expression_contains_or(node->pattern_match.expr);
+
+        case AST_CALL:
+            for (int i = 0; i < node->call.arg_count; i++) {
+                if (expression_contains_or(node->call.args[i])) {
+                    return true;
+                }
+            }
+            return false;
+
+        case AST_TERNARY:
+            return expression_contains_or(node->ternary.condition) ||
+                   expression_contains_or(node->ternary.true_expr) ||
+                   expression_contains_or(node->ternary.false_expr);
+
+        default:
+            return false;
+    }
+}
+
+// Helper: Collect all pattern match nodes from an expression tree
+// Only collects patterns that are in && chains (left side of || is excluded if || present)
+static void collect_pattern_bindings(ASTNode* node, ASTNode*** patterns, int* pattern_count, int* pattern_capacity) {
+    if (!node) return;
+
+    switch (node->type) {
+        case AST_PATTERN_MATCH:
+            // Add this pattern to the list
+            if (*pattern_count >= *pattern_capacity) {
+                *pattern_capacity *= 2;
+                *patterns = realloc(*patterns, sizeof(ASTNode*) * (*pattern_capacity));
+            }
+            (*patterns)[*pattern_count] = node;
+            (*pattern_count)++;
+            break;
+
+        case AST_BINARY_OP:
+            if (strcmp(node->binary_op.op, "&&") == 0) {
+                // For &&, collect from both sides
+                collect_pattern_bindings(node->binary_op.left, patterns, pattern_count, pattern_capacity);
+                collect_pattern_bindings(node->binary_op.right, patterns, pattern_count, pattern_capacity);
+            } else if (strcmp(node->binary_op.op, "||") == 0) {
+                // For ||, don't collect any patterns - bindings won't be available
+                // This is handled by the has_or check
+            }
+            break;
+
+        default:
+            // Other node types don't contain patterns
+            break;
+    }
+}
+
+// Helper: Infer types only for pattern match nodes in an expression
+// This avoids trying to infer types for expressions that use pattern bindings
+static void infer_pattern_types_only(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
+    if (!node) return;
+
+    switch (node->type) {
+        case AST_PATTERN_MATCH:
+            // Infer this pattern match
+            infer_literal_types(node, symbols, type_ctx, diag);
+            break;
+
+        case AST_BINARY_OP:
+            // Descend into binary ops to find pattern matches
+            infer_pattern_types_only(node->binary_op.left, symbols, type_ctx, diag);
+            infer_pattern_types_only(node->binary_op.right, symbols, type_ctx, diag);
+            break;
+
+        default:
+            // Don't infer other node types in the first pass
+            break;
+    }
+}
+
 // Pass 2: Infer literal and obvious types
 static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext* type_ctx, DiagnosticContext* diag) {
     if (!node) return;
@@ -940,10 +1033,10 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
 
         case AST_VAR_DECL:
             // Resolve namespaced type hints (e.g., "termios.termios_t")
-            if (node->var_decl.type_hint && 
+            if (node->var_decl.type_hint &&
                 node->var_decl.type_hint->kind == TYPE_KIND_UNKNOWN &&
                 node->var_decl.type_hint->type_name) {
-                log_verbose("VAR_DECL: Resolving type hint '%s' for variable '%s'", 
+                log_verbose("VAR_DECL: Resolving type hint '%s' for variable '%s'",
                            node->var_decl.type_hint->type_name, node->var_decl.name);
                 TypeInfo* resolved = resolve_namespaced_type(node->var_decl.type_hint->type_name, symbols, type_ctx);
                 if (resolved) {
@@ -951,12 +1044,12 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->var_decl.type_hint = resolved;
                 } else {
                     log_error("VAR_DECL: Failed to resolve type '%s'", node->var_decl.type_hint->type_name);
-                    TYPE_ERROR(diag, node->loc, "T101", 
+                    TYPE_ERROR(diag, node->loc, "T101",
                         "Cannot resolve type '%s'", node->var_decl.type_hint->type_name);
                     node->var_decl.type_hint = Type_Unknown;
                 }
             }
-            
+
             // Evaluate const expression for array size
             if (node->var_decl.array_size_expr) {
                 EvalResult result = eval_const_expr_result(node->var_decl.array_size_expr, symbols);
@@ -981,7 +1074,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                      type_info_is_array(node->var_decl.type_hint) &&
                                      node->var_decl.init->type == AST_OBJECT_LITERAL &&
                                      node->var_decl.init->object_literal.count == 0);
-                
+
                 if (is_array_init) {
                     // Convert empty object literal to empty array literal
                     node->var_decl.init->type = AST_ARRAY_LITERAL;
@@ -991,10 +1084,10 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->var_decl.init->array_literal.count = 0;
                     // Set type info to match the declared array type
                     node->var_decl.init->type_info = node->var_decl.type_hint;
-                    log_verbose("Converted empty object literal to array literal for '%s'", 
+                    log_verbose("Converted empty object literal to array literal for '%s'",
                                node->var_decl.name);
                 }
-                
+
                 // Special case: if we have a struct type hint and object literal,
                 // skip normal type inference to avoid creating anonymous types
                 bool is_struct_literal = (node->var_decl.type_hint &&
@@ -1443,36 +1536,58 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
 
         case AST_IF: {
-            infer_literal_types(node->if_stmt.condition, symbols, type_ctx, diag);
-            
-            // Check if condition is a pattern match - if so, add bindings to then-branch scope
-            if (node->if_stmt.condition && node->if_stmt.condition->type == AST_PATTERN_MATCH) {
-                ASTNode* pattern = node->if_stmt.condition;
-                
-                // Create a new scope for the then-branch to hold pattern bindings
-                SymbolTable* then_scope = symbol_table_create(symbols);
-                
-                // Add pattern bindings to the then-branch scope
-                for (int i = 0; i < pattern->pattern_match.binding_count; i++) {
-                    if (!pattern->pattern_match.binding_is_wildcard[i]) {
-                        char* binding_name = pattern->pattern_match.binding_names[i];
-                        TypeInfo* binding_type = pattern->pattern_match.binding_types[i];
-                        bool is_const = !pattern->pattern_match.binding_is_mutable[i];
-                        
-                        symbol_table_insert(then_scope, binding_name, binding_type, NULL, is_const);
+            // First pass: Only infer pattern matches to get their types and binding types
+            // Don't infer the whole condition yet because it might reference pattern bindings
+            infer_pattern_types_only(node->if_stmt.condition, symbols, type_ctx, diag);
+
+            // Collect all pattern matches from the condition expression
+            int pattern_capacity = 4;
+            int pattern_count = 0;
+            ASTNode** patterns = malloc(sizeof(ASTNode*) * pattern_capacity);
+            collect_pattern_bindings(node->if_stmt.condition, &patterns, &pattern_count, &pattern_capacity);
+
+            // Check if the condition contains any || operators
+            bool has_or = expression_contains_or(node->if_stmt.condition);
+
+            // Only add pattern bindings to scope if:
+            // 1. There are pattern matches with bindings
+            // 2. There's no || in the condition (bindings would be ambiguous)
+            if (pattern_count > 0 && !has_or) {
+                // Create a new scope for the condition and then-branch to hold pattern bindings
+                SymbolTable* binding_scope = symbol_table_create(symbols);
+
+                // Add all pattern bindings from all collected patterns
+                for (int p = 0; p < pattern_count; p++) {
+                    ASTNode* pattern = patterns[p];
+                    for (int i = 0; i < pattern->pattern_match.binding_count; i++) {
+                        if (!pattern->pattern_match.binding_is_wildcard[i]) {
+                            char* binding_name = pattern->pattern_match.binding_names[i];
+                            TypeInfo* binding_type = pattern->pattern_match.binding_types[i];
+                            bool is_const = !pattern->pattern_match.binding_is_mutable[i];
+
+                            symbol_table_insert(binding_scope, binding_name, binding_type, NULL, is_const);
+                        }
                     }
                 }
-                
+
+                // Second pass: Now infer the full condition with bindings in scope
+                // This allows expressions like (msg is Foo(let x) && x > 10) to work
+                infer_literal_types(node->if_stmt.condition, binding_scope, type_ctx, diag);
+
                 // Attach the scope to the then-branch node so codegen can use it
-                node->if_stmt.then_branch->symbol_table = then_scope;
-                
-                // Infer types in then-branch with the new scope
-                infer_literal_types(node->if_stmt.then_branch, then_scope, type_ctx, diag);
+                node->if_stmt.then_branch->symbol_table = binding_scope;
+
+                // Infer types in then-branch with the binding scope
+                infer_literal_types(node->if_stmt.then_branch, binding_scope, type_ctx, diag);
             } else {
-                // Normal if without pattern matching
+                // Normal if without pattern matching bindings available
+                // Still need to infer the condition
+                infer_literal_types(node->if_stmt.condition, symbols, type_ctx, diag);
                 infer_literal_types(node->if_stmt.then_branch, symbols, type_ctx, diag);
             }
-            
+
+            free(patterns);
+
             if (node->if_stmt.else_branch) {
                 infer_literal_types(node->if_stmt.else_branch, symbols, type_ctx, diag);
             }
@@ -1689,16 +1804,37 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             break;
         }
 
+        case AST_STRUCT_LITERAL: {
+            // Look up the struct type by name
+            TypeInfo* struct_type = type_context_find_struct_type(type_ctx, node->struct_literal.struct_name);
+            if (!struct_type) {
+                log_error("Unknown struct type: %s", node->struct_literal.struct_name);
+                return;
+            }
+
+            // Infer types of all field values
+            for (int i = 0; i < node->struct_literal.field_count; i++) {
+                infer_literal_types(node->struct_literal.field_values[i], symbols, type_ctx, diag);
+            }
+
+            // Set the struct type
+            node->type_info = struct_type;
+
+            log_verbose("Struct literal '%s' assigned type with %d fields",
+                       node->struct_literal.struct_name, node->struct_literal.field_count);
+            break;
+        }
+
         case AST_ENUM_VARIANT: {
             // Resolve enum type if not already set (e.g., for variant construction created in parser)
             if (!node->enum_variant.enum_type) {
                 node->enum_variant.enum_type = get_enum_type(node->enum_variant.enum_name, type_ctx);
             }
-            
+
             // Resolve variant index and set type
             if (node->enum_variant.enum_type) {
                 TypeInfo* enum_type = node->enum_variant.enum_type;
-                
+
                 // Find variant index
                 for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
                     if (strcmp(enum_type->data.enum_type.variant_names[i], node->enum_variant.variant_name) == 0) {
@@ -1706,7 +1842,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         break;
                     }
                 }
-                
+
                 if (node->enum_variant.variant_index == -1) {
                     TYPE_ERROR(diag, node->loc, "T320",
                         "Enum '%s' does not have variant '%s'",
@@ -1716,7 +1852,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     if (node->enum_variant.field_count > 0) {
                         int variant_idx = node->enum_variant.variant_index;
                         int expected_field_count = enum_type->data.enum_type.variant_field_counts[variant_idx];
-                        
+
                         // Check field count matches
                         if (node->enum_variant.field_count != expected_field_count) {
                             TYPE_ERROR(diag, node->loc, "T322",
@@ -1726,7 +1862,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                             // Type-check each field
                             char** expected_field_names = enum_type->data.enum_type.variant_field_names[variant_idx];
                             TypeInfo** expected_field_types = enum_type->data.enum_type.variant_field_types[variant_idx];
-                            
+
                             for (int i = 0; i < node->enum_variant.field_count; i++) {
                                 // Check field name matches
                                 bool found = false;
@@ -1738,20 +1874,20 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                         break;
                                     }
                                 }
-                                
+
                                 if (!found) {
                                     TYPE_ERROR(diag, node->loc, "T323",
                                         "Variant '%s' has no field '%s'",
                                         node->enum_variant.variant_name, node->enum_variant.field_names[i]);
                                     continue;
                                 }
-                                
+
                                 // Type-check the field value
                                 infer_literal_types(node->enum_variant.field_values[i], symbols, type_ctx, diag);
-                                
+
                                 TypeInfo* value_type = node->enum_variant.field_values[i]->type_info;
                                 TypeInfo* expected_type = expected_field_types[field_pos];
-                                
+
                                 // Simple pointer comparison for type checking
                                 if (value_type != expected_type && value_type != Type_Unknown) {
                                     TYPE_ERROR(diag, node->loc, "T324",
@@ -1764,7 +1900,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                         }
                     }
                 }
-                
+
                 // Set the node's type to the enum type
                 node->type_info = enum_type;
             } else {
@@ -1779,7 +1915,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Type check pattern matching: expr is EnumType.Variant(bindings)
             // First, infer the type of the expression being matched
             infer_literal_types(node->pattern_match.expr, symbols, type_ctx, diag);
-            
+
             // Look up the enum type
             TypeInfo* enum_type = get_enum_type(node->pattern_match.enum_name, type_ctx);
             if (!enum_type) {
@@ -1788,9 +1924,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 node->type_info = Type_Bool; // Pattern match result is always bool
                 break;
             }
-            
+
             node->pattern_match.enum_type = enum_type;
-            
+
             // Verify the expression type matches the enum type
             TypeInfo* expr_type = node->pattern_match.expr->type_info;
             if (expr_type && expr_type != Type_Unknown && expr_type != enum_type) {
@@ -1798,7 +1934,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     "Type mismatch in pattern match: expected '%s', got '%s'",
                     enum_type->type_name, expr_type->type_name);
             }
-            
+
             // Find the variant index
             int variant_index = -1;
             for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
@@ -1807,7 +1943,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     break;
                 }
             }
-            
+
             if (variant_index == -1) {
                 TYPE_ERROR(diag, node->loc, "T324",
                     "Enum '%s' does not have variant '%s'",
@@ -1815,14 +1951,14 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 node->type_info = Type_Bool;
                 break;
             }
-            
+
             node->pattern_match.variant_index = variant_index;
-            
+
             // Get variant field information
             int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
             TypeInfo** field_types = enum_type->data.enum_type.variant_field_types[variant_index];
             char** field_names = enum_type->data.enum_type.variant_field_names[variant_index];
-            
+
             // Determine if this is struct binding or destructuring
             int non_wildcard_count = 0;
             for (int i = 0; i < node->pattern_match.binding_count; i++) {
@@ -1830,22 +1966,22 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     non_wildcard_count++;
                 }
             }
-            
+
             if (non_wildcard_count == 1 && node->pattern_match.binding_count == 1) {
                 // Single binding - bind all fields as struct
                 node->pattern_match.is_struct_binding = true;
-                
+
                 // Look up the variant struct type created during enum registration
                 // Type name is "EnumName.VariantName"
-                size_t struct_name_len = strlen(node->pattern_match.enum_name) + 
+                size_t struct_name_len = strlen(node->pattern_match.enum_name) +
                                         strlen(node->pattern_match.variant_name) + 2;
                 char* struct_name = malloc(struct_name_len);
-                snprintf(struct_name, struct_name_len, "%s.%s", 
+                snprintf(struct_name, struct_name_len, "%s.%s",
                         node->pattern_match.enum_name, node->pattern_match.variant_name);
-                
+
                 TypeInfo* struct_type = type_context_find_struct_type(type_ctx, struct_name);
                 free(struct_name);
-                
+
                 if (!struct_type) {
                     // Fallback: variant has no fields or struct type wasn't created
                     TYPE_ERROR(diag, node->loc, "T326",
@@ -1858,13 +1994,13 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             } else {
                 // Multiple bindings or wildcards - destructure
                 node->pattern_match.is_struct_binding = false;
-                
+
                 if (node->pattern_match.binding_count != field_count) {
                     TYPE_ERROR(diag, node->loc, "T325",
                         "Pattern binding count mismatch: variant '%s' has %d fields, but pattern has %d bindings",
                         node->pattern_match.variant_name, field_count, node->pattern_match.binding_count);
                 }
-                
+
                 // Assign types to each binding
                 for (int i = 0; i < node->pattern_match.binding_count && i < field_count; i++) {
                     if (!node->pattern_match.binding_is_wildcard[i]) {
@@ -1872,7 +2008,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     }
                 }
             }
-            
+
             // Pattern match result type is always bool
             node->type_info = Type_Bool;
             break;
@@ -1896,11 +2032,11 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 if (identifier_is_enum_type(obj_name, type_ctx)) {
                     // This is an enum variant access! Convert AST_MEMBER_ACCESS to AST_ENUM_VARIANT
                     TypeInfo* enum_type = get_enum_type(obj_name, type_ctx);
-                    
+
                     // Save the old data before transforming the node
                     ASTNode* old_object = node->member_access.object;
                     char* old_property = node->member_access.property;
-                    
+
                     // Transform the node type and set enum_variant fields
                     node->type = AST_ENUM_VARIANT;
                     node->enum_variant.enum_name = strdup(obj_name);
@@ -1911,11 +2047,11 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->enum_variant.field_names = NULL;
                     node->enum_variant.field_values = NULL;
                     node->enum_variant.field_count = 0;
-                    
+
                     // Free the old member_access data
                     ast_free(old_object);
                     free(old_property);
-                    
+
                     // Now resolve the variant index and set type (same as AST_ENUM_VARIANT case below)
                     for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
                         if (strcmp(enum_type->data.enum_type.variant_names[i], node->enum_variant.variant_name) == 0) {
@@ -1923,13 +2059,13 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                             break;
                         }
                     }
-                    
+
                     if (node->enum_variant.variant_index == -1) {
                         TYPE_ERROR(diag, node->loc, "T320",
                             "Enum '%s' does not have variant '%s'",
                             node->enum_variant.enum_name, node->enum_variant.variant_name);
                     }
-                    
+
                     node->type_info = enum_type;
                     break;
                 }
@@ -2033,12 +2169,12 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_NEW_EXPR: {
             // Infer type of size expression
             infer_literal_types(node->new_expr.size_expr, symbols, type_ctx, diag);
-            
+
             // Resolve element type if it's unknown (could be a struct type or primitive)
             if (node->new_expr.element_type->kind == TYPE_KIND_UNKNOWN) {
                 const char* type_name = node->new_expr.element_type->type_name;
                 TypeInfo* resolved = NULL;
-                
+
                 // Try primitives first
                 if (strcmp(type_name, "bool") == 0) {
                     resolved = Type_Bool;
@@ -2050,7 +2186,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     // Try to find struct type in context
                     resolved = type_context_find_struct_type(type_ctx, type_name);
                 }
-                
+
                 if (resolved) {
                     // Free the temporary unknown type and use the resolved one
                     free((char*)node->new_expr.element_type->type_name);
@@ -2062,7 +2198,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     break;
                 }
             }
-            
+
             // new T[size] returns ref T[] (ref to array of T)
             // Create array type T[]
             TypeInfo* array_type = type_info_create_array(node->new_expr.element_type);
@@ -2074,15 +2210,15 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
         case AST_DELETE_EXPR: {
             // Infer type of operand
             infer_literal_types(node->delete_expr.operand, symbols, type_ctx, diag);
-            
+
             // Validate that operand is a ref type
             TypeInfo* operand_type = node->delete_expr.operand->type_info;
             if (!type_info_is_ref(operand_type)) {
-                TYPE_ERROR(diag, node->loc, "T312", 
-                    "delete requires a reference type, got %s", 
+                TYPE_ERROR(diag, node->loc, "T312",
+                    "delete requires a reference type, got %s",
                     operand_type->type_name);
             }
-            
+
             // delete returns void
             node->type_info = Type_Void;
             break;
@@ -2239,7 +2375,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                             }
 
                             // Create specialization if all types are known
-                            if (all_known && node->call.arg_count > 0) {
+                            if (all_known) {
                                 FunctionSpecialization* spec = specialization_context_add_by_type_info(ctx, mangled_name, arg_types, node->call.arg_count);
                                 if (spec) {
                                     specialization_create_body(spec, func_decl, arg_types, symbols, ctx, diag);
@@ -2405,7 +2541,7 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                         }
 
                         // Create specialization if all types are known
-                        if (all_known && node->method_call.arg_count > 0) {
+                        if (all_known) {
                             // Use the imported module's TypeContext, not the caller's!
                             TypeContext* module_type_ctx = imported_module->ast->type_ctx;
 
@@ -2470,12 +2606,9 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                 }
             }
 
-            // Methods are fully typed, so they should already have a specialization
-            // Just verify the method exists
-            SymbolEntry* entry = symbol_table_lookup(symbols, mangled_name);
-            if (!entry) {
-                TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found", mangled_name);
-            }
+            // Methods are fully typed and already validated during infer_literal_types
+            // The method call node already has its type_info set if the method was found
+            // No need to re-validate here since methods may have module-prefixed names
             break;
         }
 
@@ -2574,6 +2707,12 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
         case AST_OBJECT_LITERAL:
             for (int i = 0; i < node->object_literal.count; i++) {
                 analyze_call_sites(node->object_literal.values[i], symbols, ctx, diag);
+            }
+            break;
+
+        case AST_STRUCT_LITERAL:
+            for (int i = 0; i < node->struct_literal.field_count; i++) {
+                analyze_call_sites(node->struct_literal.field_values[i], symbols, ctx, diag);
             }
             break;
 
@@ -2980,6 +3119,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
             // Build the mangled function name: StructName.method_name
             char mangled_name[256];
+            TypeInfo* target_type = NULL;  // For instance methods, stores unwrapped object type
+
             if (node->method_call.is_static) {
                 // Static method: Type.method
                 const char* type_name = node->method_call.object->identifier.name;
@@ -2987,8 +3128,12 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             } else {
                 // Instance method: need to determine the type from the object
                 TypeInfo* obj_type = node->method_call.object->type_info;
-                if (obj_type && type_info_is_object(obj_type)) {
-                    snprintf(mangled_name, sizeof(mangled_name), "%s.%s", obj_type->type_name, node->method_call.method_name);
+
+                // Unwrap ref types to get the actual object type
+                target_type = type_info_get_ref_target(obj_type);
+
+                if (target_type && type_info_is_object(target_type)) {
+                    snprintf(mangled_name, sizeof(mangled_name), "%s.%s", target_type->type_name, node->method_call.method_name);
                 } else {
                     TYPE_ERROR(diag, node->loc, "T302", "Cannot call method on non-object type");
                     node->type_info = Type_Unknown;
@@ -3013,8 +3158,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 }
 
                 // For instance methods, get the first parameter type from the method signature
-                TypeInfo* obj_type = node->method_call.object->type_info;
-                if (obj_type && type_info_is_object(obj_type)) {
+                // Use target_type which was already computed above (unwraps ref types)
+                if (target_type && type_info_is_object(target_type)) {
                     // Look up the method's function type to get its first parameter
                     TypeInfo* method_func_type = type_context_find_function_type(ctx, mangled_name);
                     if (method_func_type && method_func_type->data.function.specializations) {
@@ -3049,13 +3194,17 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
 
             if (spec) {
                 node->type_info = spec->return_type_info;
-                log_verbose("[METHOD_CALL] %s -> return type: %s",
+                // Store the resolved specialization for codegen to avoid redundant lookups
+                node->method_call.resolved_spec = spec;
+                log_verbose("[METHOD_CALL] %s -> return type: %s, resolved to: %s",
                            mangled_name,
-                           spec->return_type_info ? spec->return_type_info->type_name : "NULL");
+                           spec->return_type_info ? spec->return_type_info->type_name : "NULL",
+                           spec->specialized_name);
             } else {
                 log_verbose("[METHOD_CALL] %s -> NOT FOUND", mangled_name);
                 TYPE_ERROR(diag, node->loc, "T302", "Method '%s' not found or type mismatch", mangled_name);
                 node->type_info = Type_Unknown;
+                node->method_call.resolved_spec = NULL;
             }
 
             free(arg_types);
@@ -3128,6 +3277,12 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             }
             // Type info should already be set by infer_literal_types
             // Nothing extra needed here
+            break;
+
+        case AST_STRUCT_LITERAL:
+            for (int i = 0; i < node->struct_literal.field_count; i++) {
+                infer_with_specializations(node->struct_literal.field_values[i], symbols, ctx, diag);
+            }
             break;
 
         case AST_ENUM_VARIANT: {
@@ -3213,12 +3368,12 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
         case AST_NEW_EXPR: {
             // Infer type of size expression
             infer_with_specializations(node->new_expr.size_expr, symbols, ctx, diag);
-            
+
             // Resolve element type if it's unknown (could be a struct type or primitive)
             if (node->new_expr.element_type->kind == TYPE_KIND_UNKNOWN) {
                 const char* type_name = node->new_expr.element_type->type_name;
                 TypeInfo* resolved = NULL;
-                
+
                 // Try primitives first
                 if (strcmp(type_name, "bool") == 0) {
                     resolved = Type_Bool;
@@ -3230,7 +3385,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     // Try to find struct type in context
                     resolved = type_context_find_struct_type(ctx, type_name);
                 }
-                
+
                 if (resolved) {
                     // Free the temporary unknown type and use the resolved one
                     free((char*)node->new_expr.element_type->type_name);
@@ -3242,7 +3397,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     break;
                 }
             }
-            
+
             // new T[size] returns ref T[] (ref to array of T)
             // Create array type T[]
             TypeInfo* array_type = type_info_create_array(node->new_expr.element_type);
@@ -3254,15 +3409,15 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
         case AST_DELETE_EXPR: {
             // Infer type of operand
             infer_with_specializations(node->delete_expr.operand, symbols, ctx, diag);
-            
+
             // Validate that operand is a ref type
             TypeInfo* operand_type = node->delete_expr.operand->type_info;
             if (!type_info_is_ref(operand_type)) {
-                TYPE_ERROR(diag, node->loc, "T312", 
-                    "delete requires a reference type, got %s", 
+                TYPE_ERROR(diag, node->loc, "T312",
+                    "delete requires a reference type, got %s",
                     operand_type->type_name);
             }
-            
+
             // delete returns void
             node->type_info = Type_Void;
             break;
@@ -3296,6 +3451,23 @@ static void iterative_specialization_discovery(ASTNode* ast, SymbolTable* symbol
 
     // Pass 5: Propagate types with known specializations
     infer_with_specializations(ast, symbols, ctx, diag);
+
+    // Pass 5.5: Process all specialization bodies (including fully-typed functions from Pass 1)
+    // This ensures method calls inside method bodies get their resolved_spec set
+    TypeEntry* type_entry = ctx->type_table;
+    while (type_entry) {
+        if (type_entry->type->kind == TYPE_KIND_FUNCTION) {
+            FunctionSpecialization* spec = type_entry->type->data.function.specializations;
+            while (spec) {
+                if (spec->specialized_body && spec->specialized_body->symbol_table) {
+                    infer_with_specializations(spec->specialized_body, spec->specialized_body->symbol_table, ctx, diag);
+                }
+                spec = spec->next;
+            }
+        }
+        type_entry = type_entry->next;
+    }
+
     log_verbose_indent(2, "After infer_with_specializations: %zu specializations", ctx->specialization_count);
 
     size_t spec_count_after = ctx->specialization_count;

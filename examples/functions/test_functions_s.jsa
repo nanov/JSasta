@@ -1,0 +1,9 @@
+// Function tests
+import io from @io;
+
+// Simple function
+function greet():void {
+	io.println("{}", "mitko");
+}
+
+greet();

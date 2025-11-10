@@ -178,27 +178,27 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
             log_error("Expected type name after ':'");
             return NULL;
         }
-        
+
         // Build up the full type path (might be "Type" or "namespace.Type" or "a.b.c.Type")
         char type_path[512] = {0};
         strncpy(type_path, parser->current_token->value, sizeof(type_path) - 1);
         parser_advance(parser);  // consume first identifier
-        
+
         // Check for namespace path (one or more .identifier)
         while (parser_match(parser, TOKEN_DOT)) {
             parser_advance(parser);  // consume '.'
-            
+
             if (!parser_match(parser, TOKEN_IDENTIFIER)) {
                 PARSE_ERROR(parser, "E205", "Expected identifier after '.' in type name");
                 return Type_Unknown;
             }
-            
+
             // Append .identifier to the path
             strncat(type_path, ".", sizeof(type_path) - strlen(type_path) - 1);
             strncat(type_path, parser->current_token->value, sizeof(type_path) - strlen(type_path) - 1);
             parser_advance(parser);  // consume identifier
         }
-        
+
         // Now we have the full type path
         // If it contains a dot, it's a namespaced type (resolve during type inference)
         // If not, try to look it up in the current TypeContext
@@ -245,6 +245,47 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
     return type_info;
 }
 
+// Forward declaration needed by parse_field_initializers
+static ASTNode* parse_expression(Parser* parser);
+
+// Helper function to parse field initializers: { field1: value1, field2: value2 }
+// Assumes the opening '{' has already been consumed
+// Returns the number of fields parsed, or -1 on error
+static int parse_field_initializers(Parser* parser, char*** field_names, ASTNode*** field_values, const char* error_code) {
+    int capacity = 4;
+    *field_names = malloc(sizeof(char*) * capacity);
+    *field_values = malloc(sizeof(ASTNode*) * capacity);
+    int field_count = 0;
+
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        do {
+            if (field_count >= capacity) {
+                capacity *= 2;
+                *field_names = realloc(*field_names, sizeof(char*) * capacity);
+                *field_values = realloc(*field_values, sizeof(ASTNode*) * capacity);
+            }
+
+            // Parse field_name: value
+            if (parser->current_token->type != TOKEN_IDENTIFIER) {
+                PARSE_ERROR(parser, error_code, "Expected field name in field initializer");
+                return -1;
+            }
+
+            (*field_names)[field_count] = strdup(parser->current_token->value);
+            parser_advance(parser);
+
+            parser_expect(parser, TOKEN_COLON);
+
+            (*field_values)[field_count] = parse_expression(parser);
+            field_count++;
+
+        } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+    }
+
+    parser_expect(parser, TOKEN_RBRACE);
+    return field_count;
+}
+
 Parser* parser_create(const char* source, const char* filename, TypeContext* type_ctx, DiagnosticContext* diagnostics) {
     Parser* parser = (Parser*)malloc(sizeof(Parser));
     parser->lexer = lexer_create(source);
@@ -267,7 +308,6 @@ void parser_free(Parser* parser) {
 
 // Forward declarations
 static ASTNode* parse_statement(Parser* parser);
-static ASTNode* parse_expression(Parser* parser);
 
 static ASTNode* parse_primary(Parser* parser) {
     ASTNode* node = NULL;
@@ -380,7 +420,7 @@ static ASTNode* parse_primary(Parser* parser) {
         // Could be object literal { key: value } or array initializer { val, val }
         // Look ahead to distinguish between them
         parser_advance(parser);
-        
+
         // Empty braces - treat as empty object literal
         if (parser_match(parser, TOKEN_RBRACE)) {
             node = AST_NODE(parser, AST_OBJECT_LITERAL);
@@ -395,13 +435,13 @@ static ASTNode* parse_primary(Parser* parser) {
             Token* saved_token = parser->current_token;
             parser->current_token = NULL;
             Token* next_token = lexer_next_token(parser->lexer);
-            
+
             bool is_object_literal = (next_token->type == TOKEN_COLON);
-            
+
             // Restore position
             token_free(next_token);
             parser->current_token = saved_token;
-            
+
             if (is_object_literal) {
                 // Object literal { key: value, key2: value2 }
                 node = AST_NODE(parser, AST_OBJECT_LITERAL);
@@ -678,15 +718,16 @@ static ASTNode* parse_call(Parser* parser) {
             }
         } else if (parser_match(parser, TOKEN_LBRACE)) {
             // Check if this is enum variant construction: Enum.Variant{x: 1, y: 2}
+            // or struct literal: Point{x: 1, y: 2}
             if (node->type == AST_MEMBER_ACCESS) {
                 // This will be converted to AST_ENUM_VARIANT during type inference
                 // For now, we attach the field initializers to the member access node
                 // We'll need to store this data temporarily
-                
+
                 // Convert to AST_ENUM_VARIANT immediately with field data
                 char* enum_name = NULL;
                 char* variant_name = NULL;
-                
+
                 if (node->member_access.object->type == AST_IDENTIFIER) {
                     enum_name = strdup(node->member_access.object->identifier.name);
                     variant_name = strdup(node->member_access.property);
@@ -694,51 +735,52 @@ static ASTNode* parse_call(Parser* parser) {
                     PARSE_ERROR(parser, "E250", "Expected enum type before variant construction");
                     return node;
                 }
-                
+
                 ASTNode* variant_node = AST_NODE(parser, AST_ENUM_VARIANT);
                 variant_node->enum_variant.enum_name = enum_name;
                 variant_node->enum_variant.variant_name = variant_name;
                 variant_node->enum_variant.enum_type = NULL; // Will be resolved in type inference
                 variant_node->enum_variant.variant_index = -1;
-                
+
                 // Free the old member access node
                 ast_free(node);
-                
+
                 parser_advance(parser); // consume '{'
-                
-                // Parse field initializers: {x: 1, y: 2}
-                int capacity = 4;
-                variant_node->enum_variant.field_names = malloc(sizeof(char*) * capacity);
-                variant_node->enum_variant.field_values = malloc(sizeof(ASTNode*) * capacity);
-                variant_node->enum_variant.field_count = 0;
-                
-                if (!parser_match(parser, TOKEN_RBRACE)) {
-                    do {
-                        if (variant_node->enum_variant.field_count >= capacity) {
-                            capacity *= 2;
-                            variant_node->enum_variant.field_names = realloc(variant_node->enum_variant.field_names, sizeof(char*) * capacity);
-                            variant_node->enum_variant.field_values = realloc(variant_node->enum_variant.field_values, sizeof(ASTNode*) * capacity);
-                        }
-                        
-                        // Parse field_name: value
-                        if (parser->current_token->type != TOKEN_IDENTIFIER) {
-                            PARSE_ERROR(parser, "E251", "Expected field name in variant construction");
-                            return variant_node;
-                        }
-                        
-                        variant_node->enum_variant.field_names[variant_node->enum_variant.field_count] = strdup(parser->current_token->value);
-                        parser_advance(parser);
-                        
-                        parser_expect(parser, TOKEN_COLON);
-                        
-                        variant_node->enum_variant.field_values[variant_node->enum_variant.field_count] = parse_expression(parser);
-                        variant_node->enum_variant.field_count++;
-                        
-                    } while (parser_match(parser, TOKEN_COMMA) && (parser_advance(parser), true));
+
+                // Parse field initializers using helper function
+                int field_count = parse_field_initializers(parser,
+                    &variant_node->enum_variant.field_names,
+                    &variant_node->enum_variant.field_values,
+                    "E251");
+
+                if (field_count < 0) {
+                    return variant_node; // Error already reported
                 }
-                
-                parser_expect(parser, TOKEN_RBRACE);
+                variant_node->enum_variant.field_count = field_count;
+
                 node = variant_node;
+            } else if (node->type == AST_IDENTIFIER) {
+                // Struct literal: Point{x: 1, y: 2}
+                ASTNode* struct_lit = AST_NODE(parser, AST_STRUCT_LITERAL);
+                struct_lit->struct_literal.struct_name = strdup(node->identifier.name);
+
+                // Free the identifier node
+                ast_free(node);
+
+                parser_advance(parser); // consume '{'
+
+                // Parse field initializers using helper function
+                int field_count = parse_field_initializers(parser,
+                    &struct_lit->struct_literal.field_names,
+                    &struct_lit->struct_literal.field_values,
+                    "E252");
+
+                if (field_count < 0) {
+                    return struct_lit; // Error already reported
+                }
+                struct_lit->struct_literal.field_count = field_count;
+
+                node = struct_lit;
             }
         }
     }
@@ -876,10 +918,10 @@ static ASTNode* parse_bit_shift(Parser* parser) {
 // Parse pattern matching: expr is EnumType.Variant(bindings...)
 static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
     parser_advance(parser); // skip 'is'
-    
+
     ASTNode* node = AST_NODE(parser, AST_PATTERN_MATCH);
     node->pattern_match.expr = expr;
-    
+
     // Parse EnumType
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         PARSE_ERROR(parser, "E250", "Expected enum type name after 'is'");
@@ -887,21 +929,21 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
     }
     node->pattern_match.enum_name = strdup(parser->current_token->value);
     parser_advance(parser);
-    
+
     // Parse .Variant
     if (!parser_match(parser, TOKEN_DOT)) {
         PARSE_ERROR(parser, "E251", "Expected '.' after enum type name");
         return node;
     }
     parser_advance(parser);
-    
+
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         PARSE_ERROR(parser, "E252", "Expected variant name after '.'");
         return node;
     }
     node->pattern_match.variant_name = strdup(parser->current_token->value);
     parser_advance(parser);
-    
+
     // Check for bindings: (let x, var y, _)
     node->pattern_match.binding_count = 0;
     node->pattern_match.binding_names = NULL;
@@ -911,17 +953,17 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
     node->pattern_match.enum_type = NULL;
     node->pattern_match.variant_index = -1;
     node->pattern_match.is_struct_binding = false;
-    
+
     if (parser_match(parser, TOKEN_LPAREN)) {
         parser_advance(parser);
-        
+
         // Parse bindings
         int capacity = 4;
         char** names = malloc(sizeof(char*) * capacity);
         bool* is_mutable = malloc(sizeof(bool) * capacity);
         bool* is_wildcard = malloc(sizeof(bool) * capacity);
         int count = 0;
-        
+
         while (!parser_match(parser, TOKEN_RPAREN) && !parser_match(parser, TOKEN_EOF)) {
             if (count >= capacity) {
                 capacity *= 2;
@@ -929,7 +971,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                 is_mutable = realloc(is_mutable, sizeof(bool) * capacity);
                 is_wildcard = realloc(is_wildcard, sizeof(bool) * capacity);
             }
-            
+
             // Check for wildcard
             if (parser_match(parser, TOKEN_UNDERSCORE)) {
                 names[count] = strdup("_");
@@ -942,7 +984,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
             else if (parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_VAR) || parser_match(parser, TOKEN_CONST)) {
                 bool mut = parser_match(parser, TOKEN_VAR);
                 parser_advance(parser);
-                
+
                 if (!parser_match(parser, TOKEN_IDENTIFIER)) {
                     PARSE_ERROR(parser, "E253", "Expected identifier after 'let'/'var'/'const' in pattern");
                     free(names);
@@ -950,7 +992,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                     free(is_wildcard);
                     return node;
                 }
-                
+
                 names[count] = strdup(parser->current_token->value);
                 is_mutable[count] = mut;
                 is_wildcard[count] = false;
@@ -963,7 +1005,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                 free(is_wildcard);
                 return node;
             }
-            
+
             // Check for comma or end
             if (parser_match(parser, TOKEN_COMMA)) {
                 parser_advance(parser);
@@ -975,9 +1017,9 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                 return node;
             }
         }
-        
+
         parser_expect(parser, TOKEN_RPAREN);
-        
+
         node->pattern_match.binding_count = count;
         node->pattern_match.binding_names = names;
         node->pattern_match.binding_is_mutable = is_mutable;
@@ -987,7 +1029,7 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
             node->pattern_match.binding_types[i] = NULL;
         }
     }
-    
+
     return node;
 }
 
@@ -997,12 +1039,12 @@ static ASTNode* parse_comparison(Parser* parser) {
     while (parser_match(parser, TOKEN_LT) || parser_match(parser, TOKEN_GT) ||
            parser_match(parser, TOKEN_LE) || parser_match(parser, TOKEN_GE) ||
            parser_match(parser, TOKEN_IS)) {
-        
+
         // Special handling for 'is' - pattern matching
         if (parser_match(parser, TOKEN_IS)) {
             return parse_pattern_match(parser, node);
         }
-        
+
         ASTNode* op = AST_NODE(parser, AST_BINARY_OP);
         op->binary_op.op = strdup(parser->current_token->value);
         op->binary_op.left = node;
@@ -1457,7 +1499,7 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
                     param_type = Type_U64;
                 }
                 parser_advance(parser);
-                
+
                 // Generate a placeholder name for the parameter
                 char buffer[32];
                 snprintf(buffer, sizeof(buffer), "param%d", node->func_decl.param_count);
@@ -1735,7 +1777,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
             free(member_name);
             return node;
         }
-        
+
         // Also check if it's a ref to an array without size - this is allowed
         // e.g., "arr: ref i32[]" - reference to dynamically-sized array
         if (array_size == 0 && !array_size_expr && type_info_is_ref(prop_type)) {
@@ -1878,7 +1920,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
             // Check if this is named fields or single unnamed field
             // Strategy: save first identifier, advance, check if next token is colon
             // (same pattern as external function parameter parsing)
-            
+
             if (parser_match(parser, TOKEN_RPAREN)) {
                 // Empty parentheses - treat as unit variant
                 node->enum_decl.variant_field_names[variant_idx] = NULL;
@@ -1895,7 +1937,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
                 PARSE_ERROR(parser, "E242", "Expected field name or type in enum variant");
                 return node;
             }
-            
+
             char* first_identifier = strdup(parser->current_token->value);
             parser_advance(parser);
 
@@ -1911,7 +1953,7 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
 
                 // Process first field
                 field_names[field_count] = first_identifier; // Already saved
-                
+
                 // parse_type_annotation expects to consume the colon itself
                 field_types[field_count] = parse_type_annotation(parser);
                 if (!field_types[field_count]) {
@@ -2239,7 +2281,8 @@ ASTNode* parser_parse(Parser* parser) {
 
     while (!parser_match(parser, TOKEN_EOF)) {
         // Check if we have any errors - abort parsing to prevent segfaults
-        if (logger_has_errors()) {
+        // Use diagnostics (instance-based) instead of global logger
+        if (parser->diagnostics && diagnostic_has_errors(parser->diagnostics)) {
             // Don't bother freeing - we're about to exit anyway
             // and partial AST cleanup can cause double-free errors
             return NULL;

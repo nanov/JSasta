@@ -22,8 +22,13 @@ CFLAGS = -Wall -Wextra $(OPT_FLAGS) -Isrc $(shell llvm-config --cflags)
 LDFLAGS = $(shell llvm-config --ldflags --libs core)
 LDLIBS = $(shell llvm-config --system-libs)
 
+# Third-party libraries
+NECO_NAME = neco
+NECO_DIR = third-party/neco
+NECO_CFLAGS = -Wall -Wextra $(OPT_FLAGS)
+
 # test-runner
-TEST_RUNNER_CFLAGS = -Wall -Wextra -O3 -DCOMPILER_PATH=\"$(COMPILER_TARGET)\" -DRUNTIME_PATH=\"$(BUILD_DIR)/runtime\"
+TEST_RUNNER_CFLAGS = -Wall -Wextra -O3 -DCOMPILER_PATH=\"$(COMPILER_TARGET)\" -DRUNTIME_PATH=\"$(BUILD_DIR)/runtime\" -I$(NECO_DIR)
 
 ifdef DEBUG
 	LDFLAGS += -fsanitize=address
@@ -41,6 +46,10 @@ BUILD_DIR = build/$(BUILD_MODE)
 COMPILER_TARGET = $(BUILD_DIR)/$(COMPILER_NAME)
 LSP_TARGET = $(BUILD_DIR)/$(LSP_NAME)
 TEST_RUNNER_TARGET = $(BUILD_DIR)/$(TEST_RUNNER_NAME)
+
+# neco
+NECO_SOURCES = $(wildcard $(NECO_DIR)/*.c)
+NECO_OBJECTS = $(NECO_SOURCES:$(NECO_DIR)/%.c=$(BUILD_DIR)/third-party/neco/%.o)
 
 # Common sources (everything in common directory)
 COMMON_SOURCES = $(wildcard $(COMMON_DIR)/*.c)
@@ -99,13 +108,7 @@ info:
 
 # Create build directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/common $(BUILD_DIR)/compiler $(BUILD_DIR)/lsp $(BUILD_DIR)/runtime $(BUILD_DIR)/test-runner
-
-# Compiler binary
-$(TEST_RUNNER_TARGET): $(TEST_OBJECTS) | $(BUILD_DIR)
-	@echo "Linking test-runner: $(TEST_RUNNER_TARGET)"
-	$(CC) $(TEST_OBJECTS) -o $(TEST_RUNNER_TARGET)
-	@echo "Built: $(TEST_RUNNER_TARGET)"
+	mkdir -p $(BUILD_DIR)/common $(BUILD_DIR)/compiler $(BUILD_DIR)/lsp $(BUILD_DIR)/runtime $(BUILD_DIR)/test-runner $(BUILD_DIR)/third-party/neco
 
 # Compiler binary
 $(COMPILER_TARGET): $(COMMON_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS) | $(BUILD_DIR)
@@ -119,10 +122,13 @@ $(LSP_TARGET): $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(RUNTIME_OBJECTS) $(LS
 	$(CC) $(COMMON_OBJECTS) $(COMPILER_LIB_OBJECTS) $(RUNTIME_OBJECTS) $(LSP_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(LSP_TARGET)
 	@echo "Built: $(LSP_TARGET)"
 
-# Test code index
-test_code_index: $(BUILD_DIR)/test_code_index
-	@echo "Running code index test..."
-	$(BUILD_DIR)/test_code_index test_code_index.jsa
+# Test runner binary (with neco library)
+# Standalone binary - doesn't depend on compiler/common sources
+$(TEST_RUNNER_TARGET): $(TEST_OBJECTS) $(NECO_OBJECTS) | $(BUILD_DIR)
+	@echo "Linking test-runner: $(TEST_RUNNER_TARGET)"
+	$(CC) $(TEST_OBJECTS) $(NECO_OBJECTS) $(OPT_FLAGS) -o $(TEST_RUNNER_TARGET)
+	@echo "Built: $(TEST_RUNNER_TARGET)"
+
 
 $(BUILD_DIR)/test_code_index: $(COMMON_OBJECTS) $(BUILD_DIR)/lsp/code_index.o $(BUILD_DIR)/lsp/test_code_index.o | $(BUILD_DIR)
 	@echo "Linking test_code_index"
@@ -156,6 +162,11 @@ $(BUILD_DIR)/test-runner/%.o: $(TESET_RUNNER_DIR)/%.c $(TEST_HEADERS) | $(BUILD_
 $(BUILD_DIR)/runtime/%.o: $(RUNTIME_DIR)/%.c | $(BUILD_DIR)
 	@echo "Compiling [runtime]: $<"
 	$(CC) -Wall -Wextra -O2 -c $< -o $@
+
+# Compile third-party neco library
+$(BUILD_DIR)/third-party/neco/%.o: $(NECO_DIR)/%.c | $(BUILD_DIR)
+	@echo "Compiling [third-party/neco]: $<"
+	$(CC) $(NECO_CFLAGS) -c $< -o $@
 
 # Clean build artifacts
 #

@@ -1,0 +1,9 @@
+[INFO]    Compiling /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/12-pattern-binding-after-or.jsa...
+[INFO]    Created @io builtin module with 5 exports
+[INFO]    Loaded module: 12-pattern-binding-after-or (0 exports, 1 dependencies)
+[error:T301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/12-pattern-binding-after-or.jsa:14:42: Undefined variable: x
+[error:T301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/12-pattern-binding-after-or.jsa:15:24: Undefined variable: x
+
+=== Diagnostic Summary ===
+  Errors: 2
+

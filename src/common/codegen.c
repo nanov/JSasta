@@ -2,12 +2,23 @@
 #include "traits.h"
 #include "operator_utils.h"
 #include "logger.h"
+#include "diagnostics.h"
 #include "module_loader.h"
+#include "string_utils.h"
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Macro for codegen errors - uses error codes starting with 'C'
+#define CODEGEN_ERROR(gen, loc, code, ...) do { \
+    if ((gen)->diag) { \
+        diagnostic_error((gen)->diag, loc, code, __VA_ARGS__); \
+    } else { \
+        log_error_at(&loc, "["code"] " __VA_ARGS__); \
+    } \
+} while(0)
 
 // Helper: Check if a symbol entry is a namespace (has an import node)
 static inline bool symbol_is_namespace(SymbolEntry* entry) {
@@ -115,6 +126,7 @@ CodeGen* codegen_create(const char* module_name) {
     gen->runtime_functions = NULL;
     gen->type_ctx = NULL;             // Will be set during generation (contains types and specializations)
     gen->trait_registry = NULL;       // Will be shared with type_ctx
+    gen->diag = NULL;                 // Will be set during generation (for error reporting)
     gen->loop_exit_block = NULL;      // Initialize loop control blocks
     gen->loop_continue_block = NULL;
     gen->entry_block = NULL;          // Initialize entry block for allocas
@@ -157,6 +169,42 @@ void codegen_free(CodeGen* gen) {
     free(gen);
 }
 
+// Helper: Get or create named array wrapper struct type: { i64 length, T* data }
+// This is used internally to represent all arrays (stack and heap) with their size
+// Uses named structs (e.g., %Array_i32) for better readability and reuse
+static LLVMTypeRef get_array_wrapper_type(CodeGen* gen, LLVMTypeRef element_type) {
+    // Generate a unique name based on the element type
+    // For primitives and pointers, we can use a simple naming scheme
+    const char* elem_name = LLVMPrintTypeToString(element_type);
+    char wrapper_name[256];
+    snprintf(wrapper_name, sizeof(wrapper_name), "Array_%s", elem_name);
+    LLVMDisposeMessage((char*)elem_name);
+
+    // Clean up the name (replace spaces and special chars with underscores)
+    for (char* p = wrapper_name; *p; p++) {
+        if (*p == ' ' || *p == '*' || *p == '(' || *p == ')' || *p == ',') {
+            *p = '_';
+        }
+    }
+
+    // Try to get existing struct type
+    LLVMTypeRef existing = LLVMGetTypeByName2(gen->context, wrapper_name);
+    if (existing) {
+        return existing;
+    }
+
+    // Create new named struct type
+    LLVMTypeRef wrapper_type = LLVMStructCreateNamed(gen->context, wrapper_name);
+
+    // Set body: { i64 length, T* data }
+    LLVMTypeRef fields[2];
+    fields[0] = LLVMInt64TypeInContext(gen->context);  // length (usize/i64)
+    fields[1] = LLVMPointerType(element_type, 0);      // data pointer
+    LLVMStructSetBody(wrapper_type, fields, 2, 0);     // non-packed
+
+    return wrapper_type;
+}
+
 LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     if (!type_info) return LLVMInt32TypeInContext(gen->context);
 
@@ -192,14 +240,11 @@ LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
         // Fallback to opaque pointer if no target
         return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
     } else if (type_info->kind == TYPE_KIND_ARRAY && type_info->data.array.element_type) {
-        // Array type - determine element type
-        if (type_info->data.array.element_type == Type_I32) {
-            return LLVMPointerType(LLVMInt32TypeInContext(gen->context), 0);
-        } else if (type_info->data.array.element_type == Type_Double) {
-            return LLVMPointerType(LLVMDoubleTypeInContext(gen->context), 0);
-        } else if (type_info->data.array.element_type == Type_String) {
-            return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 0);
-        }
+        // Array type - return wrapper struct { i64 length, T* data }
+        // This ensures all arrays carry their size information
+        TypeInfo* elem_type_info = type_info->data.array.element_type;
+        LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type_info);
+        return get_array_wrapper_type(gen, elem_llvm_type);
     } else if (type_info->kind == TYPE_KIND_OBJECT) {
         // Look up the actual struct type
         LLVMTypeRef struct_type = codegen_lookup_object_type(gen, type_info);
@@ -444,6 +489,20 @@ static LLVMValueRef codegen_get_lvalue_ptr_with_type(CodeGen* gen, ASTNode* node
         case AST_IDENTIFIER: {
             SymbolEntry* entry = symbol_table_lookup(gen->symbols, node->identifier.name);
             if (entry && entry->value) {
+                TypeInfo* type_info = entry->type_info;
+
+                // For ref types, we need to load the pointer to get the actual target address
+                // entry->value is a pointer to the ref variable (which holds a pointer)
+                // We need to load it to get the pointer to the actual target
+                if (type_info_is_ref(type_info)) {
+                    TypeInfo* target_type = type_info_get_ref_target(type_info);
+                    if (out_type) *out_type = target_type;
+
+                    // Load the pointer from the ref variable
+                    LLVMTypeRef ptr_type = LLVMPointerType(get_llvm_type(gen, target_type), 0);
+                    return LLVMBuildLoad2(gen->builder, ptr_type, entry->value, "ref_target_ptr");
+                }
+
                 if (out_type) *out_type = entry->type_info;
                 return entry->value;
             }
@@ -488,47 +547,57 @@ static LLVMValueRef codegen_get_lvalue_ptr_with_type(CodeGen* gen, ASTNode* node
 
             if (type_info_is_array(index_target_type)) {
                 // Array intrinsic - get pointer to element
-                LLVMValueRef array_ptr = NULL;
+                // Arrays are now wrapper structs { i64 length, T* data }
 
-                // Get array pointer based on object type
+                LLVMValueRef wrapper_ptr = NULL;
+
+                // Get wrapper pointer based on object type
                 if (node->index_access.object->type == AST_IDENTIFIER) {
                     // Direct identifier - use symbol entry
                     SymbolEntry* entry = node->index_access.symbol_entry;
                     if (!entry || !entry->value) {
                         return NULL;
                     }
-
-                    // Check if this is a stack-allocated array or heap-allocated array
-                    // Stack arrays have entry->llvm_type as [N x T], heap arrays have it as ptr
-                    if (entry->llvm_type && LLVMGetTypeKind(entry->llvm_type) == LLVMArrayTypeKind) {
-                        // Stack-allocated array - entry->value is already pointer to array
-                        array_ptr = entry->value;
-                    } else {
-                        // Heap-allocated array - need to load the pointer
-                        array_ptr = LLVMBuildLoad2(gen->builder,
-                            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
-                            entry->value, "array_ptr");
-                    }
+                    wrapper_ptr = entry->value;
                 } else if (node->index_access.object->type == AST_MEMBER_ACCESS) {
                     // Member access (e.g., c.arr) - get pointer to the member
-                    array_ptr = codegen_member_access_ptr(gen, node->index_access.object);
+                    wrapper_ptr = codegen_member_access_ptr(gen, node->index_access.object);
                 } else {
                     // For other cases (nested index, etc), recursively get the lvalue pointer
-                    array_ptr = codegen_get_lvalue_ptr(gen, node->index_access.object);
+                    wrapper_ptr = codegen_get_lvalue_ptr(gen, node->index_access.object);
                 }
 
-                if (!array_ptr) {
+                if (!wrapper_ptr) {
                     return NULL;
                 }
 
+                // Get output type and wrapper type
                 TypeInfo* output_type = trait_get_assoc_type(Trait_RefIndex, index_target_type,
                     (TypeInfo*[]){ node->index_access.index->type_info }, 1, "Output");
                 LLVMTypeRef output_llvm_type = get_llvm_type(gen, output_type);
+                LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, output_llvm_type);
 
                 if (out_type) *out_type = output_type;
 
+                // If object is a ref type (heap array), dereference to get the wrapper pointer
+                // For stack arrays: wrapper_ptr points to the wrapper struct
+                // For heap arrays (refs): wrapper_ptr points to a pointer to the wrapper struct
+                if (object_type->kind == TYPE_KIND_REF) {
+                    wrapper_ptr = LLVMBuildLoad2(gen->builder,
+                                                 LLVMPointerType(wrapper_type, 0),
+                                                 wrapper_ptr, "deref_wrapper");
+                }
+
+                // Extract data pointer from wrapper struct (field 1)
+                LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
+                                                                  wrapper_ptr, 1, "data_ptr_field");
+                LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
+                                                       LLVMPointerType(output_llvm_type, 0),
+                                                       data_ptr_field, "data_ptr");
+
+                // Index into data pointer
                 LLVMValueRef indices[] = { index };
-                return LLVMBuildGEP2(gen->builder, output_llvm_type, array_ptr, indices, 1, "element_ptr");
+                return LLVMBuildGEP2(gen->builder, output_llvm_type, data_ptr, indices, 1, "element_ptr");
             }
 
             return NULL;
@@ -648,13 +717,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Generate code for enum variant
             TypeInfo* enum_type = node->enum_variant.enum_type;
             int variant_index = node->enum_variant.variant_index;
-            
+
             if (!enum_type || variant_index < 0) {
                 log_error_at(&node->loc, "Invalid enum variant: %s.%s",
                     node->enum_variant.enum_name, node->enum_variant.variant_name);
                 return NULL;
             }
-            
+
             // Check if enum has any data variants
             bool has_data_variants = false;
             for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
@@ -663,7 +732,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     break;
                 }
             }
-            
+
             if (!has_data_variants) {
                 // All unit variants - return just the tag
                 LLVMTypeRef tag_type = get_llvm_type(gen, enum_type);
@@ -674,7 +743,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 }
                 return LLVMConstInt(tag_type, variant_index, 0);
             }
-            
+
             // Enum has data variants - need to construct { tag, data } struct
             LLVMTypeRef enum_llvm_type = get_llvm_type(gen, enum_type);
             if (!enum_llvm_type) {
@@ -682,19 +751,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     node->enum_variant.enum_name);
                 return NULL;
             }
-            
+
             // Check if this specific variant has data
             int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
-            
+
             if (field_count == 0) {
                 // This variant is a unit variant within a mixed enum
                 // Create { tag, zeroed_union }
                 LLVMValueRef enum_val = LLVMGetUndef(enum_llvm_type);
-                
+
                 // Set tag
                 LLVMValueRef tag = LLVMConstInt(LLVMInt32TypeInContext(gen->context), variant_index, 0);
                 enum_val = LLVMBuildInsertValue(gen->builder, enum_val, tag, 0, "enum_tag");
-                
+
                 return enum_val;
             } else {
                 // This variant has data - construct it
@@ -704,21 +773,21 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         node->enum_variant.enum_name, node->enum_variant.variant_name);
                     return NULL;
                 }
-                
+
                 // Build the variant struct with field values
                 // Create field types array
                 LLVMTypeRef* variant_field_types = malloc(sizeof(LLVMTypeRef) * field_count);
                 LLVMValueRef* variant_field_values = malloc(sizeof(LLVMValueRef) * field_count);
-                
+
                 char** expected_field_names = enum_type->data.enum_type.variant_field_names[variant_index];
                 TypeInfo** expected_field_types = enum_type->data.enum_type.variant_field_types[variant_index];
-                
+
                 // Initialize all fields (in case not all are specified, though type inference should catch that)
                 for (int j = 0; j < field_count; j++) {
                     variant_field_types[j] = get_llvm_type(gen, expected_field_types[j]);
                     variant_field_values[j] = NULL;
                 }
-                
+
                 // Fill in the provided field values
                 for (int i = 0; i < node->enum_variant.field_count; i++) {
                     // Find the position of this field in the expected field list
@@ -729,12 +798,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                             break;
                         }
                     }
-                    
+
                     if (field_pos < 0) {
                         // This should have been caught in type inference
                         continue;
                     }
-                    
+
                     // Generate code for the field value
                     LLVMValueRef field_val = codegen_node(gen, node->enum_variant.field_values[i]);
                     if (!field_val) {
@@ -744,13 +813,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         free(variant_field_values);
                         return NULL;
                     }
-                    
+
                     variant_field_values[field_pos] = field_val;
                 }
-                
+
                 // Create the variant struct type and build the value
                 LLVMTypeRef variant_struct_type = LLVMStructTypeInContext(gen->context, variant_field_types, field_count, 0);
-                
+
                 // Build the struct value using insertvalue
                 LLVMValueRef variant_data = LLVMGetUndef(variant_struct_type);
                 for (int i = 0; i < field_count; i++) {
@@ -758,35 +827,35 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         variant_data = LLVMBuildInsertValue(gen->builder, variant_data, variant_field_values[i], i, "field");
                     }
                 }
-                
+
                 free(variant_field_types);
                 free(variant_field_values);
-                
+
                 // Now we need to store this struct into the enum's data array [8 x i64]
                 // We'll allocate temporary space, store the struct, then load as the array type
                 LLVMTypeRef data_array_type = LLVMStructGetTypeAtIndex(enum_llvm_type, 1);
-                
+
                 // Allocate space for the struct
                 LLVMValueRef temp_alloca = LLVMBuildAlloca(gen->builder, variant_struct_type, "variant_temp");
                 LLVMBuildStore(gen->builder, variant_data, temp_alloca);
-                
+
                 // Bitcast to pointer to the data array type
-                LLVMValueRef array_ptr = LLVMBuildBitCast(gen->builder, temp_alloca, 
+                LLVMValueRef array_ptr = LLVMBuildBitCast(gen->builder, temp_alloca,
                     LLVMPointerType(data_array_type, 0), "array_ptr");
-                
+
                 // Load as the array type
                 LLVMValueRef data_array = LLVMBuildLoad2(gen->builder, data_array_type, array_ptr, "data_array");
-                
+
                 // Create the complete enum value { tag, data_array }
                 LLVMValueRef enum_val = LLVMGetUndef(enum_llvm_type);
-                
+
                 // Set tag
                 LLVMValueRef tag = LLVMConstInt(LLVMInt32TypeInContext(gen->context), variant_index, 0);
                 enum_val = LLVMBuildInsertValue(gen->builder, enum_val, tag, 0, "enum_tag");
-                
+
                 // Set data
                 enum_val = LLVMBuildInsertValue(gen->builder, enum_val, data_array, 1, "enum_data");
-                
+
                 return enum_val;
             }
         }
@@ -794,21 +863,21 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_PATTERN_MATCH: {
             // Pattern matching: expr is EnumType.Variant(bindings)
             // Returns a bool indicating if the pattern matches
-            
+
             TypeInfo* enum_type = node->pattern_match.enum_type;
             int variant_index = node->pattern_match.variant_index;
-            
+
             if (!enum_type || variant_index < 0) {
                 log_error_at(&node->loc, "Invalid pattern match");
                 return NULL;
             }
-            
+
             // Generate code for the expression being matched
             LLVMValueRef expr_val = codegen_node(gen, node->pattern_match.expr);
             if (!expr_val) {
                 return NULL;
             }
-            
+
             // Determine if this enum is unit-only or has data variants
             bool has_data_variants = false;
             for (int i = 0; i < enum_type->data.enum_type.variant_count; i++) {
@@ -817,10 +886,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     break;
                 }
             }
-            
+
             LLVMValueRef tag_val;
             LLVMValueRef data_array = NULL;  // Used for extracting variant data
-            
+
             if (!has_data_variants) {
                 // All unit variants - the value IS the tag
                 tag_val = expr_val;
@@ -830,59 +899,59 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 tag_val = LLVMBuildExtractValue(gen->builder, expr_val, 0, "tag");
                 data_array = LLVMBuildExtractValue(gen->builder, expr_val, 1, "data");
             }
-            
+
             // Compare tag with expected variant index
             LLVMTypeRef tag_type = LLVMTypeOf(tag_val);
             LLVMValueRef expected_tag = LLVMConstInt(tag_type, variant_index, 0);
             LLVMValueRef matches = LLVMBuildICmp(gen->builder, LLVMIntEQ, tag_val, expected_tag, "pattern_match");
-            
+
             // If we have bindings, we need to extract the data fields
             // Note: The bindings are already in the symbol table (added during type inference)
             // We need to create alloca for them and store the extracted values
-            
+
             int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
-            
+
             if (node->pattern_match.binding_count > 0 && field_count > 0) {
                 TypeInfo** field_types = enum_type->data.enum_type.variant_field_types[variant_index];
-                
+
                 // First, create allocas for all bindings BEFORE any conditional branching
                 // This ensures the bindings are available in the symbol table for the then-branch
                 for (int i = 0; i < node->pattern_match.binding_count && i < field_count; i++) {
                     if (node->pattern_match.binding_is_wildcard[i]) {
                         continue;
                     }
-                    
+
                     char* binding_name = node->pattern_match.binding_names[i];
                     SymbolEntry* entry = symbol_table_lookup(gen->symbols, binding_name);
-                    
+
                     if (entry && !entry->value) {
                         TypeInfo* field_type = field_types[i];
                         LLVMTypeRef field_llvm_type = get_llvm_type(gen, field_type);
-                        
+
                         LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, field_llvm_type, binding_name);
                         entry->value = alloca;
                         entry->llvm_type = field_llvm_type;
                     }
                 }
-                
+
                 // Now create a conditional block to only extract data if the pattern matches
                 LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
                 LLVMValueRef current_func = LLVMGetBasicBlockParent(current_block);
-                
+
                 LLVMBasicBlockRef extract_block = LLVMAppendBasicBlock(current_func, "pattern_extract");
                 LLVMBasicBlockRef continue_block = LLVMAppendBasicBlock(current_func, "pattern_continue");
-                
+
                 // Branch based on match
                 LLVMBuildCondBr(gen->builder, matches, extract_block, continue_block);
-                
+
                 // In extract block: extract fields and bind to variables
                 LLVMPositionBuilderAtEnd(gen->builder, extract_block);
-                
+
                 if (node->pattern_match.is_struct_binding) {
                     // Single binding - bind entire variant data as a struct
                     char* binding_name = node->pattern_match.binding_names[0];
                     SymbolEntry* entry = symbol_table_lookup(gen->symbols, binding_name);
-                    
+
                     if (entry && entry->value) {
                         // Build the variant struct type
                         LLVMTypeRef* variant_field_llvm_types = malloc(sizeof(LLVMTypeRef) * field_count);
@@ -891,19 +960,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         }
                         LLVMTypeRef variant_struct_type = LLVMStructTypeInContext(gen->context, variant_field_llvm_types, field_count, 0);
                         free(variant_field_llvm_types);
-                        
+
                         // Allocate temporary space for the data array
                         LLVMTypeRef data_array_type = LLVMArrayType(LLVMInt64TypeInContext(gen->context), 8);
                         LLVMValueRef temp_data_alloca = LLVMBuildAlloca(gen->builder, data_array_type, "temp_data");
                         LLVMBuildStore(gen->builder, data_array, temp_data_alloca);
-                        
+
                         // Bitcast to pointer to variant struct
                         LLVMValueRef variant_ptr = LLVMBuildBitCast(gen->builder, temp_data_alloca,
                             LLVMPointerType(variant_struct_type, 0), "variant_ptr");
-                        
+
                         // Load the entire struct
                         LLVMValueRef struct_val = LLVMBuildLoad2(gen->builder, variant_struct_type, variant_ptr, "variant_struct");
-                        
+
                         // Store it to the binding's alloca
                         LLVMBuildStore(gen->builder, struct_val, entry->value);
                     }
@@ -913,53 +982,52 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         if (node->pattern_match.binding_is_wildcard[i]) {
                             continue; // Skip wildcards
                         }
-                        
+
                         // Look up the symbol for this binding
                         char* binding_name = node->pattern_match.binding_names[i];
                         SymbolEntry* entry = symbol_table_lookup(gen->symbols, binding_name);
-                        
+
                         if (entry && entry->value) {
                             TypeInfo* field_type = field_types[i];
                             LLVMTypeRef field_llvm_type = get_llvm_type(gen, field_type);
                             LLVMValueRef alloca = entry->value;
-                            
+
                             // Extract the field value from data array
                             // The data array is [8 x i64], we need to extract the variant struct from it
                             // and then get the specific field
-                            
+
                             // Build the variant struct type
-                            char** field_names = enum_type->data.enum_type.variant_field_names[variant_index];
                             LLVMTypeRef* variant_field_llvm_types = malloc(sizeof(LLVMTypeRef) * field_count);
                             for (int j = 0; j < field_count; j++) {
                                 variant_field_llvm_types[j] = get_llvm_type(gen, field_types[j]);
                             }
                             LLVMTypeRef variant_struct_type = LLVMStructTypeInContext(gen->context, variant_field_llvm_types, field_count, 0);
                             free(variant_field_llvm_types);
-                            
+
                             // Allocate temporary space for the data array
                             LLVMTypeRef data_array_type = LLVMArrayType(LLVMInt64TypeInContext(gen->context), 8);
                             LLVMValueRef temp_data_alloca = LLVMBuildAlloca(gen->builder, data_array_type, "temp_data");
                             LLVMBuildStore(gen->builder, data_array, temp_data_alloca);
-                            
+
                             // Bitcast to pointer to variant struct
                             LLVMValueRef variant_ptr = LLVMBuildBitCast(gen->builder, temp_data_alloca,
                                 LLVMPointerType(variant_struct_type, 0), "variant_ptr");
-                            
+
                             // Extract field i from the variant struct
                             LLVMValueRef field_ptr = LLVMBuildStructGEP2(gen->builder, variant_struct_type, variant_ptr, i, "field_ptr");
                             LLVMValueRef field_val = LLVMBuildLoad2(gen->builder, field_llvm_type, field_ptr, "field_val");
-                            
+
                             LLVMBuildStore(gen->builder, field_val, alloca);
                         }
                     }
                 }
-                
+
                 LLVMBuildBr(gen->builder, continue_block);
-                
+
                 // Continue after pattern match
                 LLVMPositionBuilderAtEnd(gen->builder, continue_block);
             }
-            
+
             return matches;
         }
 
@@ -968,6 +1036,28 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             if (entry && entry->value) {
                 // Use node->type_info if available, otherwise fall back to entry->type_info
                 TypeInfo* type_info = node->type_info ? node->type_info : entry->type_info;
+
+                // For ref types, we need to auto-dereference when used in expressions
+                // The identifier holds a pointer, and we need to load through it
+                if (type_info_is_ref(type_info)) {
+                    TypeInfo* target_type = type_info_get_ref_target(type_info);
+
+                    // For ref to objects, load the pointer then return it (don't load the object value)
+                    if (type_info_is_object(target_type)) {
+                        LLVMTypeRef ptr_type = LLVMPointerType(get_llvm_type(gen, target_type), 0);
+                        return LLVMBuildLoad2(gen->builder, ptr_type, entry->value, node->identifier.name);
+                    }
+                    // For ref to arrays, load the pointer
+                    if (type_info_is_array(target_type)) {
+                        LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+                        return LLVMBuildLoad2(gen->builder, ptr_type, entry->value, node->identifier.name);
+                    }
+                    // For ref to primitives, load the pointer then load the value (auto-deref)
+                    LLVMTypeRef ptr_type = LLVMPointerType(get_llvm_type(gen, target_type), 0);
+                    LLVMValueRef ptr = LLVMBuildLoad2(gen->builder, ptr_type, entry->value, "ref_ptr");
+                    LLVMTypeRef value_type = get_llvm_type(gen, target_type);
+                    return LLVMBuildLoad2(gen->builder, value_type, ptr, node->identifier.name);
+                }
 
                 // For objects and arrays, return the pointer directly (don't load)
                 // Objects are already stack-allocated structs, we pass by pointer
@@ -1029,15 +1119,15 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             if ((strcmp(node->binary_op.op, "==") == 0 || strcmp(node->binary_op.op, "!=") == 0)) {
                 TypeInfo* left_type = node->binary_op.left->type_info;
                 TypeInfo* right_type = node->binary_op.right->type_info;
-                
+
                 // Check if both operands are the same enum type
-                if (left_type && right_type && 
+                if (left_type && right_type &&
                     left_type->kind == TYPE_KIND_ENUM && right_type->kind == TYPE_KIND_ENUM &&
                     left_type == right_type) {
-                    
+
                     // For unit variants (which are u8/u16/u32 values), use integer comparison
                     LLVMIntPredicate pred = (strcmp(node->binary_op.op, "==") == 0) ? LLVMIntEQ : LLVMIntNE;
-                    return LLVMBuildICmp(gen->builder, pred, left, right, 
+                    return LLVMBuildICmp(gen->builder, pred, left, right,
                                        strcmp(node->binary_op.op, "==") == 0 ? "enum_eq" : "enum_ne");
                 }
             }
@@ -1051,16 +1141,21 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 TypeInfo* left_type = node->binary_op.left->type_info;
                 TypeInfo* right_type = node->binary_op.right->type_info;
 
-                if (left_type && right_type) {
-                    MethodImpl* method = trait_get_binary_method(trait, left_type, right_type, method_name);
+                // Auto-dereference ref types for trait lookup (like we do for index operations)
+                TypeInfo* left_target = type_info_get_ref_target(left_type);
+                TypeInfo* right_target = type_info_get_ref_target(right_type);
+
+                if (left_target && right_target) {
+                    MethodImpl* method = trait_get_binary_method(trait, left_target, right_target, method_name);
 
                     if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
                         // Call intrinsic codegen function
+                        // Note: left and right values are already auto-dereferenced by AST_IDENTIFIER codegen
                         LLVMValueRef args[] = { left, right };
                         return method->codegen(gen, args, 2);
                     } else {
                         log_error_at(&node->loc, "No trait implementation found for %s %s %s",
-                                   left_type->type_name, node->binary_op.op, right_type->type_name);
+                                   left_target->type_name, node->binary_op.op, right_target->type_name);
                     }
                 }
             }
@@ -1317,19 +1412,12 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
             // Determine the LLVM type
             LLVMTypeRef var_llvm_type;
-            if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size > 0) {
-                // For stack-allocated arrays with known size, create array type
-                TypeInfo* elem_type = var_type_info->data.array.element_type;
-                LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
-                var_llvm_type = LLVMArrayType2(elem_llvm_type, node->var_decl.array_size);
-            } else if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size == 0) {
+            if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size == 0) {
                 // Array size evaluation failed (error already reported), skip codegen
                 log_error_at(&node->loc, "Cannot generate code for array with invalid size");
                 return NULL;
-            } else if (var_type_info && type_info_is_array(var_type_info)) {
-                // For dynamic arrays, we'll determine the type from init_value later
-                var_llvm_type = NULL;
             } else {
+                // Use get_llvm_type for all types (including arrays which now return wrapper struct)
                 var_llvm_type = get_llvm_type(gen, var_type_info);
             }
 
@@ -1344,13 +1432,20 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     // Variable already declared in PASS 0.5, now initialize it with non-constant value
                     if (node->var_decl.init) {
                         // Special handling for array literals with fixed-size arrays
-                        if (var_type_info && type_info_is_array(var_type_info) && 
+                        if (var_type_info && type_info_is_array(var_type_info) &&
                             node->var_decl.array_size > 0 &&
                             node->var_decl.init->type == AST_ARRAY_LITERAL) {
-                            
+
                             ASTNode* array_lit = node->var_decl.init;
-                            LLVMTypeRef array_type = existing->llvm_type;
-                            
+                            TypeInfo* elem_type = var_type_info->data.array.element_type;
+                            LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
+                            int64_t array_size = node->var_decl.array_size;
+                            LLVMTypeRef array_data_type = LLVMArrayType2(elem_llvm_type, array_size);
+
+                            // Load the data pointer from the wrapper struct
+                            LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, existing->llvm_type, existing->value, 1, "data_ptr_field");
+                            LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(elem_llvm_type, 0), data_ptr_field, "data_ptr");
+
                             for (int i = 0; i < array_lit->array_literal.count; i++) {
                                 // Generate code for the element value
                                 LLVMValueRef elem_value = codegen_node(gen, array_lit->array_literal.elements[i]);
@@ -1359,15 +1454,9 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                                     continue;
                                 }
 
-                                // Get pointer to array element using GEP
-                                LLVMValueRef indices[] = {
-                                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),
-                                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0)
-                                };
-                                LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, array_type, existing->value,
-                                                                       indices, 2, "elem_ptr");
-
-                                // Store the value
+                                // Index into data pointer
+                                LLVMValueRef index = LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0);
+                                LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, elem_llvm_type, data_ptr, &index, 1, "elem_ptr");
                                 LLVMBuildStore(gen->builder, elem_value, elem_ptr);
                             }
                         } else {
@@ -1402,26 +1491,45 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     }
                 }
 
-                // For arrays with fixed size, create an array type; otherwise pointer type
-                if (var_type_info && type_info_is_array(var_type_info) && !var_llvm_type) {
-                    TypeInfo* elem_type = var_type_info->data.array.element_type;
-                    LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
-                    
-                    if (node->var_decl.array_size > 0) {
-                        // Fixed-size array - use array type
-                        var_llvm_type = LLVMArrayType2(elem_llvm_type, node->var_decl.array_size);
-                    } else {
-                        // Dynamic array - use pointer type
-                        var_llvm_type = LLVMPointerType(elem_llvm_type, 0);
-                    }
+                // Arrays now use wrapper struct from get_llvm_type
+                // Make sure var_llvm_type is set for arrays
+                if (!var_llvm_type && var_type_info) {
+                    var_llvm_type = get_llvm_type(gen, var_type_info);
                 }
 
                 // Create global variable
-                LLVMValueRef global = LLVMAddGlobal(gen->module, var_llvm_type, node->var_decl.name);
+                LLVMValueRef global;
 
-                // Always initialize globals to zero
-                // Actual initialization happens in PASS 2 (in order with other statements)
-                LLVMSetInitializer(global, LLVMConstNull(var_llvm_type));
+                // Special handling for array globals: create separate data global
+                if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size > 0) {
+                    TypeInfo* elem_type = var_type_info->data.array.element_type;
+                    LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
+                    int64_t array_size = node->var_decl.array_size;
+
+                    // Create global for actual array data
+                    LLVMTypeRef array_data_type = LLVMArrayType2(elem_llvm_type, array_size);
+                    char data_name[256];
+                    snprintf(data_name, sizeof(data_name), "%s__data", node->var_decl.name);
+                    LLVMValueRef data_global = LLVMAddGlobal(gen->module, array_data_type, data_name);
+                    LLVMSetInitializer(data_global, LLVMConstNull(array_data_type));
+
+                    // Create wrapper global with constant initializer
+                    global = LLVMAddGlobal(gen->module, var_llvm_type, node->var_decl.name);
+
+                    // Initialize wrapper: { i64 length, T* data_ptr }
+                    LLVMValueRef wrapper_fields[2];
+                    wrapper_fields[0] = LLVMConstInt(LLVMInt64TypeInContext(gen->context), array_size, 0);
+                    // Cast data_global to T*
+                    wrapper_fields[1] = LLVMConstBitCast(data_global, LLVMPointerType(elem_llvm_type, 0));
+                    // Use LLVMConstStruct for anonymous struct (not LLVMConstNamedStruct)
+                    LLVMValueRef wrapper_init = LLVMConstStruct(wrapper_fields, 2, 0);
+                    LLVMSetInitializer(global, wrapper_init);
+                } else {
+                    global = LLVMAddGlobal(gen->module, var_llvm_type, node->var_decl.name);
+                    // Always initialize globals to zero
+                    // Actual initialization happens in PASS 2 (in order with other statements)
+                    LLVMSetInitializer(global, LLVMConstNull(var_llvm_type));
+                }
 
                 // Update the symbol entry (created during type inference) with LLVM value and type
                 if (node->var_decl.symbol_entry) {
@@ -1433,51 +1541,57 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             } else {
                 // Local variable - use alloca as before
 
-                // Special handling for stack-allocated arrays
+                // Special handling for stack-allocated arrays with wrapper struct
                 if (var_type_info && type_info_is_array(var_type_info) && node->var_decl.array_size > 0) {
-                    // Use the array type created earlier (var_llvm_type)
-                    LLVMTypeRef array_type = var_llvm_type;
+                    // var_llvm_type is now the wrapper struct { i64 length, T* data }
                     TypeInfo* elem_type = var_type_info->data.array.element_type;
                     LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
+                    int64_t array_size = node->var_decl.array_size;
 
-                    // Allocate on stack (in entry block)
-                    LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, array_type, node->var_decl.name);
+                    // Allocate wrapper struct on stack
+                    LLVMValueRef wrapper_alloca = codegen_create_entry_block_alloca(gen, var_llvm_type, node->var_decl.name);
 
-                    // Zero-initialize the array
-                    LLVMValueRef zero = LLVMConstNull(array_type);
-                    LLVMBuildStore(gen->builder, zero, alloca);
+                    // Allocate actual array data on stack
+                    LLVMTypeRef array_data_type = LLVMArrayType2(elem_llvm_type, array_size);
+                    LLVMValueRef data_alloca = codegen_create_entry_block_alloca(gen, array_data_type, "array_data");
 
-                    // If there's an array literal initializer, initialize each element
+                    // Initialize wrapper: set length field
+                    LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, var_llvm_type, wrapper_alloca, 0, "length_ptr");
+                    LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt64TypeInContext(gen->context), array_size, 0), length_ptr);
+
+                    // Initialize wrapper: set data pointer
+                    LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, var_llvm_type, wrapper_alloca, 1, "data_ptr_field");
+                    // Cast array to pointer
+                    LLVMValueRef data_as_ptr = LLVMBuildBitCast(gen->builder, data_alloca, LLVMPointerType(elem_llvm_type, 0), "data_as_ptr");
+                    LLVMBuildStore(gen->builder, data_as_ptr, data_ptr_field);
+
+                    // Initialize array elements if there's an initializer
                     if (node->var_decl.init && node->var_decl.init->type == AST_ARRAY_LITERAL) {
                         ASTNode* array_lit = node->var_decl.init;
                         for (int i = 0; i < array_lit->array_literal.count; i++) {
-                            // Generate code for the element value
                             LLVMValueRef elem_value = codegen_node(gen, array_lit->array_literal.elements[i]);
                             if (!elem_value) {
                                 log_error_at(&node->loc, "Failed to generate code for array element %d", i);
                                 continue;
                             }
 
-                            // Get pointer to array element using GEP
+                            // Index into the data array
                             LLVMValueRef indices[] = {
-                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),  // Dereference array pointer
-                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0)   // Index into array
+                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),
+                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), i, 0)
                             };
-                            LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, array_type, alloca, 
-                                                                   indices, 2, "elem_ptr");
-
-                            // Store the value
+                            LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, array_data_type, data_alloca, indices, 2, "elem_ptr");
                             LLVMBuildStore(gen->builder, elem_value, elem_ptr);
                         }
                     }
 
-                    // Update the symbol entry (created during type inference) with LLVM value and type
+                    // Update symbol table
                     if (node->var_decl.symbol_entry) {
-                        node->var_decl.symbol_entry->value = alloca;
-                        node->var_decl.symbol_entry->llvm_type = array_type;
+                        node->var_decl.symbol_entry->value = wrapper_alloca;
+                        node->var_decl.symbol_entry->llvm_type = var_llvm_type;
                     }
 
-                    return alloca;
+                    return wrapper_alloca;
                 }
 
                 if (node->var_decl.init) {
@@ -1490,14 +1604,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     init_value = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
                 }
 
-                // For arrays, use the actual type of the init_value
-                if (var_type_info && type_info_is_array(var_type_info) && init_value) {
-                    var_llvm_type = LLVMTypeOf(init_value);
-                } else if (!var_llvm_type) {
+                // Get LLVM type from type_info (arrays are now wrapper structs)
+                if (!var_llvm_type) {
                     var_llvm_type = get_llvm_type(gen, var_type_info);
                 }
 
                 LLVMValueRef alloca = codegen_create_entry_block_alloca(gen, var_llvm_type, node->var_decl.name);
+
+                // For array wrappers from 'new', init_value is a pointer - load the struct value
+                if (var_type_info && type_info_is_array(var_type_info) && init_value &&
+                    LLVMGetTypeKind(LLVMTypeOf(init_value)) == LLVMPointerTypeKind) {
+                    init_value = LLVMBuildLoad2(gen->builder, var_llvm_type, init_value, "wrapper_copy");
+                }
+
                 LLVMBuildStore(gen->builder, init_value, alloca);
 
                 // Update the symbol entry (created during type inference) with LLVM value
@@ -1726,7 +1845,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Try to find specialized version
             LLVMValueRef func = NULL;
             FunctionSpecialization* spec = NULL;
-            if (gen->type_ctx && node->call.arg_count > 0) {
+            if (gen->type_ctx) {
                 spec = specialization_context_find_by_type_info(
                     gen->type_ctx, func_name, arg_type_infos, node->call.arg_count);
 
@@ -1799,10 +1918,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     args[i] = codegen_member_access_ptr(gen, arg_node);
                 } else {
                     args[i] = codegen_node(gen, arg_node);
-                    
+
                     // If parameter is NOT ref but argument is an object identifier, we need to load the struct value
                     // because codegen_node for object identifiers returns a pointer, but the function expects a value
-                    if (!param_is_ref && arg_node->type == AST_IDENTIFIER && 
+                    if (!param_is_ref && arg_node->type == AST_IDENTIFIER &&
                         arg_node->type_info && type_info_is_object(arg_node->type_info)) {
                         // Get the struct type and load the value
                         LLVMTypeRef struct_type = codegen_lookup_object_type(gen, arg_node->type_info);
@@ -1863,7 +1982,7 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
                         // Check if the exported function has a codegen callback
                         ExportedSymbol* exported = module_find_export(imported_module, member_name);
-                        if (exported && exported->declaration && 
+                        if (exported && exported->declaration &&
                             exported->declaration->type == AST_FUNCTION_DECL &&
                             exported->declaration->func_decl.codegen_callback) {
                             // Use the custom codegen callback
@@ -1994,18 +2113,56 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return NULL;
             }
 
-            // Build the method name: TypeName.methodName
-            const char* type_name = obj_type->type_name ? obj_type->type_name : "unknown";
-            char method_full_name[256];
-            snprintf(method_full_name, sizeof(method_full_name), "%s.%s",
-                    type_name, node->method_call.method_name);
-
-            // Look up the method function
-            LLVMValueRef method_func = LLVMGetNamedFunction(gen->module, method_full_name);
-            if (!method_func) {
-                log_error_at(&node->loc, "Method '%s' not found", method_full_name);
+            // Use the resolved specialization from type inference
+            // Type inference must have resolved this and codegen must have declared the function
+            if (!node->method_call.resolved_spec) {
+                const char* type_name = obj_type->type_name ? obj_type->type_name : "unknown";
+                CODEGEN_ERROR(gen, node->loc, "C001",
+                            "Method '%s.%s' was not resolved during type inference (internal compiler error)",
+                            type_name, node->method_call.method_name);
                 return NULL;
             }
+
+            if (!node->method_call.resolved_spec->llvm_func) {
+                CODEGEN_ERROR(gen, node->loc, "C002",
+                            "Method '%s' LLVM function was not declared (spec: %s) (internal compiler error)",
+                            node->method_call.method_name,
+                            node->method_call.resolved_spec->specialized_name);
+                return NULL;
+            }
+
+            LLVMValueRef method_func = node->method_call.resolved_spec->llvm_func;
+
+            // Old fallback code - removed because type inference should always resolve methods
+            // If we hit the errors above, it indicates a bug in type inference or codegen ordering
+            /*
+            if (node->method_call.resolved_spec && node->method_call.resolved_spec->llvm_func) {
+                // Fast path: use the cached LLVM function from the specialization
+                method_func = node->method_call.resolved_spec->llvm_func;
+            } else if (node->method_call.resolved_spec) {
+                // Spec exists but LLVM func not cached yet - look it up
+                method_func = LLVMGetNamedFunction(gen->module, node->method_call.resolved_spec->specialized_name);
+            } else {
+                // Fallback: build the method name manually (shouldn't happen if type inference worked)
+                const char* type_name = obj_type->type_name ? obj_type->type_name : "unknown";
+                char* method_full_name = str_format("%s.%s", type_name, node->method_call.method_name);
+                char* llvm_func_name;
+                if (gen->type_ctx && gen->type_ctx->module_prefix) {
+                    llvm_func_name = str_format("%s__%s", gen->type_ctx->module_prefix, method_full_name);
+                } else {
+                    llvm_func_name = str_dup(method_full_name);
+                }
+                method_func = LLVMGetNamedFunction(gen->module, llvm_func_name);
+                free(method_full_name);
+                free(llvm_func_name);
+            }
+
+            if (!method_func) {
+                const char* type_name = obj_type->type_name ? obj_type->type_name : "unknown";
+                log_error_at(&node->loc, "Method '%s.%s' not found", type_name, node->method_call.method_name);
+                return NULL;
+            }
+            */
 
             // Generate arguments
             // For instance methods, first arg is 'self' (pointer to object)
@@ -2257,6 +2414,56 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             return obj_ptr;
         }
 
+        case AST_STRUCT_LITERAL: {
+            // Similar to AST_OBJECT_LITERAL but uses field_names/field_values
+            LLVMTypeRef struct_type = codegen_lookup_object_type(gen, node->type_info);
+
+            if (!struct_type) {
+                log_error_at(&node->loc, "Could not find struct type for struct literal: %s",
+                           node->struct_literal.struct_name);
+                return NULL;
+            }
+
+            // Allocate struct on the stack
+            LLVMValueRef struct_ptr = codegen_create_entry_block_alloca(gen, struct_type, "struct_lit");
+
+            // Store each field value
+            int field_count = node->struct_literal.field_count;
+            for (int i = 0; i < field_count; i++) {
+                LLVMValueRef field_value = codegen_node(gen, node->struct_literal.field_values[i]);
+
+                // Get the expected field type and convert if needed
+                TypeInfo* field_type = node->type_info->data.object.property_types[i];
+                LLVMTypeRef expected_llvm_type = get_llvm_type(gen, field_type);
+                LLVMTypeRef actual_type = LLVMTypeOf(field_value);
+
+                // Convert integer types if they don't match
+                if (LLVMGetTypeKind(expected_llvm_type) == LLVMIntegerTypeKind &&
+                    LLVMGetTypeKind(actual_type) == LLVMIntegerTypeKind &&
+                    expected_llvm_type != actual_type) {
+                    unsigned expected_width = LLVMGetIntTypeWidth(expected_llvm_type);
+                    unsigned actual_width = LLVMGetIntTypeWidth(actual_type);
+
+                    if (actual_width > expected_width) {
+                        field_value = LLVMBuildTrunc(gen->builder, field_value, expected_llvm_type, "trunc");
+                    } else {
+                        TypeInfo* src_type = node->struct_literal.field_values[i]->type_info;
+                        if (type_info_is_signed_int(src_type)) {
+                            field_value = LLVMBuildSExt(gen->builder, field_value, expected_llvm_type, "sext");
+                        } else {
+                            field_value = LLVMBuildZExt(gen->builder, field_value, expected_llvm_type, "zext");
+                        }
+                    }
+                }
+
+                LLVMValueRef field_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, struct_ptr,
+                                                             (unsigned)i, "field_ptr");
+                LLVMBuildStore(gen->builder, field_value, field_ptr);
+            }
+
+            return struct_ptr;
+        }
+
         case AST_INDEX_ACCESS: {
             // Use the trait implementation resolved during type inference
             TraitImpl* trait_impl = node->index_access.trait_impl;
@@ -2313,29 +2520,29 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
                         LLVMValueRef array_ptr = entry->value;
 
+                        // Get the wrapper struct type
+                        LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, output_llvm_type);
+
                         // If object is a ref, dereference it first
                         if (is_ref) {
-                            // For ref types, we're loading a pointer, so use a generic pointer type
+                            // For ref types, we're loading a pointer to the wrapper
                             array_ptr = LLVMBuildLoad2(gen->builder,
-                                LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+                                LLVMPointerType(wrapper_type, 0),
                                 array_ptr, "deref");
                         }
 
-                        // For stack-allocated arrays, use GEP with [0, index]
-                        if (!is_ref && entry->array_size > 0) {
-                            LLVMValueRef indices[2] = {
-                                LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),
-                                index
-                            };
-                            LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, entry->llvm_type,
-                                                                  array_ptr, indices, 2, "elem_ptr");
-                            return LLVMBuildLoad2(gen->builder, output_llvm_type, elem_ptr, "elem");
-                        } else {
-                            // Dynamic array (heap-allocated) - single index GEP
-                            LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, output_llvm_type, array_ptr,
-                                                                  &index, 1, "elem_ptr");
-                            return LLVMBuildLoad2(gen->builder, output_llvm_type, elem_ptr, "elem");
-                        }
+                        // Arrays are now wrapper structs { i64 length, T* data }
+                        // Extract the data pointer from field 1
+                        LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
+                                                                          array_ptr, 1, "data_ptr_field");
+                        LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
+                                                               LLVMPointerType(output_llvm_type, 0),
+                                                               data_ptr_field, "data_ptr");
+
+                        // Index into the data pointer
+                        LLVMValueRef elem_ptr = LLVMBuildGEP2(gen->builder, output_llvm_type, data_ptr,
+                                                              &index, 1, "elem_ptr");
+                        return LLVMBuildLoad2(gen->builder, output_llvm_type, elem_ptr, "elem");
                     } else {
                         // Complex expression - generate it
                         LLVMValueRef object = codegen_node(gen, node->index_access.object);
@@ -2377,6 +2584,18 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         case AST_RETURN: {
             if (node->return_stmt.value) {
                 LLVMValueRef ret_val = codegen_node(gen, node->return_stmt.value);
+
+                // For structs being returned by value (not ref), we need to load the value
+                // codegen_node returns a pointer for structs, but if we're returning by value
+                // (not ref), we need to load the actual struct value
+                TypeInfo* ret_type = node->return_stmt.value->type_info;
+                if (ret_type && type_info_is_object(ret_type) && !type_info_is_ref(ret_type)) {
+                    // Returning struct by value - load it
+                    LLVMTypeRef struct_type = get_llvm_type(gen, ret_type);
+                    ret_val = LLVMBuildLoad2(gen->builder, struct_type, ret_val, "struct_ret_val");
+                }
+                // If ret_type is ref<Struct>, we already have the pointer, just return it
+
                 return LLVMBuildRet(gen->builder, ret_val);
             } else {
                 return LLVMBuildRetVoid(gen->builder);
@@ -2402,21 +2621,20 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         }
 
         case AST_IF: {
-            // If the condition is a pattern match, we need to temporarily switch to the then-branch
-            // scope to create allocas for bindings BEFORE generating the condition
-            bool is_pattern_match = (node->if_stmt.condition && 
-                                    node->if_stmt.condition->type == AST_PATTERN_MATCH &&
-                                    node->if_stmt.then_branch->symbol_table);
-            
+            // If the condition contains pattern matches with bindings, we need to temporarily switch
+            // to the then-branch scope to create allocas for bindings BEFORE generating the condition.
+            // This allows the pattern match code to store extracted values into those allocas.
+            bool has_pattern_bindings = (node->if_stmt.then_branch->symbol_table != NULL);
+
             SymbolTable* prev_scope = gen->symbols;
-            if (is_pattern_match) {
+            if (has_pattern_bindings) {
                 gen->symbols = node->if_stmt.then_branch->symbol_table;
             }
-            
+
             LLVMValueRef cond = codegen_node(gen, node->if_stmt.condition);
-            
+
             // Restore scope after generating condition
-            if (is_pattern_match) {
+            if (has_pattern_bindings) {
                 gen->symbols = prev_scope;
             }
 
@@ -2584,72 +2802,131 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             return codegen_node(gen, node->expr_stmt.expression);
 
         case AST_NEW_EXPR: {
-            // new T[size] - allocate array on heap
+            // new T[size] - allocate array on heap and return wrapper struct
             // Get element type
             TypeInfo* elem_type_info = node->new_expr.element_type;
             LLVMTypeRef elem_type = get_llvm_type(gen, elem_type_info);
-            
+
             // Generate size expression
             LLVMValueRef size_value = codegen_node(gen, node->new_expr.size_expr);
             if (!size_value) {
                 log_error_at(&node->loc, "Failed to generate size expression for new");
                 return NULL;
             }
-            
+
             // Calculate total size in bytes: size * sizeof(T)
             // Cast size to i64 for multiplication
-            LLVMValueRef size_i64 = LLVMBuildIntCast2(gen->builder, size_value, 
-                                                       LLVMInt64TypeInContext(gen->context), 
+            LLVMValueRef size_i64 = LLVMBuildIntCast2(gen->builder, size_value,
+                                                       LLVMInt64TypeInContext(gen->context),
                                                        false, "size_i64");
             LLVMValueRef elem_size = LLVMSizeOf(elem_type);
             LLVMValueRef total_size = LLVMBuildMul(gen->builder, size_i64, elem_size, "total_size");
-            
+
             // Get jsasta_alloc function
             LLVMValueRef jsasta_alloc = LLVMGetNamedFunction(gen->module, "jsasta_alloc");
             if (!jsasta_alloc) {
                 log_error_at(&node->loc, "jsasta_alloc function not found (runtime not initialized?)");
                 return NULL;
             }
-            
+
             // Call jsasta_alloc(total_size) - returns i8*
             LLVMValueRef alloc_args[] = { total_size };
-            LLVMValueRef raw_ptr = LLVMBuildCall2(gen->builder, 
+            LLVMValueRef raw_ptr = LLVMBuildCall2(gen->builder,
                                                    LLVMGlobalGetValueType(jsasta_alloc),
                                                    jsasta_alloc, alloc_args, 1, "raw_ptr");
-            
+
             // Cast to T*
             LLVMValueRef typed_ptr = LLVMBuildBitCast(gen->builder, raw_ptr,
                                                        LLVMPointerType(elem_type, 0), "array_ptr");
-            
-            return typed_ptr;
+
+            // Create wrapper struct { i64 length, T* data } on stack
+            LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, elem_type);
+            LLVMValueRef wrapper_alloca = codegen_create_entry_block_alloca(gen, wrapper_type, "heap_array_wrapper");
+
+            // Set length field
+            LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, wrapper_type, wrapper_alloca, 0, "length_ptr");
+            LLVMBuildStore(gen->builder, size_i64, length_ptr);
+
+            // Set data pointer field
+            LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type, wrapper_alloca, 1, "data_ptr_field");
+            LLVMBuildStore(gen->builder, typed_ptr, data_ptr_field);
+
+            // Return pointer to wrapper (arrays are used by reference)
+            return wrapper_alloca;
         }
 
         case AST_DELETE_EXPR: {
             // delete expr - free heap memory
-            // Generate operand (should be a ref/pointer)
-            LLVMValueRef ptr = codegen_node(gen, node->delete_expr.operand);
-            if (!ptr) {
-                log_error_at(&node->loc, "Failed to generate operand for delete");
-                return NULL;
+            TypeInfo* operand_type = node->delete_expr.operand->type_info;
+
+            // Unwrap ref type if needed
+            TypeInfo* target_type = type_info_get_ref_target(operand_type);
+            bool is_ref = (operand_type->kind == TYPE_KIND_REF);
+
+            // For arrays, we need to extract the data pointer from the wrapper struct
+            if (type_info_is_array(target_type)) {
+                // Get pointer to the wrapper struct
+                // Note: codegen_node for ref<array> types already loads the pointer,
+                // so wrapper_ptr is directly a pointer to the wrapper struct
+                LLVMValueRef wrapper_ptr = codegen_node(gen, node->delete_expr.operand);
+                if (!wrapper_ptr) {
+                    log_error_at(&node->loc, "Failed to generate operand for delete");
+                    return NULL;
+                }
+
+                // Extract the data pointer from field 1 of the wrapper
+                TypeInfo* elem_type = target_type->data.array.element_type;
+                LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
+                LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, elem_llvm_type);
+
+                LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
+                                                                  wrapper_ptr, 1, "data_ptr_field");
+                LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
+                                                       LLVMPointerType(elem_llvm_type, 0),
+                                                       data_ptr_field, "data_ptr");
+
+                // Cast to i8* for free
+                LLVMValueRef void_ptr = LLVMBuildBitCast(gen->builder, data_ptr,
+                                                          LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+                                                          "void_ptr");
+
+                // Get jsasta_free function
+                LLVMValueRef jsasta_free = LLVMGetNamedFunction(gen->module, "jsasta_free");
+                if (!jsasta_free) {
+                    log_error_at(&node->loc, "jsasta_free function not found (runtime not initialized?)");
+                    return NULL;
+                }
+
+                // Call jsasta_free(data_ptr)
+                LLVMValueRef free_args[] = { void_ptr };
+                LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(jsasta_free),
+                              jsasta_free, free_args, 1, "");
+            } else {
+                // Non-array delete - original behavior
+                LLVMValueRef ptr = codegen_node(gen, node->delete_expr.operand);
+                if (!ptr) {
+                    log_error_at(&node->loc, "Failed to generate operand for delete");
+                    return NULL;
+                }
+
+                // Cast to i8* for free
+                LLVMValueRef void_ptr = LLVMBuildBitCast(gen->builder, ptr,
+                                                          LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+                                                          "void_ptr");
+
+                // Get jsasta_free function
+                LLVMValueRef jsasta_free = LLVMGetNamedFunction(gen->module, "jsasta_free");
+                if (!jsasta_free) {
+                    log_error_at(&node->loc, "jsasta_free function not found (runtime not initialized?)");
+                    return NULL;
+                }
+
+                // Call jsasta_free(ptr)
+                LLVMValueRef free_args[] = { void_ptr };
+                LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(jsasta_free),
+                              jsasta_free, free_args, 1, "");
             }
-            
-            // Cast to i8* for free
-            LLVMValueRef void_ptr = LLVMBuildBitCast(gen->builder, ptr,
-                                                      LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
-                                                      "void_ptr");
-            
-            // Get jsasta_free function
-            LLVMValueRef jsasta_free = LLVMGetNamedFunction(gen->module, "jsasta_free");
-            if (!jsasta_free) {
-                log_error_at(&node->loc, "jsasta_free function not found (runtime not initialized?)");
-                return NULL;
-            }
-            
-            // Call jsasta_free(ptr)
-            LLVMValueRef free_args[] = { void_ptr };
-            LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(jsasta_free),
-                          jsasta_free, free_args, 1, "");
-            
+
             // delete returns void
             return NULL;
         }
@@ -2809,7 +3086,7 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
         }
         entry = entry->next;
     }
-    
+
     // Not found in current module - the type might be from an imported module
     // Since type_info was resolved during type inference, it should have an llvm_type
     // somewhere in one of the module TypeContexts. Search imported modules.
@@ -2825,10 +3102,10 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
                         if (imported_entry->type && imported_entry->type->type_name &&
                             strcmp(imported_entry->type->type_name, type_info->type_name) == 0 &&
                             imported_entry->llvm_type) {
-                            
-                            log_verbose("Found struct type '%s' in imported module '%s'", 
+
+                            log_verbose("Found struct type '%s' in imported module '%s'",
                                        type_info->type_name, imported_module->relative_path);
-                            
+
                             // Return the LLVM type directly - no need to cache since lookups are fast enough
                             return imported_entry->llvm_type;
                         }
@@ -2864,7 +3141,7 @@ static LLVMTypeRef codegen_lookup_enum_type(CodeGen* gen, TypeInfo* type_info) {
         }
         entry = entry->next;
     }
-    
+
     // Search imported modules
     if (gen->symbols) {
         SymbolEntry* sym_entry = gen->symbols->head;
@@ -2877,10 +3154,10 @@ static LLVMTypeRef codegen_lookup_enum_type(CodeGen* gen, TypeInfo* type_info) {
                         if (imported_entry->type && imported_entry->type->type_name &&
                             strcmp(imported_entry->type->type_name, type_info->type_name) == 0 &&
                             imported_entry->llvm_type) {
-                            
-                            log_verbose("Found enum type '%s' in imported module '%s'", 
+
+                            log_verbose("Found enum type '%s' in imported module '%s'",
                                        type_info->type_name, imported_module->relative_path);
-                            
+
                             return imported_entry->llvm_type;
                         }
                         imported_entry = imported_entry->next;
@@ -2985,26 +3262,26 @@ static void codegen_initialize_types(CodeGen* gen) {
 
                 // Create enum as tagged union: { i32 tag, union data }
                 // The union contains a field for each variant that has data
-                
+
                 // Collect variant data types for the union
                 LLVMTypeRef* variant_union_types = NULL;
                 int union_type_count = 0;
                 int max_union_types = type->data.enum_type.variant_count;
-                
+
                 if (max_union_types > 0) {
                     variant_union_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * max_union_types);
                 }
-                
+
                 bool all_resolved = true;
-                
+
                 for (int i = 0; i < type->data.enum_type.variant_count; i++) {
                     int field_count = type->data.enum_type.variant_field_counts[i];
-                    
+
                     if (field_count == 0) {
                         // Unit variant - no data, skip
                         continue;
                     }
-                    
+
                     if (field_count == 1 && !type->data.enum_type.variant_field_names[i]) {
                         // Single unnamed field - just use that type
                         TypeInfo* field_type = type->data.enum_type.variant_field_types[i][0];
@@ -3017,7 +3294,7 @@ static void codegen_initialize_types(CodeGen* gen) {
                     } else {
                         // Named fields or multiple fields - create a struct for this variant
                         LLVMTypeRef* variant_field_types = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * field_count);
-                        
+
                         for (int j = 0; j < field_count; j++) {
                             TypeInfo* field_type = type->data.enum_type.variant_field_types[i][j];
                             variant_field_types[j] = get_llvm_type(gen, field_type);
@@ -3027,28 +3304,28 @@ static void codegen_initialize_types(CodeGen* gen) {
                                 break;
                             }
                         }
-                        
+
                         if (!all_resolved) {
                             free(variant_field_types);
                             break;
                         }
-                        
+
                         // Create anonymous struct for this variant
                         LLVMTypeRef variant_struct = LLVMStructTypeInContext(gen->context, variant_field_types, field_count, 0);
                         variant_union_types[union_type_count++] = variant_struct;
                         free(variant_field_types);
                     }
                 }
-                
+
                 if (all_resolved) {
                     LLVMTypeRef enum_llvm_type;
-                    
+
                     if (union_type_count == 0) {
                         // All variants are unit variants - enum is just the tag
                         // Use the smallest integer type that can represent all variants
                         int variant_count = type->data.enum_type.variant_count;
                         LLVMTypeRef tag_type;
-                        
+
                         if (variant_count <= 256) {
                             // u8 can hold 0-255
                             tag_type = LLVMInt8TypeInContext(gen->context);
@@ -3059,36 +3336,36 @@ static void codegen_initialize_types(CodeGen* gen) {
                             // u32 for larger enums
                             tag_type = LLVMInt32TypeInContext(gen->context);
                         }
-                        
+
                         enum_llvm_type = tag_type;
                     } else {
                         // Create tagged union: { i32 tag, [N x i8] data }
                         // We'll use a byte array large enough to hold any variant
                         // For now, use a fixed size of 64 bytes (can be optimized later)
                         // In a real implementation, we'd calculate the actual max size needed
-                        
+
                         // Simple approach: use an array of i64 values to ensure proper alignment
                         // Most variants will fit in 8 i64 values (64 bytes)
                         LLVMTypeRef data_array = LLVMArrayType(LLVMInt64TypeInContext(gen->context), 8);
-                        
+
                         // Create tagged union: { i32 tag, [8 x i64] data }
                         LLVMTypeRef tagged_union_fields[] = {
                             LLVMInt32TypeInContext(gen->context),  // tag
                             data_array                              // data (64 bytes, aligned to i64)
                         };
-                        
+
                         enum_llvm_type = LLVMStructCreateNamed(gen->context, type->type_name);
                         LLVMStructSetBody(enum_llvm_type, tagged_union_fields, 2, 0);
                     }
-                    
+
                     entry->llvm_type = enum_llvm_type;
-                    
+
                     log_verbose("Pre-generated LLVM enum type '%s' with %d variants (%d with data)",
                                type->type_name, type->data.enum_type.variant_count, union_type_count);
-                    
+
                     progress = true;
                 }
-                
+
                 if (variant_union_types) {
                     free(variant_union_types);
                 }
@@ -3148,7 +3425,10 @@ static void codegen_initialize_types(CodeGen* gen) {
                 LLVMTypeRef llvm_func_type = LLVMFunctionType(ret_type, param_types, spec->param_count, is_var_arg);
 
                 // Declare function (just add to module, don't generate body yet)
-                LLVMAddFunction(gen->module, spec->specialized_name, llvm_func_type);
+                LLVMValueRef llvm_func = LLVMAddFunction(gen->module, spec->specialized_name, llvm_func_type);
+
+                // Cache the LLVM function in the specialization for fast access during codegen
+                spec->llvm_func = llvm_func;
 
                 log_verbose_indent(1, "Declared: %s with %d params%s", spec->specialized_name, spec->param_count,
                                   is_var_arg ? " (variadic)" : "");
@@ -3162,10 +3442,11 @@ static void codegen_initialize_types(CodeGen* gen) {
     }
 }
 
-void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
+void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module, DiagnosticContext* diag) {
     // Store type context from type inference (contains types and specializations)
     gen->type_ctx = ast->type_ctx;
     gen->trait_registry = ast->type_ctx ? ast->type_ctx->trait_registry : NULL;
+    gen->diag = diag;  // Use diagnostics context for error reporting
 
     // Use the symbol table from type inference instead of creating a new one
     gen->symbols = ast->symbol_table;
@@ -3241,33 +3522,33 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module) {
 
         gen->current_function = main_func;
         gen->entry_block = entry;
-        
+
         // Initialize standard streams (stdout, stderr, stdin) as global variables
         // Declare FILE as opaque struct
         LLVMTypeRef file_type = LLVMStructCreateNamed(LLVMGetGlobalContext(), "struct._IO_FILE");
-        
+
         // Declare get_stdout, get_stderr, get_stdin helper functions
         LLVMTypeRef get_stream_type = LLVMFunctionType(LLVMPointerType(file_type, 0), NULL, 0, false);
         LLVMValueRef get_stdout_fn = LLVMAddFunction(gen->module, "get_stdout", get_stream_type);
         LLVMValueRef get_stderr_fn = LLVMAddFunction(gen->module, "get_stderr", get_stream_type);
         LLVMValueRef get_stdin_fn = LLVMAddFunction(gen->module, "get_stdin", get_stream_type);
-        
+
         // Create global variables for the streams
         LLVMValueRef global_stdout = LLVMAddGlobal(gen->module, LLVMPointerType(file_type, 0), "__jsasta_stdout");
         LLVMValueRef global_stderr = LLVMAddGlobal(gen->module, LLVMPointerType(file_type, 0), "__jsasta_stderr");
         LLVMValueRef global_stdin = LLVMAddGlobal(gen->module, LLVMPointerType(file_type, 0), "__jsasta_stdin");
-        
+
         LLVMSetInitializer(global_stdout, LLVMConstNull(LLVMPointerType(file_type, 0)));
         LLVMSetInitializer(global_stderr, LLVMConstNull(LLVMPointerType(file_type, 0)));
         LLVMSetInitializer(global_stdin, LLVMConstNull(LLVMPointerType(file_type, 0)));
-        
+
         // Call helper functions and store results at program start
         LLVMValueRef stdout_ptr = LLVMBuildCall2(gen->builder, get_stream_type, get_stdout_fn, NULL, 0, "stdout_init");
         LLVMBuildStore(gen->builder, stdout_ptr, global_stdout);
-        
+
         LLVMValueRef stderr_ptr = LLVMBuildCall2(gen->builder, get_stream_type, get_stderr_fn, NULL, 0, "stderr_init");
         LLVMBuildStore(gen->builder, stderr_ptr, global_stderr);
-        
+
         LLVMValueRef stdin_ptr = LLVMBuildCall2(gen->builder, get_stream_type, get_stdin_fn, NULL, 0, "stdin_init");
         LLVMBuildStore(gen->builder, stdin_ptr, global_stdin);
     }
