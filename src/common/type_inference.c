@@ -54,8 +54,11 @@ static TypeInfo* resolve_namespaced_type(const char* type_path, SymbolTable* sym
     // Check if this is a namespaced type (contains a dot)
     if (!strchr(type_path, '.')) {
         // Not namespaced, just look it up directly in the TypeContext
-        // Try struct first, then enum
-        TypeInfo* result = type_context_find_struct_type(type_ctx, type_path);
+        // Try primitive types first (handles string, i32, etc.), then struct, then enum
+        TypeInfo* result = type_context_find_type(type_ctx, type_path);
+        if (!result) {
+            result = type_context_find_struct_type(type_ctx, type_path);
+        }
         if (!result) {
             result = type_context_find_enum_type(type_ctx, type_path);
         }
@@ -364,8 +367,8 @@ static TypeInfo* infer_binary_result_type(SourceLocation* node, const char* op, 
 
     // Special handling for string concatenation (will be implemented as trait later)
     if (strcmp(op, "+") == 0) {
-        if (left == Type_String || right == Type_String) {
-            return Type_String;
+        if (left == Type_Str || right == Type_Str) {
+            return Type_Str;
         }
     }
 
@@ -405,7 +408,7 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         case AST_NUMBER:
             return node->type_info ? node->type_info : Type_Unknown;
         case AST_STRING:
-            return Type_String;
+            return Type_Str;
         case AST_BOOLEAN:
             return Type_Bool;
         case AST_IDENTIFIER: {
@@ -460,7 +463,7 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
                 if (elem_type == Type_Int) return Type_Array_Int;
                 if (elem_type == Type_Double) return Type_Array_Double;
                 if (elem_type == Type_Bool) return Type_Array_Bool;
-                if (elem_type == Type_String) return Type_Array_String;
+                if (elem_type == Type_Str) return Type_Array_Str;
             }
             return Type_Array_Int; // Default to int array
         }
@@ -470,8 +473,7 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
             // Unwrap ref types to get the actual target type
             TypeInfo* target_type = type_info_get_ref_target(obj_type);
 
-            // String indexing returns u8 (byte value)
-            if (target_type == Type_String) return Type_U8;
+            // String and array indexing now handled by Index trait
             if (type_info_is_array(target_type)) return target_type->data.array.element_type;
             return Type_Unknown;
         }
@@ -1411,7 +1413,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             } else {
                 // Infer type for the object - it's an expression (could be namespace.Type)
                 infer_literal_types(node->method_call.object, symbols, type_ctx, diag);
-                
+
                 // After inference, check if the object resolved to a type (e.g., test.assert)
                 // If so, this is a static method call
                 if (node->method_call.object->type_info && type_info_is_object(node->method_call.object->type_info)) {
@@ -1421,7 +1423,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 } else {
                     node->method_call.is_static = false;
                 }
-                
+
                 log_verbose("[METHOD_CALL infer_literal] object type after infer: %s",
                            node->method_call.object->type_info ?
                            node->method_call.object->type_info->type_name : "NULL");
@@ -1690,8 +1692,8 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     node->type_info = Type_Array_Double;
                 } else if (elem_type == Type_Bool) {
                     node->type_info = Type_Array_Bool;
-                } else if (elem_type == Type_String) {
-                    node->type_info = Type_Array_String;
+                } else if (elem_type == Type_Str) {
+                    node->type_info = Type_Array_Str;
                 } else {
                     node->type_info = Type_Array_Int; // Default
                 }
@@ -1726,6 +1728,34 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             TypeInfo* type_param_bindings[] = { index_type };
             TraitImpl* trait_impl = trait_find_impl(Trait_Index, index_target_type,
                                                     type_param_bindings, 1);
+
+            // If direct Index<IndexType> not found, try to find Index<T> where From<IndexType> exists for T
+            if (!trait_impl && Trait_From && type_info_is_integer(index_type)) {
+                // Common index types to try (in order of preference)
+                TypeInfo* candidate_types[] = { Type_Usize, Type_I64, Type_I32 };
+                for (int i = 0; i < 3 && !trait_impl; i++) {
+                    TypeInfo* candidate = candidate_types[i];
+                    if (candidate == index_type) continue; // Skip if same type
+
+                    // Check if Index<candidate> exists on target type
+                    TypeInfo* candidate_binding[] = { candidate };
+                    TraitImpl* candidate_index = trait_find_impl(Trait_Index, index_target_type,
+                                                                 candidate_binding, 1);
+                    if (!candidate_index) continue;
+
+                    // Check if From<index_type> exists for candidate
+                    trait_ensure_from_impl(candidate, index_type);
+                    TypeInfo* from_binding[] = { index_type };
+                    TraitImpl* from_impl = trait_find_impl(Trait_From, candidate, from_binding, 1);
+
+                    if (from_impl) {
+                        // Found a conversion! Update index node's type info so codegen knows to convert
+                        node->index_access.index->type_info = candidate;
+                        trait_impl = candidate_index;
+                        break;
+                    }
+                }
+            }
 
             if (!trait_impl) {
                 TYPE_ERROR(diag, node->loc, TE_ARRAY_INDEX_NON_INTEGER, "Type '%s' does not implement Index<%s>",
@@ -1965,7 +1995,6 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Get variant field information
             int field_count = enum_type->data.enum_type.variant_field_counts[variant_index];
             TypeInfo** field_types = enum_type->data.enum_type.variant_field_types[variant_index];
-            char** field_names = enum_type->data.enum_type.variant_field_names[variant_index];
 
             // Determine if this is struct binding or destructuring
             int non_wildcard_count = 0;
@@ -1975,8 +2004,11 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 }
             }
 
-            if (non_wildcard_count == 1 && node->pattern_match.binding_count == 1) {
-                // Single binding - bind all fields as struct
+            // Struct binding: one binding for multiple fields (binds whole struct)
+            // Destructuring: binding count matches field count (extracts individual fields)
+            // Special case: if variant has only 1 field, always destructure (not struct bind)
+            if (non_wildcard_count == 1 && node->pattern_match.binding_count == 1 && field_count > 1) {
+                // Single binding for multiple fields - bind all fields as struct
                 node->pattern_match.is_struct_binding = true;
 
                 // Look up the variant struct type created during enum registration
@@ -2195,7 +2227,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                 if (strcmp(type_name, "bool") == 0) {
                     resolved = Type_Bool;
                 } else if (strcmp(type_name, "string") == 0) {
-                    resolved = Type_String;
+                    resolved = Type_Str;
                 } else if (strcmp(type_name, "double") == 0) {
                     resolved = Type_Double;
                 } else {
@@ -2611,19 +2643,19 @@ static void analyze_call_sites(ASTNode* node, SymbolTable* symbols, TypeContext*
                         // This is namespace.Type.method() - handle validation
                         Module* imported_module = symbol_get_imported_module(entry);
                         const char* type_member = node->method_call.object->member_access.property;
-                        
+
                         // Look for the struct declaration
                         ExportedSymbol* type_export = module_find_export(imported_module, type_member);
-                        if (type_export && type_export->declaration && 
+                        if (type_export && type_export->declaration &&
                             type_export->declaration->type == AST_STRUCT_DECL) {
                             // Find the method in the struct
                             ASTNode* struct_decl = type_export->declaration;
                             const char* method_name = node->method_call.method_name;
-                            
+
                             // Build mangled method name
                             char mangled_method[256];
                             snprintf(mangled_method, sizeof(mangled_method), "%s.%s", type_member, method_name);
-                            
+
                             for (int i = 0; i < struct_decl->struct_decl.method_count; i++) {
                                 ASTNode* method = struct_decl->struct_decl.methods[i];
                                 if (strcmp(method->func_decl.name, mangled_method) == 0) {
@@ -2963,8 +2995,8 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                     node->type_info = Type_Array_Double;
                 } else if (elem_type == Type_Bool) {
                     node->type_info = Type_Array_Bool;
-                } else if (elem_type == Type_String) {
-                    node->type_info = Type_Array_String;
+                } else if (elem_type == Type_Str) {
+                    node->type_info = Type_Array_Str;
                 } else {
                     node->type_info = Type_Array_Int; // Default
                 }
@@ -3194,7 +3226,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             if (node->method_call.is_static) {
                 // Static method: Type.method
                 // Get type name from type_info (works for both identifier and namespace.Type cases)
-                const char* type_name = node->method_call.object->type_info ? 
+                const char* type_name = node->method_call.object->type_info ?
                                         node->method_call.object->type_info->type_name : "unknown";
                 snprintf(mangled_name, sizeof(mangled_name), "%s.%s", type_name, node->method_call.method_name);
             } else {
@@ -3466,7 +3498,7 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
                 if (strcmp(type_name, "bool") == 0) {
                     resolved = Type_Bool;
                 } else if (strcmp(type_name, "string") == 0) {
-                    resolved = Type_String;
+                    resolved = Type_Str;
                 } else if (strcmp(type_name, "double") == 0) {
                     resolved = Type_Double;
                 } else {

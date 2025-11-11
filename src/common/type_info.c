@@ -26,7 +26,8 @@ TypeInfo* Type_Uint = NULL;
 
 TypeInfo* Type_Double = NULL;
 TypeInfo* Type_Object = NULL;
-TypeInfo* Type_String = NULL;
+TypeInfo* Type_Str = NULL;
+TypeInfo* Type_CStr = NULL;
 
 TypeInfo* Type_Array_Int = NULL;
 TypeInfo* Type_Array_I8 = NULL;
@@ -39,7 +40,7 @@ TypeInfo* Type_Array_U32 = NULL;
 TypeInfo* Type_Array_U64 = NULL;
 TypeInfo* Type_Array_Bool = NULL;
 TypeInfo* Type_Array_Double = NULL;
-TypeInfo* Type_Array_String = NULL;
+TypeInfo* Type_Array_Str = NULL;
 
 // Create a basic TypeInfo with just a base type
 TypeInfo* type_info_create(TypeKind kind, char* name) {

@@ -1,2 +1,0 @@
-[ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:10:11: Property 'z' not found in object (property_index not set by type inference)
-[ERROR]   /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/08-struct-field-not-found.jsa:10:11: Property 'z' not found in object (property_index not set by type inference)

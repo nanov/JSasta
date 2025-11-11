@@ -168,8 +168,9 @@ void codegen_free(CodeGen* gen) {
     free(gen);
 }
 
-// Helper: Get or create named array wrapper struct type: { i64 length, T* data }
+// Helper: Get or create named array wrapper struct type: { T* data, i64 length }
 // This is used internally to represent all arrays (stack and heap) with their size
+// Layout matches str type: { ref i8 data, usize length }
 // Uses named structs (e.g., %Array_i32) for better readability and reuse
 static LLVMTypeRef get_array_wrapper_type(CodeGen* gen, LLVMTypeRef element_type) {
     // Generate a unique name based on the element type
@@ -195,13 +196,37 @@ static LLVMTypeRef get_array_wrapper_type(CodeGen* gen, LLVMTypeRef element_type
     // Create new named struct type
     LLVMTypeRef wrapper_type = LLVMStructCreateNamed(gen->context, wrapper_name);
 
-    // Set body: { i64 length, T* data }
+    // Set body: { T* data, i64 length } - matches str layout
     LLVMTypeRef fields[2];
-    fields[0] = LLVMInt64TypeInContext(gen->context);  // length (usize/i64)
-    fields[1] = LLVMPointerType(element_type, 0);      // data pointer
+    fields[0] = LLVMPointerType(element_type, 0);      // data pointer
+    fields[1] = LLVMInt64TypeInContext(gen->context);  // length (usize/i64)
     LLVMStructSetBody(wrapper_type, fields, 2, 0);     // non-packed
 
     return wrapper_type;
+}
+
+// Get or create the str struct type: { i8* data, i64 length }
+// For now, we use a simple representation without SSO at LLVM level
+// SSO optimization can be added later as a runtime optimization
+LLVMTypeRef get_str_type(CodeGen* gen) {
+    const char* str_name = "str";
+
+    // Try to get existing struct type
+    LLVMTypeRef existing = LLVMGetTypeByName2(gen->context, str_name);
+    if (existing) {
+        return existing;
+    }
+
+    // Create new named struct type
+    LLVMTypeRef str_type = LLVMStructCreateNamed(gen->context, str_name);
+
+    // Set body: { i8* data, i64 length }
+    LLVMTypeRef fields[2];
+    fields[0] = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);  // data pointer
+    fields[1] = LLVMInt64TypeInContext(gen->context);                      // length
+    LLVMStructSetBody(str_type, fields, 2, 0);  // non-packed
+
+    return str_type;
 }
 
 LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
@@ -220,8 +245,8 @@ LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     // Check other primitive types by pointer comparison
     if (type_info == Type_Double) {
         return LLVMDoubleTypeInContext(gen->context);
-    } else if (type_info == Type_String) {
-        return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+    } else if (type_info == Type_Str) {
+        return get_str_type(gen);
     } else if (type_info == Type_Bool) {
         return LLVMInt1TypeInContext(gen->context);
     } else if (type_info == Type_Void) {
@@ -239,11 +264,15 @@ LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
         // Fallback to opaque pointer if no target
         return LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
     } else if (type_info->kind == TYPE_KIND_ARRAY && type_info->data.array.element_type) {
-        // Array type - return wrapper struct { i64 length, T* data }
+        // Array type - return wrapper struct { T* data, i64 length }
         // This ensures all arrays carry their size information
+        // Layout matches str type for consistency
         TypeInfo* elem_type_info = type_info->data.array.element_type;
         LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type_info);
         return get_array_wrapper_type(gen, elem_llvm_type);
+    } else if (type_info == Type_Str) {
+        // Special case: str is TYPE_KIND_OBJECT but has its own LLVM representation
+        return get_str_type(gen);
     } else if (type_info->kind == TYPE_KIND_OBJECT) {
         // Look up the actual struct type
         LLVMTypeRef struct_type = codegen_lookup_object_type(gen, type_info);
@@ -544,9 +573,10 @@ static LLVMValueRef codegen_get_lvalue_ptr_with_type(CodeGen* gen, ASTNode* node
             // Generate index
             LLVMValueRef index = codegen_node(gen, node->index_access.index);
 
-            if (type_info_is_array(index_target_type)) {
-                // Array intrinsic - get pointer to element
-                // Arrays are now wrapper structs { i64 length, T* data }
+            // Check if this type has RefIndex trait implementation
+            if (trait_impl) {
+                // Generic intrinsic implementation for types with { T* data, i64 length } layout
+                // Works for arrays, str, and any custom type with the same layout
 
                 LLVMValueRef wrapper_ptr = NULL;
 
@@ -574,7 +604,15 @@ static LLVMValueRef codegen_get_lvalue_ptr_with_type(CodeGen* gen, ASTNode* node
                 TypeInfo* output_type = trait_get_assoc_type(Trait_RefIndex, index_target_type,
                     (TypeInfo*[]){ node->index_access.index->type_info }, 1, "Output");
                 LLVMTypeRef output_llvm_type = get_llvm_type(gen, output_type);
-                LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, output_llvm_type);
+                // Get the wrapper type - works for both arrays and str (same layout)
+                LLVMTypeRef wrapper_type;
+                if (index_target_type == Type_Str) {
+                    wrapper_type = get_str_type(gen);  // str has its own wrapper type
+                } else if (index_target_type->kind == TYPE_KIND_ARRAY) {
+                    wrapper_type = get_array_wrapper_type(gen, output_llvm_type);
+                } else {
+                    wrapper_type = get_llvm_type(gen, index_target_type);
+                }
 
                 if (out_type) *out_type = output_type;
 
@@ -587,9 +625,9 @@ static LLVMValueRef codegen_get_lvalue_ptr_with_type(CodeGen* gen, ASTNode* node
                                                  wrapper_ptr, "deref_wrapper");
                 }
 
-                // Extract data pointer from wrapper struct (field 1)
+                // Extract data pointer from wrapper struct (field 0)
                 LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
-                                                                  wrapper_ptr, 1, "data_ptr_field");
+                                                                  wrapper_ptr, 0, "data_ptr_field");
                 LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
                                                        LLVMPointerType(output_llvm_type, 0),
                                                        data_ptr_field, "data_ptr");
@@ -706,8 +744,67 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 return LLVMConstInt(int_type, (long long)node->number.value, is_signed);
             }
 
-        case AST_STRING:
-            return LLVMBuildGlobalStringPtr(gen->builder, node->string.value, "str");
+        case AST_STRING: {
+            // Check if this is a str type or legacy string type
+            if (node->type_info == Type_Str) {
+                // Create str struct: { i8* data, i64 length }
+                // Use LLVMConstStringInContext for true constants (works in global initializers)
+                size_t str_len = strlen(node->string.value);
+
+                // Create a global constant string
+                LLVMValueRef str_constant = LLVMConstStringInContext(
+                    gen->context,
+                    node->string.value,
+                    (unsigned)str_len,
+                    0  // Don't null-terminate (we'll add it)
+                );
+
+                // Add null terminator by creating an array with extra byte
+                char* str_with_null = (char*)malloc(str_len + 2);
+                memcpy(str_with_null, node->string.value, str_len);
+                str_with_null[str_len] = '\0';
+
+                str_constant = LLVMConstStringInContext(
+                    gen->context,
+                    str_with_null,
+                    (unsigned)(str_len + 1),
+                    0  // Include null terminator in length
+                );
+                free(str_with_null);
+
+                // Create a global variable for the string data
+                LLVMValueRef global_str = LLVMAddGlobal(
+                    gen->module,
+                    LLVMTypeOf(str_constant),
+                    "str"
+                );
+                LLVMSetInitializer(global_str, str_constant);
+                LLVMSetGlobalConstant(global_str, 1);
+                LLVMSetLinkage(global_str, LLVMPrivateLinkage);
+                LLVMSetUnnamedAddress(global_str, LLVMGlobalUnnamedAddr);
+
+                // Get pointer to first element (i8*)
+                LLVMValueRef indices[2] = {
+                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0),
+                    LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0)
+                };
+                LLVMValueRef str_ptr = LLVMConstGEP2(
+                    LLVMTypeOf(str_constant),
+                    global_str,
+                    indices,
+                    2
+                );
+
+                LLVMValueRef length = LLVMConstInt(LLVMInt64TypeInContext(gen->context), str_len, 0);
+
+                // Create constant str struct value
+                LLVMValueRef fields[2] = { str_ptr, length };
+                return LLVMConstNamedStruct(get_str_type(gen), fields, 2);
+            } else {
+                // Legacy string type - just return pointer
+                return LLVMBuildGlobalStringPtr(gen->builder, node->string.value, "str");
+            }
+        }
 
         case AST_BOOLEAN:
             return LLVMConstInt(LLVMInt1TypeInContext(gen->context), node->boolean.value, 0);
@@ -1148,6 +1245,24 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     MethodImpl* method = trait_get_binary_method(trait, left_target, right_target, method_name);
 
                     if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
+                        // Special handling for str type: intrinsic_str_eq expects POINTERS to str structs
+                        // String literals return constant struct values, so we need to materialize them
+                        if (left_target == Type_Str) {
+                            // Check if left is a constant (string literal)
+                            if (LLVMIsConstant(left)) {
+                                // Allocate stack space and store the constant
+                                LLVMValueRef left_alloca = LLVMBuildAlloca(gen->builder, get_str_type(gen), "str_literal_tmp");
+                                LLVMBuildStore(gen->builder, left, left_alloca);
+                                left = left_alloca;
+                            }
+                            // Check if right is a constant (string literal)
+                            if (LLVMIsConstant(right)) {
+                                LLVMValueRef right_alloca = LLVMBuildAlloca(gen->builder, get_str_type(gen), "str_literal_tmp");
+                                LLVMBuildStore(gen->builder, right, right_alloca);
+                                right = right_alloca;
+                            }
+                        }
+
                         // Call intrinsic codegen function
                         // Note: left and right values are already auto-dereferenced by AST_IDENTIFIER codegen
                         LLVMValueRef args[] = { left, right };
@@ -1429,6 +1544,14 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
 
                 if (existing && existing->value) {
                     // Variable already declared in PASS 0.5, now initialize it with non-constant value
+
+                    // Skip if already initialized with constant (e.g., str with string literal)
+                    if (var_type_info == Type_Str && node->var_decl.init &&
+                        node->var_decl.init->type == AST_STRING) {
+                        // Already initialized in PASS 0.5 with constant initializer
+                        return existing->value;
+                    }
+
                     if (node->var_decl.init) {
                         // Special handling for array literals with fixed-size arrays
                         if (var_type_info && type_info_is_array(var_type_info) &&
@@ -1441,8 +1564,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                             int64_t array_size = node->var_decl.array_size;
                             LLVMTypeRef array_data_type = LLVMArrayType2(elem_llvm_type, array_size);
 
-                            // Load the data pointer from the wrapper struct
-                            LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, existing->llvm_type, existing->value, 1, "data_ptr_field");
+                            // Load the data pointer from the wrapper struct (field 0)
+                            LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, existing->llvm_type, existing->value, 0, "data_ptr_field");
                             LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder, LLVMPointerType(elem_llvm_type, 0), data_ptr_field, "data_ptr");
 
                             for (int i = 0; i < array_lit->array_literal.count; i++) {
@@ -1479,7 +1602,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 // First time seeing this variable (PASS 0.5) - declare it
                 if (node->var_decl.init && !(var_type_info && type_info_is_array(var_type_info))) {
                     // Don't generate array literals during declaration - they need runtime initialization
+
+                    // Special case: if variable is str type and init is string literal,
+                    // temporarily override the literal's type_info so it generates a str struct
+                    TypeInfo* saved_type_info = NULL;
+                    if (var_type_info == Type_Str &&
+                        node->var_decl.init->type == AST_STRING &&
+                        node->var_decl.init->type_info != Type_Str) {
+                        saved_type_info = node->var_decl.init->type_info;
+                        node->var_decl.init->type_info = Type_Str;
+                    }
+
                     init_value = codegen_node(gen, node->var_decl.init);
+
+                    // Restore original type_info
+                    if (saved_type_info) {
+                        node->var_decl.init->type_info = saved_type_info;
+                    }
 
                     if (!var_type_info && node->var_decl.init->type_info) {
                         var_type_info = node->var_decl.init->type_info;
@@ -1515,19 +1654,25 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     // Create wrapper global with constant initializer
                     global = LLVMAddGlobal(gen->module, var_llvm_type, node->var_decl.name);
 
-                    // Initialize wrapper: { i64 length, T* data_ptr }
+                    // Initialize wrapper: { T* data_ptr, i64 length }
                     LLVMValueRef wrapper_fields[2];
-                    wrapper_fields[0] = LLVMConstInt(LLVMInt64TypeInContext(gen->context), array_size, 0);
-                    // Cast data_global to T*
-                    wrapper_fields[1] = LLVMConstBitCast(data_global, LLVMPointerType(elem_llvm_type, 0));
+                    wrapper_fields[0] = LLVMConstBitCast(data_global, LLVMPointerType(elem_llvm_type, 0));
+                    wrapper_fields[1] = LLVMConstInt(LLVMInt64TypeInContext(gen->context), array_size, 0);
                     // Use LLVMConstStruct for anonymous struct (not LLVMConstNamedStruct)
                     LLVMValueRef wrapper_init = LLVMConstStruct(wrapper_fields, 2, 0);
                     LLVMSetInitializer(global, wrapper_init);
                 } else {
                     global = LLVMAddGlobal(gen->module, var_llvm_type, node->var_decl.name);
-                    // Always initialize globals to zero
-                    // Actual initialization happens in PASS 2 (in order with other statements)
-                    LLVMSetInitializer(global, LLVMConstNull(var_llvm_type));
+
+                    // Special handling for str type with string literal initializer
+                    if (var_type_info == Type_Str && init_value && LLVMIsConstant(init_value)) {
+                        // init_value is a constant str struct - use it as initializer
+                        LLVMSetInitializer(global, init_value);
+                    } else {
+                        // Always initialize other globals to zero
+                        // Actual initialization happens in PASS 2 (in order with other statements)
+                        LLVMSetInitializer(global, LLVMConstNull(var_llvm_type));
+                    }
                 }
 
                 // Update the symbol entry (created during type inference) with LLVM value and type
@@ -1554,15 +1699,15 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     LLVMTypeRef array_data_type = LLVMArrayType2(elem_llvm_type, array_size);
                     LLVMValueRef data_alloca = codegen_create_entry_block_alloca(gen, array_data_type, "array_data");
 
-                    // Initialize wrapper: set length field
-                    LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, var_llvm_type, wrapper_alloca, 0, "length_ptr");
-                    LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt64TypeInContext(gen->context), array_size, 0), length_ptr);
-
-                    // Initialize wrapper: set data pointer
-                    LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, var_llvm_type, wrapper_alloca, 1, "data_ptr_field");
+                    // Initialize wrapper: set data pointer (field 0)
+                    LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, var_llvm_type, wrapper_alloca, 0, "data_ptr_field");
                     // Cast array to pointer
                     LLVMValueRef data_as_ptr = LLVMBuildBitCast(gen->builder, data_alloca, LLVMPointerType(elem_llvm_type, 0), "data_as_ptr");
                     LLVMBuildStore(gen->builder, data_as_ptr, data_ptr_field);
+
+                    // Initialize wrapper: set length field (field 1)
+                    LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, var_llvm_type, wrapper_alloca, 1, "length_ptr");
+                    LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt64TypeInContext(gen->context), array_size, 0), length_ptr);
 
                     // Initialize array elements if there's an initializer
                     if (node->var_decl.init && node->var_decl.init->type == AST_ARRAY_LITERAL) {
@@ -2235,22 +2380,40 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         }
 
         case AST_MEMBER_ACCESS: {
-            // Check for trait-based properties like "length"
-            if (strcmp(node->member_access.property, "length") == 0) {
-                TypeInfo* obj_type = node->member_access.object->type_info;
-                TypeInfo* target_type = type_info_get_ref_target(obj_type);
+            // Check for trait-based property access
+            TypeInfo* obj_type = node->member_access.object->type_info;
+            TypeInfo* target_type = type_info_get_ref_target(obj_type);
+            const char* property_name = node->member_access.property;
 
-                // Check if this is an array with Length trait
-                if (type_info_is_array(target_type)) {
-                    // Use the helper function to get the LLVM type recursively
-                    LLVMTypeRef array_llvm_type = codegen_get_llvm_type(gen, node->member_access.object);
+            // Search through all traits to find a property implementation
+            TraitImpl* trait_impl = trait_find_property_for_type(target_type, property_name);
+            if (trait_impl) {
+                // Found a trait property! Find the method
+                MethodImpl* property_method = NULL;
+                for (int i = 0; i < trait_impl->method_count; i++) {
+                    if (strcmp(trait_impl->methods[i].method_name, property_name) == 0 &&
+                        trait_impl->methods[i].is_property) {
+                        property_method = &trait_impl->methods[i];
+                        break;
+                    }
+                }
 
-                    if (array_llvm_type && LLVMGetTypeKind(array_llvm_type) == LLVMArrayTypeKind) {
-                        unsigned length = LLVMGetArrayLength2(array_llvm_type);
-                        return LLVMConstInt(LLVMInt32TypeInContext(gen->context), length, 0);
+                if (property_method) {
+                    // Generate the object and call the property getter
+                    LLVMValueRef obj_ptr = codegen_node(gen, node->member_access.object);
+                    if (!obj_ptr) {
+                        log_error_at(&node->loc, "Failed to generate object for property access");
+                        return NULL;
                     }
 
-                    log_error_at(&node->loc, "Cannot get length of this array");
+                    // Call the property getter intrinsic
+                    if (property_method->kind == METHOD_INTRINSIC && property_method->codegen) {
+                        LLVMValueRef args[1] = { obj_ptr };
+                        // Pass the AST node as context for intrinsics that need it (like array length)
+                        return property_method->codegen(gen, args, 1, (void*)node->member_access.object);
+                    }
+
+                    log_error_at(&node->loc, "Property getter not implemented");
                     return NULL;
                 }
             }
@@ -2367,9 +2530,9 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             } else if (type_info_is_array_of(node->type_info, Type_Double)) {
                 elem_type = LLVMDoubleTypeInContext(gen->context);
                 elem_size = 8;
-            } else if (type_info_is_array_of(node->type_info, Type_String)) {
-                elem_type = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-                elem_size = 8; // pointer size
+            } else if (type_info_is_array_of(node->type_info, Type_Str)) {
+                elem_type = get_llvm_type(gen, Type_Str);
+                elem_size = 16; // str is {i8* data, i64 length}
             } else {
                 elem_type = LLVMInt32TypeInContext(gen->context);
                 elem_size = 4;
@@ -2538,11 +2701,9 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                 // because they need access to AST node structure and symbol table
                 // that can't be easily passed through the intrinsic function pointer
                 //
-                // Future improvement: Pass additional context to intrinsics so they
-                // can be fully self-contained (see intrinsic_array_index comment)
-
-                // Array intrinsic implementation
-                if (type_info_is_array(index_target_type)) {
+                // Generic intrinsic implementation for types with { T* data, i64 length } layout
+                // Works for arrays, str, and any custom type with the same memory layout
+                {
                     // Use stored symbol entry (resolved during type inference)
                     SymbolEntry* entry = node->index_access.symbol_entry;
 
@@ -2556,7 +2717,14 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         LLVMValueRef array_ptr = entry->value;
 
                         // Get the wrapper struct type
-                        LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, output_llvm_type);
+                        LLVMTypeRef wrapper_type;
+                        if (index_target_type == Type_Str) {
+                            wrapper_type = get_str_type(gen);
+                        } else if (index_target_type->kind == TYPE_KIND_ARRAY) {
+                            wrapper_type = get_array_wrapper_type(gen, output_llvm_type);
+                        } else {
+                            wrapper_type = get_llvm_type(gen, index_target_type);
+                        }
 
                         // If object is a ref, dereference it first
                         if (is_ref) {
@@ -2566,10 +2734,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                                 array_ptr, "deref");
                         }
 
-                        // Arrays are now wrapper structs { i64 length, T* data }
-                        // Extract the data pointer from field 1
+                        // Arrays are now wrapper structs { T* data, i64 length }
+                        // Extract the data pointer from field 0
                         LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
-                                                                          array_ptr, 1, "data_ptr_field");
+                                                                          array_ptr, 0, "data_ptr_field");
                         LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
                                                                LLVMPointerType(output_llvm_type, 0),
                                                                data_ptr_field, "data_ptr");
@@ -2585,20 +2753,6 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                                                               &index, 1, "elem_ptr");
                         return LLVMBuildLoad2(gen->builder, output_llvm_type, elem_ptr, "elem");
                     }
-                }
-                // String intrinsic implementation
-                else if (type_info_is_string(index_target_type)) {
-                    LLVMValueRef object = codegen_node(gen, node->index_access.object);
-                    LLVMValueRef char_ptr = LLVMBuildGEP2(gen->builder,
-                                                           LLVMInt8TypeInContext(gen->context),
-                                                           object, &index, 1, "char_ptr");
-                    return LLVMBuildLoad2(gen->builder, LLVMInt8TypeInContext(gen->context),
-                                         char_ptr, "char");
-                }
-                else {
-                    log_error_at(&node->loc, "Intrinsic Index implementation not supported for type '%s'",
-                                object_type->type_name ? object_type->type_name : "?");
-                    return NULL;
                 }
             }
             // For user-defined Index implementations (future)
@@ -2874,17 +3028,17 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             LLVMValueRef typed_ptr = LLVMBuildBitCast(gen->builder, raw_ptr,
                                                        LLVMPointerType(elem_type, 0), "array_ptr");
 
-            // Create wrapper struct { i64 length, T* data } on stack
+            // Create wrapper struct { T* data, i64 length } on stack
             LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, elem_type);
             LLVMValueRef wrapper_alloca = codegen_create_entry_block_alloca(gen, wrapper_type, "heap_array_wrapper");
 
-            // Set length field
-            LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, wrapper_type, wrapper_alloca, 0, "length_ptr");
-            LLVMBuildStore(gen->builder, size_i64, length_ptr);
-
-            // Set data pointer field
-            LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type, wrapper_alloca, 1, "data_ptr_field");
+            // Set data pointer field (field 0)
+            LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type, wrapper_alloca, 0, "data_ptr_field");
             LLVMBuildStore(gen->builder, typed_ptr, data_ptr_field);
+
+            // Set length field (field 1)
+            LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, wrapper_type, wrapper_alloca, 1, "length_ptr");
+            LLVMBuildStore(gen->builder, size_i64, length_ptr);
 
             // Return pointer to wrapper (arrays are used by reference)
             return wrapper_alloca;
@@ -2909,13 +3063,13 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     return NULL;
                 }
 
-                // Extract the data pointer from field 1 of the wrapper
+                // Extract the data pointer from field 0 of the wrapper
                 TypeInfo* elem_type = target_type->data.array.element_type;
                 LLVMTypeRef elem_llvm_type = get_llvm_type(gen, elem_type);
                 LLVMTypeRef wrapper_type = get_array_wrapper_type(gen, elem_llvm_type);
 
                 LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
-                                                                  wrapper_ptr, 1, "data_ptr_field");
+                                                                  wrapper_ptr, 0, "data_ptr_field");
                 LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
                                                        LLVMPointerType(elem_llvm_type, 0),
                                                        data_ptr_field, "data_ptr");
@@ -3106,6 +3260,11 @@ static LLVMTypeRef codegen_lookup_object_type(CodeGen* gen, TypeInfo* type_info)
         return NULL;
     }
 
+    // Special case: Type_Str has its own LLVM representation
+    if (type_info == Type_Str) {
+        return get_str_type(gen);
+    }
+
     // If type_info doesn't have a type_name, we can't look it up
     if (!type_info->type_name) {
         return NULL;
@@ -3223,6 +3382,13 @@ static void codegen_initialize_types(CodeGen* gen) {
             TypeInfo* type = entry->type;
 
             if (type->kind == TYPE_KIND_OBJECT) {
+                // Skip Type_Str - it has special LLVM representation
+                if (type == Type_Str) {
+                    entry->llvm_type = get_str_type(gen);
+                    entry = entry->next;
+                    continue;
+                }
+
                 // Skip if already generated
                 if (entry->llvm_type) {
                     entry = entry->next;

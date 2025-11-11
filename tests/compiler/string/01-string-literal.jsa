@@ -1,0 +1,14 @@
+// jastat-summary: Basic string literal creation and usage
+// jastat: mode=run, capture=assert
+
+import test from "@test";
+import io from "@io";
+
+let s1: str = "Hello";
+let s2: str = "World";
+let empty: str = "";
+
+// Test that strings are not null and basic usage works
+io.println("{}", s1);
+io.println("{}", s2);
+io.println("{}", empty);

@@ -90,6 +90,21 @@ void display_string(const char* value, Formatter* f) {
     fprintf(f->stream, "%s", value);
 }
 
+// Display for str type - takes a pointer to struct with { i8* data, i64 length }
+// Note: str data is NOT null-terminated, so we must use the length
+typedef struct {
+    int8_t* data;
+    int64_t length;
+} StrWrapper;
+
+void display_str(StrWrapper* str, Formatter* f) {
+    // Write exactly 'length' bytes from data
+    // str->data is not null-terminated, so we can't use %s
+    if (str && str->data && str->length > 0) {
+        fwrite(str->data, 1, (size_t)str->length, f->stream);
+    }
+}
+
 // Display for double (future)
 void display_f64(double value, Formatter* f) {
     fprintf(f->stream, "%g", value);

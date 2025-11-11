@@ -1,5 +1,5 @@
 // jastat-summary: @test.assert.that() failure with custom message
-// jastat: mode=run, capture=stderr, expect_fail=true
+// jastat: mode=run, capture=assert, expect_fail=true
 //
 // Test assert.that() failure with custom message
 import t from @test;

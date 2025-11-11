@@ -1,6 +1,0 @@
-[error:T312] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/06-delete-non-ref.jsa:5:8: delete requires a reference type, got i32
-[error:T312] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/06-delete-non-ref.jsa:5:8: delete requires a reference type, got i32
-
-=== Diagnostic Summary ===
-  Errors: 2
-

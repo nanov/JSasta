@@ -1,6 +1,0 @@
-[error:E_UNDEFINED_FUNC] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/04-function-not-found.jsa:6:21: Function not declared
-[error:E_UNDEFINED_FUNC] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/04-function-not-found.jsa:6:21: Undefined function: nonexistent_function
-
-=== Diagnostic Summary ===
-  Errors: 2
-

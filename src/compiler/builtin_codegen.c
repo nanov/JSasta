@@ -375,7 +375,7 @@ LLVMValueRef debug_assert_codegen(void* context, ASTNode* node) {
     ASTNode msg_node = {0};
     msg_node.type = AST_STRING;
     msg_node.string.value = "Assertion failed";
-    msg_node.type_info = Type_String;
+    msg_node.type_info = Type_Str;
     msg_node.loc = condition_arg->loc;  // Preserve location for auto-prefix
     
     ASTNode* msg_nodes[] = {&msg_node};
@@ -440,7 +440,7 @@ LLVMValueRef test_assert_that_codegen(void* context, ASTNode* node) {
         ASTNode msg_node = {0};
         msg_node.type = AST_STRING;
         msg_node.string.value = "Assertion failed";
-        msg_node.type_info = Type_String;
+        msg_node.type_info = Type_Str;
         msg_node.loc = condition_arg->loc;  // Preserve location for auto-prefix
         
         ASTNode* msg_nodes[] = {&msg_node};
@@ -476,7 +476,7 @@ LLVMValueRef test_assert_fail_codegen(void* context, ASTNode* node) {
         ASTNode location_str_node = {0};
         location_str_node.type = AST_STRING;
         location_str_node.string.value = location_msg;
-        location_str_node.type_info = Type_String;
+        location_str_node.type_info = Type_Str;
         
         ASTNode* location_args[] = {&location_str_node};
         ASTNode eprint_node = {0};
@@ -551,7 +551,7 @@ LLVMValueRef test_assert_equals_codegen(void* context, ASTNode* node) {
             ASTNode msg_node = {0};
             msg_node.type = AST_STRING;
             msg_node.string.value = "Assertion failed: values not equal";
-            msg_node.type_info = Type_String;
+            msg_node.type_info = Type_Str;
             msg_node.loc = actual_arg->loc;
             
             ASTNode* msg_nodes[] = {&msg_node};
@@ -740,7 +740,7 @@ LLVMValueRef test_assert_codegen(void* context, ASTNode* node) {
     ASTNode msg_node = {0};
     msg_node.type = AST_STRING;
     msg_node.string.value = "Test assertion failed";
-    msg_node.type_info = Type_String;
+    msg_node.type_info = Type_Str;
     msg_node.loc = condition_arg->loc;  // Preserve location for auto-prefix
     
     ASTNode* msg_nodes[] = {&msg_node};

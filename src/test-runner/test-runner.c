@@ -38,6 +38,7 @@ extern char **environ;
 #define COLOR_YELLOW "\x1b[33m"
 #define COLOR_BLUE   "\x1b[34m"
 #define COLOR_CYAN   "\x1b[36m"
+#define COLOR_GRAY   "\x1b[90m"
 #define COLOR_RESET  "\x1b[0m"
 #define PASS_SYMBOL   "✅"
 #define FAIL_SYMBOL   "❌"
@@ -93,6 +94,7 @@ typedef struct {
     test_status_t status;
     char summary[512];  // Fixed-size buffer for pipe communication
     char failure_output[1024];  // Captured assertion failure or error output
+    char config_str[256];  // Test configuration string for display
     int worker_id;  // Which worker is reporting this
 } ReportEvent;
 
@@ -283,13 +285,24 @@ void parse_test_config(const char* source_path, TestConfig* config) {
                             else if (strcmp(token + 8, "stderr") == 0) config->capture_stream = CAPTURE_STDERR;
                             else if (strcmp(token + 8, "assert") == 0) config->capture_stream = CAPTURE_ASSERT;
                             else if (strcmp(token + 8, "expect") == 0) config->capture_stream = CAPTURE_EXPECT;
-                        } else if (strncmp(token, "expect-exit-code=", 17) == 0) {
-                            char* value = token + 17;
-                            if (strcmp(value, "!0") == 0) {
+                        } else if (strncmp(token, "expect-exit-code", 16) == 0 || strncmp(token, "expect_exit_code", 16) == 0) {
+                            char* value = token + 16;
+                            // Skip '=' or '!=' 
+                            if (*value == '=') {
+                                value++; // skip '='
+                            } else if (value[0] == '!' && value[1] == '=') {
+                                value += 2; // skip '!='
+                            }
+                            if (strcmp(value, "!0") == 0 || strcmp(value, "0") == 0) {
                                 config->expect_non_zero_exit_code = true;
                             } else {
                                 config->expected_exit_code = atoi(value);
                                 config->exit_code_was_set = true;
+                            }
+                        } else if (strncmp(token, "expect_fail=", 12) == 0) {
+                            char* value = token + 12;
+                            if (strcmp(value, "true") == 0) {
+                                config->expect_non_zero_exit_code = true;
                             }
                         }
                         token = strtok(NULL, " \t\n,");
@@ -421,7 +434,9 @@ bool validate_expected_errors(const char* compiler_stderr, const ExpectedError* 
 
 // Pure test execution function - no output, just returns status
 // For CAPTURE_ASSERT mode failures, failure_output will contain the assertion message (caller must free)
-test_status_t execute_test_silent(const char* suite_path, const char* test_filename, char** failure_output) {
+// Takes pre-parsed config to avoid duplicate parsing
+test_status_t execute_test_silent(const char* suite_path, const char* test_filename, 
+                                   const TestConfig* parsed_config, char** failure_output) {
     if (failure_output) *failure_output = NULL;
     char absolute_source_path[PATH_MAX], temp_executable_path[MAX_PATH], fixture_path[MAX_PATH], command[PATH_MAX * 2];
     char test_base_name[MAX_PATH];
@@ -432,8 +447,8 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
     snprintf(fixture_path, sizeof(fixture_path), "%s/fixtures/%s.stdout", suite_path, test_base_name);
     if (realpath(absolute_source_path, command) != NULL) { strcpy(absolute_source_path, command); }
 
-    TestConfig config;
-    parse_test_config(absolute_source_path, &config);
+    // Use the pre-parsed config
+    TestConfig config = *parsed_config;
 
     test_status_t status = TEST_FAIL;
     // Use -o none for compiler-only tests to skip generating output files
@@ -451,7 +466,16 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
         } else {
             char* content_to_write = NULL;
             if (config.mode == MODE_COMPILER) {
-                content_to_write = compiler_stderr;
+                // CAPTURE_EXPECT mode uses inline annotations, no fixtures needed
+                if (config.capture_stream == CAPTURE_EXPECT) {
+                    // Delete fixture if it exists
+                    if (access(fixture_path, F_OK) == 0) {
+                        remove(fixture_path);
+                    }
+                    status = TEST_PASS;
+                } else {
+                    content_to_write = compiler_stderr;
+                }
             } else {
                 if (compiler_exit_code == 0) {
                     if (config.capture_stream == CAPTURE_ASSERT) {
@@ -567,8 +591,7 @@ test_status_t execute_test_silent(const char* suite_path, const char* test_filen
         }
     }
 
-    if (config.summary) free(config.summary);
-    if (config.expected_errors) free(config.expected_errors);
+    // Don't free config.summary or config.expected_errors - they're owned by the caller
     free(compiler_stdout); free(compiler_stderr);
     remove(temp_executable_path);
     return status;
@@ -765,6 +788,28 @@ test_status_t run_test_case(const char* suite_display_name, const char* suite_pa
 // PARALLEL TEST EXECUTION WITH NECO
 // =========================================================================
 
+// Helper function to format test config for display
+void format_test_config(const TestConfig* config, char* buffer, size_t buffer_size) {
+    const char* mode_str = (config->mode == MODE_COMPILER) ? "compiler" : "run";
+    const char* capture_str;
+    
+    switch (config->capture_stream) {
+        case CAPTURE_STDOUT: capture_str = "stdout"; break;
+        case CAPTURE_STDERR: capture_str = "stderr"; break;
+        case CAPTURE_ASSERT: capture_str = "assert"; break;
+        case CAPTURE_EXPECT: capture_str = "expect"; break;
+        default: capture_str = "all"; break;
+    }
+    
+    if (config->expect_non_zero_exit_code) {
+        snprintf(buffer, buffer_size, "mode=%s, capture=%s, expect_fail", mode_str, capture_str);
+    } else if (config->exit_code_was_set) {
+        snprintf(buffer, buffer_size, "mode=%s, capture=%s, exit=%d", mode_str, capture_str, config->expected_exit_code);
+    } else {
+        snprintf(buffer, buffer_size, "mode=%s, capture=%s", mode_str, capture_str);
+    }
+}
+
 // Pure neco channels - no pthreads needed since all I/O is non-blocking
 typedef struct {
     char test_name[512];
@@ -881,7 +926,7 @@ void reporter(int argc, void *argv[]) {
 
                 // Clear the first worker line and print completed test
                 printf("\033[2K");  // Clear line
-                printf("  %s %s\n", event.test_name, result_symbol);
+                printf("  %s %s " COLOR_GRAY "(%s)" COLOR_RESET "\n", event.test_name, result_symbol, event.config_str);
                 if (event.summary[0] != '\0') {
                     printf("\033[2K");  // Clear line for summary
                     if (event.failure_output[0] != '\0') {
@@ -990,7 +1035,7 @@ void test_worker(int argc, void *argv[]) {
 
         // Execute the test silently (no output)
         char* failure_output = NULL;
-        test_status_t status = execute_test_silent(job.suite_path, job.test_filename, &failure_output);
+        test_status_t status = execute_test_silent(job.suite_path, job.test_filename, &config, &failure_output);
 
         // Report test completion
         ReportEvent complete_event = {
@@ -1014,6 +1059,10 @@ void test_worker(int argc, void *argv[]) {
         } else {
             complete_event.failure_output[0] = '\0';
         }
+        
+        // Format test configuration for display
+        format_test_config(&config, complete_event.config_str, sizeof(complete_event.config_str));
+        
         strncpy(complete_event.test_name, test_display_name, sizeof(complete_event.test_name) - 1);
         neco_chan_send(report_chan, &complete_event);
     }
@@ -1154,6 +1203,65 @@ static const char* g_root_tests_dir = NULL;
 static int g_final_exit_code = 0;
 
 // Main coroutine that runs the test suite
+// Recursively clean up empty fixtures directories
+void cleanup_empty_fixtures_dirs(const char* dir_path) {
+    DIR* dir = opendir(dir_path);
+    if (!dir) return;
+    
+    struct dirent* entry;
+    char subdirs[MAX_ENTRIES_PER_DIR][PATH_MAX];
+    int subdir_count = 0;
+    
+    // First pass: collect subdirectories and check for fixtures dir
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        
+        char full_path[PATH_MAX];
+        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+        
+        struct stat st;
+        if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            if (strcmp(entry->d_name, "fixtures") == 0) {
+                // Check if fixtures directory is empty
+                DIR* fixtures_dir = opendir(full_path);
+                if (fixtures_dir) {
+                    struct dirent* fixture_entry;
+                    bool is_empty = true;
+                    while ((fixture_entry = readdir(fixtures_dir)) != NULL) {
+                        if (strcmp(fixture_entry->d_name, ".") != 0 && 
+                            strcmp(fixture_entry->d_name, "..") != 0) {
+                            is_empty = false;
+                            break;
+                        }
+                    }
+                    closedir(fixtures_dir);
+                    
+                    if (is_empty) {
+                        if (g_verbose_mode) {
+                            printf("Removing empty fixtures directory: %s\n", full_path);
+                        }
+                        rmdir(full_path);
+                    }
+                }
+            } else {
+                // Regular subdirectory - add to list for recursive processing
+                if (subdir_count < MAX_ENTRIES_PER_DIR) {
+                    strncpy(subdirs[subdir_count], full_path, PATH_MAX);
+                    subdir_count++;
+                }
+            }
+        }
+    }
+    closedir(dir);
+    
+    // Recursively process subdirectories
+    for (int i = 0; i < subdir_count; i++) {
+        cleanup_empty_fixtures_dirs(subdirs[i]);
+    }
+}
+
 void test_runner_main(int argc, void *argv[]) {
     (void)argc;
     (void)argv;
@@ -1163,6 +1271,11 @@ void test_runner_main(int argc, void *argv[]) {
 
     int success_count = 0, error_count = 0;
     process_directory(g_root_tests_dir, g_root_tests_dir, &success_count, &error_count);
+    
+    // Clean up empty fixtures directories after all tests complete
+    if (g_update_fixtures) {
+        cleanup_empty_fixtures_dirs(g_root_tests_dir);
+    }
 
     printf("\n----------------------------------------\n");
     if (g_update_fixtures) {
@@ -1220,6 +1333,64 @@ int neco_main(int argc, char *argv[]) {
     if (access(COMPILER_PATH, X_OK) == -1) {
         fprintf(stderr, "Error: Compiler not found or not executable at '%s'\n", COMPILER_PATH);
         return 1;
+    }
+
+    // Check if running a single test file (ends with .jsa)
+    size_t path_len = strlen(root_tests_dir);
+    if (path_len > 4 && strcmp(root_tests_dir + path_len - 4, ".jsa") == 0) {
+        // Single file mode
+        printf("Running single test: %s\n", root_tests_dir);
+        
+        // Extract directory and filename
+        char suite_path[PATH_MAX];
+        char* last_slash = strrchr(root_tests_dir, '/');
+        if (last_slash) {
+            size_t dir_len = last_slash - root_tests_dir;
+            strncpy(suite_path, root_tests_dir, dir_len);
+            suite_path[dir_len] = '\0';
+        } else {
+            strcpy(suite_path, ".");
+        }
+        
+        const char* test_filename = last_slash ? last_slash + 1 : root_tests_dir;
+        
+        // Parse config
+        TestConfig config;
+        parse_test_config(root_tests_dir, &config);
+        
+        // Run the test
+        char* failure_output = NULL;
+        test_status_t status = execute_test_silent(suite_path, test_filename, &config, &failure_output);
+        
+        // Format config string
+        char config_str[256];
+        format_test_config(&config, config_str, sizeof(config_str));
+        
+        // Print result
+        printf("\n");
+        if (status == TEST_PASS) {
+            printf(COLOR_GREEN "%s %s" COLOR_RESET " " COLOR_GRAY "(%s)" COLOR_RESET "\n", 
+                   PASS_SYMBOL, test_filename, config_str);
+            if (config.summary) {
+                printf("   ↳ %s\n", config.summary);
+            }
+        } else {
+            printf(COLOR_RED "%s %s" COLOR_RESET " " COLOR_GRAY "(%s)" COLOR_RESET "\n", 
+                   FAIL_SYMBOL, test_filename, config_str);
+            if (config.summary) {
+                printf("   ↳ %s\n", config.summary);
+            }
+            if (failure_output) {
+                printf("   → %s\n", failure_output);
+                free(failure_output);
+            }
+        }
+        
+        // Cleanup
+        if (config.summary) free(config.summary);
+        if (config.expected_errors) free(config.expected_errors);
+        
+        return (status == TEST_PASS) ? 0 : 1;
     }
 
     // Set global for coroutine to access

@@ -878,10 +878,28 @@ void traits_register_builtin_impls(TraitRegistry* registry) {
     REGISTER_DISPLAY(Type_U8, "display_u8");
     REGISTER_DISPLAY(Type_U16, "display_u16");
     REGISTER_DISPLAY(Type_Bool, "display_bool");
-    REGISTER_DISPLAY(Type_String, "display_string");
+    REGISTER_DISPLAY(Type_Str, "display_str");
     REGISTER_DISPLAY(Type_Double, "display_f64");
     
     #undef REGISTER_DISPLAY
+    
+    // Register Eq trait for str type
+    trait_register_eq_for_str(registry);
+    
+    // Register CStr trait for str type
+    trait_ensure_cstr_impl(Type_Str);
+    
+    // Register From<str> for c_str type
+    trait_ensure_from_impl(Type_CStr, Type_Str);
+    
+    // Register From<int types> for usize (for indexing operations)
+    TypeInfo* int_types[] = {
+        Type_I8, Type_I16, Type_I32, Type_I64,
+        Type_U8, Type_U16, Type_U32, Type_U64
+    };
+    for (int i = 0; i < 8; i++) {
+        trait_ensure_from_impl(Type_Usize, int_types[i]);
+    }
 }
 
 // === Enum Equality Intrinsics ===
@@ -1075,4 +1093,149 @@ void trait_register_display_for_enum(TypeInfo* enum_type, TraitRegistry* registr
     // Register the trait implementation
     // Display has no type parameters
     trait_impl_full(Trait_Display, enum_type, NULL, 0, NULL, 0, methods, 1);
+}
+
+// === String (str) Equality Intrinsics ===
+
+// Intrinsic for str == str comparison using memcmp
+static LLVMValueRef intrinsic_str_eq(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    (void)arg_count;
+    
+    // args[0] and args[1] are POINTERS to %str structs (not values)
+    // This is because objects are passed by pointer in codegen_node
+    // We need to use GEP to access the fields
+    
+    // Get str type
+    LLVMTypeRef str_type = get_str_type(gen);
+    
+    // Left string: GEP to get pointers to data and length fields
+    LLVMValueRef left_data_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[0], 0, "left_data_ptr");
+    LLVMValueRef left_len_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[0], 1, "left_len_ptr");
+    
+    // Load the values
+    LLVMValueRef left_data = LLVMBuildLoad2(gen->builder, 
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 
+        left_data_ptr, "left_data");
+    LLVMValueRef left_len = LLVMBuildLoad2(gen->builder, 
+        LLVMInt64TypeInContext(gen->context), 
+        left_len_ptr, "left_len");
+    
+    // Right string: GEP to get pointers to data and length fields
+    LLVMValueRef right_data_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[1], 0, "right_data_ptr");
+    LLVMValueRef right_len_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[1], 1, "right_len_ptr");
+    
+    // Load the values
+    LLVMValueRef right_data = LLVMBuildLoad2(gen->builder, 
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 
+        right_data_ptr, "right_data");
+    LLVMValueRef right_len = LLVMBuildLoad2(gen->builder, 
+        LLVMInt64TypeInContext(gen->context), 
+        right_len_ptr, "right_len");
+    
+    // First check if lengths are equal
+    LLVMValueRef len_eq = LLVMBuildICmp(gen->builder, LLVMIntEQ, left_len, right_len, "len_eq");
+    
+    // Create blocks for control flow
+    LLVMBasicBlockRef entry_block = LLVMGetInsertBlock(gen->builder);
+    LLVMValueRef function = LLVMGetBasicBlockParent(entry_block);
+    
+    LLVMBasicBlockRef memcmp_block = LLVMAppendBasicBlockInContext(gen->context, function, "memcmp");
+    LLVMBasicBlockRef result_block = LLVMAppendBasicBlockInContext(gen->context, function, "result");
+    
+    // If lengths differ, strings are not equal
+    LLVMBuildCondBr(gen->builder, len_eq, memcmp_block, result_block);
+    
+    // memcmp_block: lengths are equal, compare content
+    LLVMPositionBuilderAtEnd(gen->builder, memcmp_block);
+    
+    // Call memcmp(left_data, right_data, left_len)
+    LLVMTypeRef memcmp_type = LLVMFunctionType(
+        LLVMInt32TypeInContext(gen->context),
+        (LLVMTypeRef[]){
+            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+            LLVMInt64TypeInContext(gen->context)
+        },
+        3,
+        false
+    );
+    
+    LLVMValueRef memcmp_fn = LLVMGetNamedFunction(gen->module, "memcmp");
+    if (!memcmp_fn) {
+        memcmp_fn = LLVMAddFunction(gen->module, "memcmp", memcmp_type);
+    }
+    
+    // Convert usize length to i64 for memcmp
+    LLVMValueRef len_i64 = left_len;  // On 64-bit, usize is already i64
+    #if !defined(__LP64__) && !defined(_WIN64) && !defined(__x86_64__) && !defined(__aarch64__)
+        // On 32-bit, extend u32 to i64
+        len_i64 = LLVMBuildZExt(gen->builder, left_len, LLVMInt64TypeInContext(gen->context), "len_ext");
+    #endif
+    
+    LLVMValueRef memcmp_args[] = { left_data, right_data, len_i64 };
+    LLVMValueRef memcmp_result = LLVMBuildCall2(gen->builder, memcmp_type, memcmp_fn, memcmp_args, 3, "memcmp");
+    
+    // memcmp returns 0 if equal
+    LLVMValueRef data_eq = LLVMBuildICmp(gen->builder, LLVMIntEQ, memcmp_result, 
+        LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, false), "data_eq");
+    
+    LLVMBuildBr(gen->builder, result_block);
+    LLVMBasicBlockRef memcmp_end_block = LLVMGetInsertBlock(gen->builder);
+    
+    // result_block: phi node to merge results
+    LLVMPositionBuilderAtEnd(gen->builder, result_block);
+    
+    LLVMValueRef phi = LLVMBuildPhi(gen->builder, LLVMInt1TypeInContext(gen->context), "str_eq");
+    LLVMValueRef false_val = LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, false);
+    LLVMAddIncoming(phi, &false_val, &entry_block, 1);  // Length mismatch -> false
+    LLVMAddIncoming(phi, &data_eq, &memcmp_end_block, 1);  // memcmp result
+    
+    return phi;
+}
+
+// Intrinsic for str != str comparison
+static LLVMValueRef intrinsic_str_ne(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    // Reuse eq intrinsic and negate
+    LLVMValueRef eq_result = intrinsic_str_eq(gen, args, arg_count, context);
+    return LLVMBuildNot(gen->builder, eq_result, "str_ne");
+}
+
+// Register Eq trait for str type
+void trait_register_eq_for_str(TraitRegistry* registry) {
+    (void)registry;  // Not used, Trait_Eq is already initialized
+    
+    // Check if already registered
+    TypeInfo* type_param_bindings[] = { Type_Str };  // str == str
+    TraitImpl* existing = trait_find_impl(Trait_Eq, Type_Str, type_param_bindings, 1);
+    if (existing) {
+        return;
+    }
+    
+    // Create method implementations
+    MethodImpl methods[2];
+    
+    // eq method
+    methods[0].method_name = "eq";
+    methods[0].signature = NULL;
+    methods[0].kind = METHOD_INTRINSIC;
+    methods[0].codegen = intrinsic_str_eq;
+    methods[0].function_ptr = NULL;
+    methods[0].external_name = NULL;
+    
+    // ne method
+    methods[1].method_name = "ne";
+    methods[1].signature = NULL;
+    methods[1].kind = METHOD_INTRINSIC;
+    methods[1].codegen = intrinsic_str_ne;
+    methods[1].function_ptr = NULL;
+    methods[1].external_name = NULL;
+    
+    // Register: Eq<str> for str with Output = bool
+    TypeInfo* assoc_type_bindings[] = { Type_Bool };
+    
+    trait_impl_full(Trait_Eq, Type_Str,
+                   type_param_bindings, 1,      // Rhs = str
+                   assoc_type_bindings, 1,      // Output = bool
+                   methods, 2);
 }

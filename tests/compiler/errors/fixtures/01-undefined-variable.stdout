@@ -1,5 +1,0 @@
-[error:T301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/01-undefined-variable.jsa:6:25: Undefined variable: undefined_var
-
-=== Diagnostic Summary ===
-  Errors: 1
-

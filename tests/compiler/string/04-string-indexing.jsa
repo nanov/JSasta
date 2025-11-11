@@ -1,0 +1,18 @@
+// jastat-summary: String indexing with [] operator
+// jastat: mode=run, capture=assert
+
+import test from "@test";
+import io from "@io";
+
+let s: str = "Hello";
+
+// Access individual characters by index
+let c0: i32 = s[0];  // 'H' = 72
+let c1: i32 = s[1];  // 'e' = 101
+let c4: i32 = s[4];  // 'o' = 111
+
+test.assert.equals(72, c0);
+test.assert.equals(101, c1);
+test.assert.equals(111, c4);
+
+io.println("First char: {}", c0);

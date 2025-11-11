@@ -1,5 +1,0 @@
-[ERROR]   Failed to read module file: /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/./nonexistent.jsa
-[ERROR]   Failed to parse module: ./nonexistent
-[ERROR]   Failed to load imported module: ./nonexistent.jsa
-[ERROR]   Failed to load imports for module: 12-module-not-found
-[ERROR]   Failed to load entry module
