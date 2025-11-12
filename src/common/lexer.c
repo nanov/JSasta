@@ -181,6 +181,7 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "struct") == 0) type = TOKEN_STRUCT;
     else if (strcmp(buffer, "enum") == 0) type = TOKEN_ENUM;
     else if (strcmp(buffer, "ref") == 0) type = TOKEN_REF;
+    else if (strcmp(buffer, "value") == 0) type = TOKEN_VALUE;
     else if (strcmp(buffer, "is") == 0) type = TOKEN_IS;
     else if (strcmp(buffer, "return") == 0) type = TOKEN_RETURN;
     else if (strcmp(buffer, "break") == 0) type = TOKEN_BREAK;
@@ -202,6 +203,7 @@ static Token* lexer_read_identifier(Lexer* lexer) {
     else if (strcmp(buffer, "u16") == 0) type = TOKEN_U16;
     else if (strcmp(buffer, "u32") == 0) type = TOKEN_U32;
     else if (strcmp(buffer, "u64") == 0) type = TOKEN_U64;
+    else if (strcmp(buffer, "str") == 0) type = TOKEN_STR;
     else if (strcmp(buffer, "int") == 0) type = TOKEN_INT;
 
     return token_create(type, buffer, start_line, start_col);

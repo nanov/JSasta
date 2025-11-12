@@ -1,5 +1,7 @@
 // jastat-summary: Error when trying to delete a non-reference type
-// jastat: mode=compiler, capture=stderr
+// jastat: mode=compiler, capture=expect, expect_exit_code!=0
 
 let x: i32 = 42;
-delete x;  // T312: delete requires a reference type
+
+// jastat_expect: T312
+delete x;

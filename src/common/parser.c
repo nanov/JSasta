@@ -34,6 +34,31 @@ static bool parser_match(Parser* parser, TokenType type) {
     return parser->current_token->type == type;
 }
 
+// Helper to check if current token is an identifier-like token
+// This includes TOKEN_IDENTIFIER and keywords that can be used as identifiers in certain contexts
+static bool parser_match_identifier_like(Parser* parser) {
+    return parser->current_token->type == TOKEN_IDENTIFIER || 
+           parser->current_token->type == TOKEN_VALUE;
+}
+
+// Helper to peek at the next token without consuming current
+static Token* parser_peek_next(Parser* parser) {
+    // Save the current lexer state
+    size_t saved_pos = parser->lexer->position;
+    int saved_line = parser->lexer->line;
+    int saved_column = parser->lexer->column;
+    
+    // Get next token
+    Token* next = lexer_next_token(parser->lexer);
+    
+    // Restore lexer state
+    parser->lexer->position = saved_pos;
+    parser->lexer->line = saved_line;
+    parser->lexer->column = saved_column;
+    
+    return next;
+}
+
 static bool parser_expect(Parser* parser, TokenType type) {
     if (!parser_match(parser, type)) {
         SourceLocation loc = {
@@ -146,6 +171,10 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
         type_info = Type_U32;
     } else if (parser_match(parser, TOKEN_U64)) {
         type_info = Type_U64;
+    } else if (parser_match(parser, TOKEN_STR)) {
+        type_info = Type_Str;
+    } else if (parser_match(parser, TOKEN_STRING)) {
+        type_info = Type_Str;
     } else if (parser_match(parser, TOKEN_INT)) {
         type_info = Type_Int;
     } else if (parser_match(parser, TOKEN_IDENTIFIER)) {
@@ -157,7 +186,9 @@ static TypeInfo* parse_type_annotation(Parser* parser) {
         } else if (strcmp(type_name, "double") == 0) {
             type_info = Type_Double;
         } else if (strcmp(type_name, "string") == 0) {
-            type_info = Type_String;
+            type_info = Type_Str;  // "string" now maps to Type_Str
+        } else if (strcmp(type_name, "str") == 0) {
+            type_info = Type_Str;
         } else if (strcmp(type_name, "bool") == 0) {
             type_info = Type_Bool;
         } else if (strcmp(type_name, "void") == 0) {
@@ -265,7 +296,9 @@ static int parse_field_initializers(Parser* parser, char*** field_names, ASTNode
             }
 
             // Parse field_name: value
-            if (parser->current_token->type != TOKEN_IDENTIFIER) {
+            // Allow identifiers and certain keywords (like 'value') as field names
+            if (parser->current_token->type != TOKEN_IDENTIFIER &&
+                parser->current_token->type != TOKEN_VALUE) {
                 PARSE_ERROR(parser, error_code, "Expected field name in field initializer");
                 return -1;
             }
@@ -379,14 +412,15 @@ static ASTNode* parse_primary(Parser* parser) {
     } else if (parser_match(parser, TOKEN_STRING)) {
         node = AST_NODE(parser, AST_STRING);
         node->string.value = strdup(parser->current_token->value);
-        node->type_info = Type_String;
+        node->type_info = Type_Str;  // Use new str type by default
         parser_advance(parser);
     } else if (parser_match(parser, TOKEN_TRUE) || parser_match(parser, TOKEN_FALSE)) {
         node = AST_NODE(parser, AST_BOOLEAN);
         node->boolean.value = parser_match(parser, TOKEN_TRUE);
         node->type_info = Type_Bool;
         parser_advance(parser);
-    } else if (parser_match(parser, TOKEN_IDENTIFIER)) {
+    } else if (parser_match_identifier_like(parser)) {
+        // Allow identifiers and certain keywords (like 'value') as variable names
         node = AST_NODE(parser, AST_IDENTIFIER);
         node->identifier.name = strdup(parser->current_token->value);
         parser_advance(parser);
@@ -644,7 +678,7 @@ static ASTNode* parse_call(Parser* parser) {
             // Handle property access (e.g., console.log, obj.method)
             // Note: EnumType.variant will be parsed as member access here,
             // and converted to AST_ENUM_VARIANT during type inference
-            if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+            if (!parser_match_identifier_like(parser)) {
                 PARSE_ERROR(parser, PE_EXPECTED_IDENTIFIER_AFTER_DOT);
                 return node;
             }
@@ -780,6 +814,12 @@ static ASTNode* parse_call(Parser* parser) {
                 struct_lit->struct_literal.field_count = field_count;
 
                 node = struct_lit;
+            } else {
+                // Invalid use of '{' in postfix position
+                // This can happen with invalid syntax like: fn test() {}
+                PARSE_ERROR(parser, PE_UNEXPECTED_TOKEN_EXPR, "'{'");
+                parser_advance(parser); // consume '{' to avoid infinite loop
+                return node;
             }
         }
     }
@@ -984,7 +1024,8 @@ static ASTNode* parse_pattern_match(Parser* parser, ASTNode* expr) {
                 bool mut = parser_match(parser, TOKEN_VAR);
                 parser_advance(parser);
 
-                if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                // Allow identifiers and certain keywords (like 'value') as binding names
+                if (!parser_match_identifier_like(parser)) {
                     PARSE_ERROR(parser, PE_EXPECTED_IDENTIFIER_IN_PATTERN);
                     free(names);
                     free(is_mutable);
@@ -1275,7 +1316,7 @@ static ASTNode* parse_var_declaration(Parser* parser) {
     bool is_const = parser_match(parser, TOKEN_CONST);
     parser_advance(parser); // skip 'var', 'let', or 'const'
 
-    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+    if (!parser_match_identifier_like(parser)) {
         // Check if a type keyword was used as a variable name
         if (parser->current_token->type >= TOKEN_I8 && parser->current_token->type <= TOKEN_INT) {
             PARSE_ERROR(parser, PE_EXPECTED_TYPE,
@@ -1559,9 +1600,42 @@ static ASTNode* parse_external_function_declaration(Parser* parser) {
 }
 
 static ASTNode* parse_struct_declaration(Parser* parser) {
+    // Parse struct modifiers in strict order: const? value? struct
+    bool is_const = false;
+    bool is_value = false;
+    
+    // Check for 'const' modifier (must come first if present)
+    if (parser->current_token->type == TOKEN_CONST) {
+        is_const = true;
+        parser_advance(parser);
+    }
+    
+    // Check for 'value' modifier (must come after const if both present)
+    if (parser->current_token->type == TOKEN_VALUE) {
+        is_value = true;
+        parser_advance(parser);
+    }
+    
+    // Check for incorrect order: "value const struct"
+    if (!is_const && parser->current_token->type == TOKEN_CONST) {
+        fprintf(stderr, "Error: Invalid modifier order. Use 'const value struct' instead of 'value const struct'\n");
+        PARSE_ERROR(parser, PE_EXPECTED_STRUCT_NAME);
+        ASTNode* node = AST_NODE(parser, AST_STRUCT_DECL);
+        return node;
+    }
+    
+    // Now we should be at 'struct'
+    if (parser->current_token->type != TOKEN_STRUCT) {
+        PARSE_ERROR(parser, PE_EXPECTED_STRUCT_NAME);
+        ASTNode* node = AST_NODE(parser, AST_STRUCT_DECL);
+        return node;
+    }
+    
     parser_advance(parser); // skip 'struct'
 
     ASTNode* node = AST_NODE(parser, AST_STRUCT_DECL);
+    node->struct_decl.is_const = is_const;
+    node->struct_decl.is_value = is_value;
 
     // Parse struct name
     if (parser->current_token->type != TOKEN_IDENTIFIER) {
@@ -1617,7 +1691,7 @@ static ASTNode* parse_struct_declaration(Parser* parser) {
         }
 
         // Parse property name or method name
-        if (parser->current_token->type != TOKEN_IDENTIFIER) {
+        if (!parser_match_identifier_like(parser)) {
             PARSE_ERROR(parser, PE_EXPECTED_PROPERTY_OR_METHOD_NAME);
             return node;
         }
@@ -1932,7 +2006,9 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
             }
 
             // Save first token to determine if it's named or unnamed
-            if (parser->current_token->type != TOKEN_IDENTIFIER) {
+            // Allow identifiers and certain keywords (like 'value') as field names
+            if (parser->current_token->type != TOKEN_IDENTIFIER &&
+                parser->current_token->type != TOKEN_VALUE) {
                 PARSE_ERROR(parser, PE_EXPECTED_FIELD_NAME_IN_VARIANT);
                 return node;
             }
@@ -1971,7 +2047,9 @@ static ASTNode* parse_enum_declaration(Parser* parser) {
                         field_types = (TypeInfo**)realloc(field_types, sizeof(TypeInfo*) * field_capacity);
                     }
 
-                    if (parser->current_token->type != TOKEN_IDENTIFIER) {
+                    // Allow identifiers and certain keywords (like 'value') as field names
+                    if (parser->current_token->type != TOKEN_IDENTIFIER &&
+                        parser->current_token->type != TOKEN_VALUE) {
                         PARSE_ERROR(parser, PE_EXPECTED_FIELD_NAME_IN_VARIANT);
                         free(field_names);
                         free(field_types);
@@ -2220,8 +2298,20 @@ static ASTNode* parse_export_declaration(Parser* parser) {
     // Parse the declaration being exported
     if (parser_match(parser, TOKEN_FUNCTION)) {
         node->export_decl.declaration = parse_function_declaration(parser);
-    } else if (parser_match(parser, TOKEN_CONST)) {
-        node->export_decl.declaration = parse_var_declaration(parser);
+    } else if (parser->current_token->type == TOKEN_CONST) {
+        // Look ahead to next token: is this "const struct/value" or "const variable"?
+        Token* next = parser_peek_next(parser);
+        if (next && (next->type == TOKEN_STRUCT || next->type == TOKEN_VALUE)) {
+            token_free(next);
+            node->export_decl.declaration = parse_struct_declaration(parser);
+        } else {
+            if (next) token_free(next);
+            // It's a const variable - parse_var_declaration expects to be at 'const'
+            node->export_decl.declaration = parse_var_declaration(parser);
+        }
+    } else if (parser->current_token->type == TOKEN_VALUE) {
+        // "value" can only be followed by "struct"
+        node->export_decl.declaration = parse_struct_declaration(parser);
     } else if (parser_match(parser, TOKEN_EXTERNAL)) {
         node->export_decl.declaration = parse_external_function_declaration(parser);
     } else if (parser_match(parser, TOKEN_STRUCT)) {
@@ -2241,8 +2331,22 @@ static ASTNode* parse_statement(Parser* parser) {
         return parse_import_declaration(parser);
     } else if (parser_match(parser, TOKEN_EXPORT)) {
         return parse_export_declaration(parser);
-    } else if (parser_match(parser, TOKEN_VAR) || parser_match(parser, TOKEN_LET) || parser_match(parser, TOKEN_CONST)) {
+    } else if (parser_match(parser, TOKEN_VAR) || parser_match(parser, TOKEN_LET)) {
         return parse_var_declaration(parser);
+    } else if (parser->current_token->type == TOKEN_CONST) {
+        // Look ahead to next token: is this "const struct/value" or "const variable"?
+        Token* next = parser_peek_next(parser);
+        if (next && (next->type == TOKEN_STRUCT || next->type == TOKEN_VALUE)) {
+            token_free(next);
+            return parse_struct_declaration(parser);
+        } else {
+            if (next) token_free(next);
+            // It's a const variable - parse_var_declaration expects to be at 'const'
+            return parse_var_declaration(parser);
+        }
+    } else if (parser->current_token->type == TOKEN_VALUE) {
+        // "value" can only be followed by "struct"
+        return parse_struct_declaration(parser);
     } else if (parser_match(parser, TOKEN_FUNCTION)) {
         return parse_function_declaration(parser);
     } else if (parser_match(parser, TOKEN_EXTERNAL)) {

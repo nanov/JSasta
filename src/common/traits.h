@@ -37,6 +37,7 @@ typedef struct {
     const char* method_name;       // Name of the method
     TypeInfo* signature;           // Function type signature
     MethodKind kind;               // How to invoke this method
+    bool is_property;              // True if this is a property getter (accessed without ())
 
     // For METHOD_INTRINSIC: direct LLVM codegen
     LLVMValueRef (*codegen)(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context);
@@ -119,6 +120,9 @@ extern Trait* Trait_DivAssign;
 extern Trait* Trait_Index;
 extern Trait* Trait_RefIndex;
 extern Trait* Trait_Length;
+extern Trait* Trait_CStr;
+extern Trait* Trait_ImplicitFrom;
+extern Trait* Trait_ImplicitInto;
 extern Trait* Trait_Display;
 
 // === Core Trait Registry Functions ===
@@ -204,6 +208,10 @@ TraitImpl* trait_find_impl(
     int type_param_count
 );
 
+// Find a trait implementation that provides a property with the given name for a type
+// Searches through all traits to find one with a property method matching the name
+TraitImpl* trait_find_property_for_type(TypeInfo* type, const char* property_name);
+
 // Get associated type from a trait implementation
 TypeInfo* trait_get_assoc_type(
     Trait* trait,
@@ -276,11 +284,25 @@ void trait_ensure_ref_index_impl(TypeInfo* type);
 // Ensure Length is implemented for builtin types with length (arrays, strings, etc.)
 void trait_ensure_length_impl(TypeInfo* type);
 
+// Ensure CStr is implemented for types that can provide C strings (str, etc.)
+void trait_ensure_cstr_impl(TypeInfo* type);
+
+// Ensure From<source_type> is implemented for target_type
+void trait_ensure_implicit_from_impl(TypeInfo* target_type, TypeInfo* source_type);
+
 // === Auto-implement Eq trait for enum types ===
 
 // Register Eq trait implementation for an enum type
 // This is called automatically when an enum is declared
 void trait_register_eq_for_enum(TypeInfo* enum_type, TraitRegistry* registry);
 void trait_register_display_for_enum(TypeInfo* enum_type, TraitRegistry* registry);
+
+// === Register traits for builtin str type ===
+
+// Register Eq trait implementation for str type
+void trait_register_eq_for_str(TraitRegistry* registry);
+
+// Register Add trait implementation for str type
+void trait_register_add_for_str(TraitRegistry* registry);
 
 #endif // JSASTA_TRAITS_H

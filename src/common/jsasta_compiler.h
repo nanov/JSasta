@@ -25,6 +25,7 @@
     X(TOKEN_STRUCT, "struct") \
     X(TOKEN_ENUM, "enum") \
     X(TOKEN_REF, "ref") \
+    X(TOKEN_VALUE, "value") \
     X(TOKEN_IS, "is") \
     X(TOKEN_RETURN, "return") \
     X(TOKEN_BREAK, "break") \
@@ -45,6 +46,7 @@
     X(TOKEN_U16, "u16") \
     X(TOKEN_U32, "u32") \
     X(TOKEN_U64, "u64") \
+    X(TOKEN_STR, "str") \
     X(TOKEN_INT, "int") \
     X(TOKEN_IDENTIFIER, "identifier") \
     X(TOKEN_NUMBER, "number") \
@@ -189,6 +191,10 @@ struct TypeInfo {
     int type_id;                // Unique type ID within TypeContext
     char* type_name;            // Type name (e.g., "Person", "Object_0", "int[]")
     bool is_global;
+
+    // Struct modifiers (for TYPE_KIND_OBJECT only)
+    bool is_const;              // true if immutable (const struct)
+    bool is_value;              // true if value semantics/pass-by-value (value struct)
 
     // Type-specific data (use union to save memory and improve organization)
     union {
@@ -350,6 +356,8 @@ struct ASTNode {
             int property_count;
             ASTNode** methods;            // Method function declarations (AST_FUNC_DECL nodes)
             int method_count;
+            bool is_const;                // true if declared as "const struct" (immutable)
+            bool is_value;                // true if declared as "value struct" (pass-by-value)
         } struct_decl;
 
         struct {
@@ -649,48 +657,49 @@ TypeInfo* type_info_resolve_alias(TypeInfo* type_info);  // Recursively resolve 
 int type_info_find_property(TypeInfo* type_info, const char* property_name);
 
 // Global type variables
-TypeInfo* Type_Unknown;
-TypeInfo* Type_Bool;
-TypeInfo* Type_Void;
+extern TypeInfo* Type_Unknown;
+extern TypeInfo* Type_Bool;
+extern TypeInfo* Type_Void;
 
 // Signed integer types
-TypeInfo* Type_I8;
-TypeInfo* Type_I16;
-TypeInfo* Type_I32;
-TypeInfo* Type_I64;
+extern TypeInfo* Type_I8;
+extern TypeInfo* Type_I16;
+extern TypeInfo* Type_I32;
+extern TypeInfo* Type_I64;
 
 // Unsigned integer types
-TypeInfo* Type_U8;
-TypeInfo* Type_U16;
-TypeInfo* Type_U32;
-TypeInfo* Type_U64;
+extern TypeInfo* Type_U8;
+extern TypeInfo* Type_U16;
+extern TypeInfo* Type_U32;
+extern TypeInfo* Type_U64;
 
 // Legacy integer type (alias for i32)
-TypeInfo* Type_Int;
+extern TypeInfo* Type_Int;
 
 // Platform-specific type aliases
-TypeInfo* Type_Usize;  // Alias for platform size_t (u32 or u64 depending on platform)
-TypeInfo* Type_Nint;   // Alias for platform int (i32 or i64 depending on platform)
-TypeInfo* Type_Uint;   // Alias for platform unsigned int (u32 or u64 depending on platform)
+extern TypeInfo* Type_Usize;  // Alias for platform size_t (u32 or u64 depending on platform)
+extern TypeInfo* Type_Nint;   // Alias for platform int (i32 or i64 depending on platform)
+extern TypeInfo* Type_Uint;   // Alias for platform unsigned int (u32 or u64 depending on platform)
 
 // Other primitive types
-TypeInfo* Type_Double;
-TypeInfo* Type_Object;
-TypeInfo* Type_String;
+extern TypeInfo* Type_Double;
+extern TypeInfo* Type_Object;
+extern TypeInfo* Type_Str;     // String type (struct with length, null-terminated)
+extern TypeInfo* Type_CStr;    // C string type (i8* pointer, null-terminated, for C interop)
 
 // Array types
-TypeInfo* Type_Array_Int;    // Legacy, will use Type_Array_I32
-TypeInfo* Type_Array_I8;
-TypeInfo* Type_Array_I16;
-TypeInfo* Type_Array_I32;
-TypeInfo* Type_Array_I64;
-TypeInfo* Type_Array_U8;
-TypeInfo* Type_Array_U16;
-TypeInfo* Type_Array_U32;
-TypeInfo* Type_Array_U64;
-TypeInfo* Type_Array_Bool;
-TypeInfo* Type_Array_Double;
-TypeInfo* Type_Array_String;
+extern TypeInfo* Type_Array_Int;    // Legacy, will use Type_Array_I32
+extern TypeInfo* Type_Array_I8;
+extern TypeInfo* Type_Array_I16;
+extern TypeInfo* Type_Array_I32;
+extern TypeInfo* Type_Array_I64;
+extern TypeInfo* Type_Array_U8;
+extern TypeInfo* Type_Array_U16;
+extern TypeInfo* Type_Array_U32;
+extern TypeInfo* Type_Array_U64;
+extern TypeInfo* Type_Array_Bool;
+extern TypeInfo* Type_Array_Double;
+extern TypeInfo* Type_Array_Str;
 
 static inline bool type_info_is_unknown(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
@@ -749,12 +758,12 @@ static inline bool type_info_is_double(TypeInfo* type_info) {
 
 static inline bool type_info_is_string_ctx(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
-    return type_info == Type_String;
+    return type_info == Type_Str;
 }
 
 static inline bool type_info_is_string(TypeInfo* type_info) {
     type_info = type_info_resolve_alias(type_info);
-    return type_info == Type_String;
+    return type_info == Type_Str;
 }
 
 static inline bool type_info_is_bool_ctx(TypeInfo* type_info) {
@@ -935,6 +944,7 @@ void codegen_generate(CodeGen* gen, ASTNode* ast, bool is_entry_module, Diagnost
 void codegen_emit_llvm_ir(CodeGen* gen, const char* filename);
 LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node);
 LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info);
+LLVMTypeRef get_str_type(CodeGen* gen);
 
 // Runtime function registration
 TypeInfo* codegen_get_runtime_function_type(CodeGen* gen, const char* name);
@@ -951,10 +961,5 @@ char* read_file(const char* filename);
 int compile_file(const char* input_file, const char* output_file,
                  bool emit_llvm, bool emit_asm, bool compile_only, int opt_level,
                  const char* sanitizer, bool enable_debug_symbols, bool enable_debug);
-
-
-FunctionSpecialization* s;
-ASTNode* c_n;
-
 
 #endif // JS_COMPILER_H

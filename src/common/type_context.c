@@ -42,9 +42,44 @@ void type_system_init_global_types() {
     INIT_GLOBAL_TYPE(Type_Int, type_info_create_alias("int", Type_I32))
 
     INIT_GLOBAL_TYPE(Type_Double, type_info_create_primitive(strdup("double")))
-    INIT_GLOBAL_TYPE(Type_String, type_info_create_primitive(strdup("string")))
     INIT_GLOBAL_TYPE(Type_Bool, type_info_create_primitive(strdup("bool")))
     INIT_GLOBAL_TYPE(Type_Void, type_info_create_primitive(strdup("void")))
+
+    // Create platform-specific type aliases first (needed for str)
+    #if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
+        // 64-bit platform
+        INIT_GLOBAL_TYPE(Type_Usize, type_info_create_alias(strdup("usize"), Type_U64));
+        INIT_GLOBAL_TYPE(Type_Nint, type_info_create_alias(strdup("nint"), Type_I64));
+        INIT_GLOBAL_TYPE(Type_Uint, type_info_create_alias(strdup("uint"), Type_U64));
+    #else
+        // 32-bit platform
+        INIT_GLOBAL_TYPE(Type_Usize, type_info_create_alias(strdup("usize"), Type_U32));
+        INIT_GLOBAL_TYPE(Type_Nint, type_info_create_alias(strdup("nint"), Type_I32));
+        INIT_GLOBAL_TYPE(Type_Uint, type_info_create_alias(strdup("uint"), Type_U32));
+    #endif
+
+    // Create str type as a struct with data and length fields (similar to arrays)
+    // The actual layout will have SSO optimization at codegen level
+    // str is declared as: const value struct str { data: ref i8; length: usize; }
+    TypeInfo* str_type = type_info_create(TYPE_KIND_OBJECT, strdup("str"));
+    str_type->is_const = true;   // Immutable (const struct)
+    str_type->is_value = true;   // Value semantics/pass-by-value (value struct)
+    str_type->data.object.property_count = 2;
+    str_type->data.object.property_names = (char**)malloc(sizeof(char*) * 2);
+    str_type->data.object.property_names[0] = strdup("data");
+    str_type->data.object.property_names[1] = strdup("length");
+    str_type->data.object.property_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 2);
+    str_type->data.object.property_types[0] = NULL;  // Will be i8* (pointer), set later
+    str_type->data.object.property_types[1] = Type_Usize;  // Use platform-appropriate unsigned size
+    str_type->data.object.struct_decl_node = NULL;
+    INIT_GLOBAL_TYPE(Type_Str, str_type)
+
+    // c_str type: alias for i8* (null-terminated C string for interop)
+    // We'll create it as a ref type to i8, which is essentially a pointer
+    TypeInfo* cstr_type = type_info_create(TYPE_KIND_REF, strdup("c_str"));
+    cstr_type->data.ref.target_type = Type_I8;
+    cstr_type->data.ref.is_mutable = true;  // C strings are typically mutable
+    INIT_GLOBAL_TYPE(Type_CStr, cstr_type)
 
     // Create array types for all integer types
     INIT_GLOBAL_TYPE(Type_Array_I8, type_info_create_array(Type_I8))
@@ -58,23 +93,10 @@ void type_system_init_global_types() {
     INIT_GLOBAL_TYPE(Type_Array_Int, type_info_create_array(Type_Int));
     INIT_GLOBAL_TYPE(Type_Array_Double, type_info_create_array(Type_Double));
     INIT_GLOBAL_TYPE(Type_Array_Bool, type_info_create_array(Type_Bool));
-    INIT_GLOBAL_TYPE(Type_Array_String, type_info_create_array(Type_String));
+    INIT_GLOBAL_TYPE(Type_Array_Str, type_info_create_array(Type_Str));
 
     // Create object type placeholder
     INIT_GLOBAL_TYPE(Type_Object, type_info_create(TYPE_KIND_OBJECT, strdup("object")));
-
-    // Create platform-specific type aliases
-    #if defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
-        // 64-bit platform
-        INIT_GLOBAL_TYPE(Type_Usize, type_info_create_alias(strdup("usize"), Type_U64));
-        INIT_GLOBAL_TYPE(Type_Nint, type_info_create_alias(strdup("nint"), Type_I64));
-        INIT_GLOBAL_TYPE(Type_Uint, type_info_create_alias(strdup("uint"), Type_U64));
-    #else
-        // 32-bit platform
-        INIT_GLOBAL_TYPE(Type_Usize, type_info_create_alias(strdup("usize"), Type_U32));
-        INIT_GLOBAL_TYPE(Type_Nint, type_info_create_alias(strdup("nint"), Type_I32));
-        INIT_GLOBAL_TYPE(Type_Uint, type_info_create_alias(strdup("uint"), Type_U32));
-    #endif
 
     global_types_initialized = true;
 }
@@ -100,7 +122,8 @@ TypeContext* type_context_create() {
     type_context_register_type(ctx, Type_U32);
     type_context_register_type(ctx, Type_U64);
     type_context_register_type(ctx, Type_Double);
-    type_context_register_type(ctx, Type_String);
+    type_context_register_type(ctx, Type_Str);
+    type_context_register_type(ctx, Type_CStr);
     type_context_register_type(ctx, Type_Bool);
     type_context_register_type(ctx, Type_Void);
 
@@ -115,7 +138,7 @@ TypeContext* type_context_create() {
     type_context_register_type(ctx, Type_Array_U64);
     type_context_register_type(ctx, Type_Array_Double);
     type_context_register_type(ctx, Type_Array_Bool);
-    type_context_register_type(ctx, Type_Array_String);
+    type_context_register_type(ctx, Type_Array_Str);
     type_context_register_type(ctx, Type_Object);
 
     // Register platform-specific type aliases
@@ -211,7 +234,8 @@ TypeInfo* type_context_find_type(TypeContext* ctx, const char* type_name) {
     if (strcmp(type_name, "u32") == 0) return Type_U32;
     if (strcmp(type_name, "u64") == 0) return Type_U64;
     if (strcmp(type_name, "double") == 0) return Type_Double;
-    if (strcmp(type_name, "string") == 0) return Type_String;
+    if (strcmp(type_name, "string") == 0) return Type_Str;  // "string" now maps to Type_Str
+    if (strcmp(type_name, "str") == 0) return Type_Str;
     if (strcmp(type_name, "bool") == 0) return Type_Bool;
     if (strcmp(type_name, "void") == 0) return Type_Void;
 
@@ -349,7 +373,7 @@ TypeInfo* type_context_get_double(TypeContext* ctx) {
 
 TypeInfo* type_context_get_string(TypeContext* ctx) {
     (void)ctx;
-    return type_info_resolve_alias(Type_String);
+    return type_info_resolve_alias(Type_Str);
 }
 
 TypeInfo* type_context_get_bool(TypeContext* ctx) {
@@ -473,6 +497,15 @@ TypeInfo* type_context_create_struct_type(TypeContext* ctx, const char* struct_n
     // Create new struct type (as an object type with a specific name)
     TypeInfo* struct_type = type_info_create(TYPE_KIND_OBJECT, strdup(struct_name));
 
+    // Set struct modifiers from AST node
+    if (struct_decl_node && struct_decl_node->type == AST_STRUCT_DECL) {
+        struct_type->is_const = struct_decl_node->struct_decl.is_const;
+        struct_type->is_value = struct_decl_node->struct_decl.is_value;
+    } else {
+        struct_type->is_const = false;
+        struct_type->is_value = false;
+    }
+
     // IMPORTANT: Make copies of the arrays to avoid double-free
     // The AST node's arrays will be freed when the AST is freed
     // This TypeInfo needs its own copies that will be freed by type_context_free
@@ -501,11 +534,16 @@ TypeInfo* type_context_find_struct_type(TypeContext* ctx, const char* struct_nam
     while (entry) {
         // Structs are registered as TYPE_KIND_OBJECT with explicit names
         // Anonymous objects have generated names like "Object_N"
-        if (entry->type->kind == TYPE_KIND_OBJECT &&
-            entry->type->type_name &&
-            strcmp(entry->type->type_name, struct_name) == 0 &&
-            strncmp(struct_name, "Object_", 7) != 0) { // Not an anonymous object
-            return entry->type;
+        // Also check for named ref types (like c_str)
+        if (entry->type->type_name && strcmp(entry->type->type_name, struct_name) == 0) {
+            if (entry->type->kind == TYPE_KIND_OBJECT &&
+                strncmp(struct_name, "Object_", 7) != 0) { // Not an anonymous object
+                return entry->type;
+            }
+            // Also match named ref types (like c_str)
+            if (entry->type->kind == TYPE_KIND_REF) {
+                return entry->type;
+            }
         }
         entry = entry->next;
     }

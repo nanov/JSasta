@@ -1,5 +1,5 @@
 // jastat-summary: assert.not_equals with different values (should pass)
-// jastat: mode=run, capture=stdout
+// jastat: mode=run, capture=assert
 
 import test from "@test";
 

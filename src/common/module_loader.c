@@ -353,7 +353,7 @@ static Module* builtin_create_io_module(ModuleRegistry* registry) {
     char** println_params = (char**)malloc(sizeof(char*) * 1);
     println_params[0] = strdup("format");
     TypeInfo** println_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    println_param_types[0] = Type_String;
+    println_param_types[0] = Type_Str;
     ASTNode* println_func = builtin_create_func_decl("println", 1, println_params, println_param_types, Type_Void, io_format_validate, io_println_codegen);
     println_func->func_decl.is_variadic = true;
     module->ast->program.statements[0] = println_func;
@@ -363,7 +363,7 @@ static Module* builtin_create_io_module(ModuleRegistry* registry) {
     char** print_params = (char**)malloc(sizeof(char*) * 1);
     print_params[0] = strdup("format");
     TypeInfo** print_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    print_param_types[0] = Type_String;
+    print_param_types[0] = Type_Str;
     ASTNode* print_func = builtin_create_func_decl("print", 1, print_params, print_param_types, Type_Void, io_format_validate, io_print_codegen);
     print_func->func_decl.is_variadic = true;
     module->ast->program.statements[1] = print_func;
@@ -373,7 +373,7 @@ static Module* builtin_create_io_module(ModuleRegistry* registry) {
     char** eprintln_params = (char**)malloc(sizeof(char*) * 1);
     eprintln_params[0] = strdup("format");
     TypeInfo** eprintln_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    eprintln_param_types[0] = Type_String;
+    eprintln_param_types[0] = Type_Str;
     ASTNode* eprintln_func = builtin_create_func_decl("eprintln", 1, eprintln_params, eprintln_param_types, Type_Void, io_format_validate, io_eprintln_codegen);
     eprintln_func->func_decl.is_variadic = true;
     module->ast->program.statements[2] = eprintln_func;
@@ -383,7 +383,7 @@ static Module* builtin_create_io_module(ModuleRegistry* registry) {
     char** eprint_params = (char**)malloc(sizeof(char*) * 1);
     eprint_params[0] = strdup("format");
     TypeInfo** eprint_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    eprint_param_types[0] = Type_String;
+    eprint_param_types[0] = Type_Str;
     ASTNode* eprint_func = builtin_create_func_decl("eprint", 1, eprint_params, eprint_param_types, Type_Void, io_format_validate, io_eprint_codegen);
     eprint_func->func_decl.is_variadic = true;
     module->ast->program.statements[3] = eprint_func;
@@ -393,8 +393,8 @@ static Module* builtin_create_io_module(ModuleRegistry* registry) {
     char** format_params = (char**)malloc(sizeof(char*) * 1);
     format_params[0] = strdup("format");
     TypeInfo** format_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    format_param_types[0] = Type_String;
-    ASTNode* format_func = builtin_create_func_decl("format", 1, format_params, format_param_types, Type_String, io_format_validate, io_format_codegen);
+    format_param_types[0] = Type_Str;
+    ASTNode* format_func = builtin_create_func_decl("format", 1, format_params, format_param_types, Type_Str, io_format_validate, io_format_codegen);
     format_func->func_decl.is_variadic = true;
     module->ast->program.statements[4] = format_func;
     module_add_export(module, "format", format_func);
@@ -529,7 +529,7 @@ static Module* builtin_create_test_module(ModuleRegistry* registry) {
     char** false_params = (char**)malloc(sizeof(char*) * 1);
     false_params[0] = strdup("msg");
     TypeInfo** false_param_types = (TypeInfo**)malloc(sizeof(TypeInfo*) * 1);
-    false_param_types[0] = Type_String;
+    false_param_types[0] = Type_Str;
     ASTNode* false_func = builtin_create_func_decl("false", 1, false_params, false_param_types, Type_Void, io_format_validate, test_assert_fail_codegen);
     false_func->func_decl.is_variadic = true;
     assert_struct->struct_decl.methods[2] = false_func;

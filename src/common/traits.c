@@ -26,6 +26,9 @@ Trait* Trait_DivAssign = NULL;
 Trait* Trait_Index = NULL;
 Trait* Trait_RefIndex = NULL;
 Trait* Trait_Length = NULL;
+Trait* Trait_CStr = NULL;
+Trait* Trait_ImplicitFrom = NULL;
+Trait* Trait_ImplicitInto = NULL;
 Trait* Trait_Display = NULL;
 
 // === Core Trait Registry Functions ===
@@ -275,6 +278,100 @@ TraitImpl* trait_find_impl(
     return NULL;
 }
 
+// Helper: Find trait implementation with automatic type conversion via From trait
+// If direct match not found, tries to find implementation with convertible types
+// For example, if Index<i32> not found but Index<usize> exists and From<i32> for usize exists, use that
+TraitImpl* trait_find_impl_with_conversion(
+    Trait* trait,
+    TypeInfo* impl_type,
+    TypeInfo** type_param_bindings,
+    int type_param_count,
+    TypeInfo** converted_bindings_out  // Output: the converted type params (must be preallocated)
+) {
+    // First try direct match
+    TraitImpl* impl = trait_find_impl(trait, impl_type, type_param_bindings, type_param_count);
+    if (impl) {
+        // Copy original bindings
+        for (int i = 0; i < type_param_count; i++) {
+            converted_bindings_out[i] = type_param_bindings[i];
+        }
+        return impl;
+    }
+
+    // If not found and From trait exists, try conversion for each parameter
+    if (!Trait_ImplicitFrom) return NULL;
+
+    for (int param_idx = 0; param_idx < type_param_count; param_idx++) {
+        TypeInfo* original_type = type_param_bindings[param_idx];
+
+        // Try common target types (prioritize usize for indexing)
+        TypeInfo* candidate_types[] = { Type_Usize, Type_I64, Type_I32, Type_I16, Type_I8 };
+        for (int i = 0; i < 5; i++) {
+            TypeInfo* candidate = candidate_types[i];
+            if (candidate == original_type) continue;
+
+            // Check if From<original_type> exists for candidate
+            trait_ensure_implicit_from_impl(candidate, original_type);
+            TypeInfo* from_binding[] = { original_type };
+            TraitImpl* from_impl = trait_find_impl(Trait_ImplicitFrom, candidate, from_binding, 1);
+            if (!from_impl) continue;
+
+            // Create new bindings with this candidate
+            TypeInfo* candidate_bindings[type_param_count];
+            for (int j = 0; j < type_param_count; j++) {
+                candidate_bindings[j] = (j == param_idx) ? candidate : type_param_bindings[j];
+            }
+
+            // Check if implementation exists with this candidate
+            TraitImpl* candidate_impl = trait_find_impl(trait, impl_type, candidate_bindings, type_param_count);
+            if (candidate_impl) {
+                // Found a match! Return converted bindings
+                for (int j = 0; j < type_param_count; j++) {
+                    converted_bindings_out[j] = candidate_bindings[j];
+                }
+                return candidate_impl;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+TraitImpl* trait_find_property_for_type(TypeInfo* type, const char* property_name) {
+    if (!type || !property_name) return NULL;
+
+    // Resolve aliases to get the actual type
+    type = type_info_resolve_alias(type);
+
+    // Search through all global traits
+    Trait* global_traits[] = {
+        Trait_Add, Trait_Sub, Trait_Mul, Trait_Div, Trait_Rem,
+        Trait_BitAnd, Trait_BitOr, Trait_BitXor, Trait_Shl, Trait_Shr,
+        Trait_Eq, Trait_Ord, Trait_Not, Trait_Neg,
+        Trait_AddAssign, Trait_SubAssign, Trait_MulAssign, Trait_DivAssign,
+        Trait_Index, Trait_RefIndex, Trait_Length, Trait_CStr, Trait_Display
+    };
+
+    for (size_t i = 0; i < sizeof(global_traits) / sizeof(global_traits[0]); i++) {
+        Trait* trait = global_traits[i];
+        if (!trait) continue;
+
+        // Find implementation for this type
+        TraitImpl* impl = trait_find_impl(trait, type, NULL, 0);
+        if (!impl) continue;
+
+        // Check if this implementation has a property with the given name
+        for (int m = 0; m < impl->method_count; m++) {
+            if (impl->methods[m].is_property &&
+                strcmp(impl->methods[m].method_name, property_name) == 0) {
+                return impl;
+            }
+        }
+    }
+
+    return NULL;
+}
+
 TypeInfo* trait_get_assoc_type(
     Trait* trait,
     TypeInfo* impl_type,
@@ -282,8 +379,12 @@ TypeInfo* trait_get_assoc_type(
     int type_param_count,
     const char* assoc_type_name
 ) {
-    TraitImpl* impl = trait_find_impl(trait, impl_type, type_param_bindings, type_param_count);
-    if (!impl) return NULL;
+    // Try to find implementation with automatic type conversion
+    TypeInfo* converted_bindings[type_param_count];
+    TraitImpl* impl = trait_find_impl_with_conversion(trait, impl_type, type_param_bindings, type_param_count, converted_bindings);
+    if (!impl) {
+        return NULL;
+    }
 
     // Find the associated type index
     for (int i = 0; i < trait->assoc_type_count; i++) {
@@ -660,11 +761,52 @@ void traits_init_builtins(TraitRegistry* registry) {
                                      length_assoc_types, 1,
                                      length_method_names, length_method_sigs, 1);
 
+    // CStr { type Output; fn c_str(self) -> Output }
+    // Returns a C-compatible null-terminated string pointer
+    // For str: Output = c_str (which is i8*)
+    TraitAssocType cstr_assoc_types[] = {
+        { .name = "Output", .constraint = NULL }
+    };
+    const char* cstr_method_names[] = { "c_str" };
+    TypeInfo* cstr_method_sigs[] = { NULL };
+
+    Trait_CStr = trait_define_full(registry, "CStr",
+                                   NULL, 0,  // No type parameters
+                                   cstr_assoc_types, 1,
+                                   cstr_method_names, cstr_method_sigs, 1);
+
+    // From<T> { fn from(value: T) -> Self }
+    // Conversion trait for type conversions
+    // For c_str: From<str> means c_str can be created from str
+    TraitTypeParam from_type_params[] = {
+        { .name = "T", .default_type = NULL, .constraint = NULL }
+    };
+    const char* from_method_names[] = { "from" };
+    TypeInfo* from_method_sigs[] = { NULL };
+
+    Trait_ImplicitFrom = trait_define_full(registry, "ImplicitFrom",
+                                   from_type_params, 1,
+                                   NULL, 0,  // No associated types
+                                   from_method_names, from_method_sigs, 1);
+
+    // ImplicitInto<T> { fn into(self) -> T }
+    // For implicit conversions from self to T (dual of ImplicitFrom)
+    TraitTypeParam into_type_params[] = {
+        { .name = "T", .default_type = NULL, .constraint = NULL }
+    };
+    const char* into_method_names[] = { "into" };
+    TypeInfo* into_method_sigs[] = { NULL };
+
+    Trait_ImplicitInto = trait_define_full(registry, "ImplicitInto",
+                                   into_type_params, 1,
+                                   NULL, 0,  // No associated types
+                                   into_method_names, into_method_sigs, 1);
+
     // Display { fn fmt(self, formatter: ref Formatter) -> void }
     // Simple trait with no type parameters or associated types
     const char* display_method_names[] = { "fmt" };
     TypeInfo* display_method_sigs[] = { NULL };  // Placeholder
-    
+
     Trait_Display = trait_define_simple(registry, "Display",
                                        display_method_names,
                                        display_method_sigs, 1);
@@ -693,6 +835,126 @@ static LLVMValueRef intrinsic_array_index(CodeGen* gen, LLVMValueRef* args, int 
 
 // === On-Demand Trait Implementation for Builtins ===
 
+// Forward declaration
+static LLVMValueRef intrinsic_str_c_str(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context);
+
+void trait_ensure_cstr_impl(TypeInfo* type) {
+    if (!type || !Trait_CStr) {
+        return; // Nothing to do
+    }
+
+    // For str type: implement CStr with Output = c_str (i8*)
+    if (type == Type_Str) {
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_CStr, type, NULL, 0);
+        if (existing) {
+            return;
+        }
+
+        // Create method implementation (intrinsic - just access the data field)
+        MethodImpl method_impl = {
+            .method_name = "c_str",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .is_property = true,  // This is a property getter
+            .codegen = intrinsic_str_c_str,  // Use dedicated str c_str intrinsic
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+
+        // Implement CStr for str with Output = c_str (i8*)
+        TypeInfo* assoc_type_bindings[] = { Type_CStr };
+
+        trait_impl_full(Trait_CStr, type,
+                       NULL, 0,  // No type parameters
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+
+    // TODO: For other types that can provide C strings
+}
+
+// Intrinsic for converting any integer to usize (zero/sign extend)
+static LLVMValueRef intrinsic_int_to_usize(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    (void)arg_count;
+
+    LLVMTypeRef target_type = LLVMInt64TypeInContext(gen->context); // usize is i64
+    LLVMTypeRef source_type = LLVMTypeOf(args[0]);
+
+    // If already the right size, just return it
+    if (LLVMGetIntTypeWidth(source_type) == 64) {
+        return args[0];
+    }
+
+    // Zero-extend for unsigned types, sign-extend for signed types
+    // For now, use zero-extend (safe for array indexing)
+    return LLVMBuildZExt(gen->builder, args[0], target_type, "to_usize");
+}
+
+void trait_ensure_implicit_from_impl(TypeInfo* target_type, TypeInfo* source_type) {
+    if (!target_type || !source_type || !Trait_ImplicitFrom) {
+        return;
+    }
+
+    // Implement From<str> for c_str
+    if (target_type == Type_CStr && source_type == Type_Str) {
+        TypeInfo* type_param_bindings[] = { source_type };
+
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_ImplicitFrom, target_type, type_param_bindings, 1);
+        if (existing) {
+            return;
+        }
+
+        // Create method implementation - reuse the c_str intrinsic
+        // Both do the same thing: extract data pointer from str
+        MethodImpl method_impl = {
+            .method_name = "from",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .is_property = false,
+            .codegen = intrinsic_str_c_str,  // Reuse c_str implementation
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+
+        // Implement From<str> for c_str
+        trait_impl_full(Trait_ImplicitFrom, target_type,
+                       type_param_bindings, 1,
+                       NULL, 0,  // No associated types
+                       &method_impl, 1);
+    }
+
+    // Implement From<int types> for usize
+    if (target_type == Type_Usize && type_info_is_integer(source_type)) {
+        TypeInfo* type_param_bindings[] = { source_type };
+
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_ImplicitFrom, target_type, type_param_bindings, 1);
+        if (existing) {
+            return;
+        }
+
+        // Create method implementation
+        MethodImpl method_impl = {
+            .method_name = "from",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .is_property = false,
+            .codegen = intrinsic_int_to_usize,
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+
+        // Implement From<int> for usize
+        trait_impl_full(Trait_ImplicitFrom, target_type,
+                       type_param_bindings, 1,
+                       NULL, 0,  // No associated types
+                       &method_impl, 1);
+    }
+}
+
 void trait_ensure_index_impl(TypeInfo* type) {
     if (!type || !Trait_Index) {
         return; // Nothing to do
@@ -717,6 +979,7 @@ void trait_ensure_index_impl(TypeInfo* type) {
             .method_name = "index",
             .signature = NULL,
             .kind = METHOD_INTRINSIC,
+            .is_property = false,
             .codegen = intrinsic_array_index,
             .function_ptr = NULL,
             .external_name = NULL
@@ -731,9 +994,9 @@ void trait_ensure_index_impl(TypeInfo* type) {
                        &method_impl, 1);
     }
 
-    // For strings: implement Index<i32> -> u8
-    if (type == Type_String) {
-        TypeInfo* idx_type = Type_I32;
+    // For str type: implement Index<usize> -> i8
+    if (type == Type_Str) {
+        TypeInfo* idx_type = Type_Usize;  // str uses usize for indexing (consistent with length type)
         TypeInfo* type_param_bindings[] = { idx_type };
 
         // Check if already implemented
@@ -742,20 +1005,22 @@ void trait_ensure_index_impl(TypeInfo* type) {
             return;
         }
 
-        // String indexing returns u8 (byte)
-        TypeInfo* output_type = Type_U8;
+        // str indexing returns i8 (byte) - strings are i8 arrays
+        TypeInfo* output_type = Type_I8;
 
-        // Create method implementation
+        // Create method implementation - works exactly like array indexing
+        // because str has the same layout: { i8* data, usize length }
         MethodImpl method_impl = {
             .method_name = "index",
             .signature = NULL,
             .kind = METHOD_INTRINSIC,
-            .codegen = intrinsic_array_index,  // We'll reuse the same placeholder
+            .is_property = false,
+            .codegen = intrinsic_array_index,  // Reuse array index - same implementation
             .function_ptr = NULL,
             .external_name = NULL
         };
 
-        // Implement Index<i32> for string with Output = u8
+        // Implement Index<usize> for str with Output = i8
         TypeInfo* assoc_type_bindings[] = { output_type };
 
         trait_impl_full(Trait_Index, type,
@@ -805,6 +1070,7 @@ void trait_ensure_ref_index_impl(TypeInfo* type) {
             .method_name = "ref_index",
             .signature = NULL,
             .kind = METHOD_INTRINSIC,
+            .is_property = false,
             .codegen = intrinsic_array_ref_index,
             .function_ptr = NULL,
             .external_name = NULL
@@ -821,21 +1087,114 @@ void trait_ensure_ref_index_impl(TypeInfo* type) {
                        &method_impl, 1);
     }
 
-    // TODO: For strings: implement RefIndex<i32> -> ref<u8>
+    // For str type: implement RefIndex<usize> -> ref<i8>
+    if (type == Type_Str) {
+        TypeInfo* idx_type = Type_Usize;  // str uses usize for indexing
+        TypeInfo* type_param_bindings[] = { idx_type };
+
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_RefIndex, type, type_param_bindings, 1);
+        if (existing) {
+            return;
+        }
+
+        // str indexing returns i8 (byte)
+        TypeInfo* output_type = Type_I8;
+
+        // Create method implementation - works exactly like array ref_index
+        // because str has the same layout: { i8* data, usize length }
+        MethodImpl method_impl = {
+            .method_name = "ref_index",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .is_property = false,
+            .codegen = intrinsic_array_ref_index,  // Reuse array ref_index
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+
+        // Implement RefIndex<usize> for str with Output = i8
+        // Note: The actual return type is ref<i8>
+        TypeInfo* assoc_type_bindings[] = { output_type };
+
+        trait_impl_full(Trait_RefIndex, type,
+                       type_param_bindings, 1,
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+
+    // TODO: For old String type: implement RefIndex<i32> -> ref<u8>
     // TODO: For other builtin types that support indexing
 }
 
 // Intrinsic for array length - returns the length of the array
 // This is a placeholder that is never actually called - the codegen for
 // member access to "length" handles the implementation inline
-static LLVMValueRef intrinsic_array_length(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
-    (void)context;
-    (void)gen;
-    (void)args;
+// Generic length intrinsic for any type with layout { T* data, i64/usize length }
+// Works for both arrays and str since they share the same memory layout
+static LLVMValueRef intrinsic_generic_length(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
     (void)arg_count;
 
-    // Not called - codegen handles array length inline
-    return NULL;
+    // args[0] is a pointer to a struct with layout: { T* data, i64 length }
+    // context contains the AST node for the object (to get type info)
+    ASTNode* obj_node = (ASTNode*)context;
+    if (!obj_node || !obj_node->type_info) {
+        return NULL;
+    }
+
+    LLVMValueRef wrapper_ptr = args[0];
+    TypeInfo* obj_type = type_info_get_ref_target(obj_node->type_info);
+
+    // Get the LLVM struct type using get_llvm_type
+    LLVMTypeRef struct_type = get_llvm_type(gen, obj_type);
+    if (!struct_type) {
+        return NULL;
+    }
+
+    // Use StructGEP2 to access field 1 (length)
+    LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, wrapper_ptr, 1, "length_ptr");
+    LLVMValueRef length = LLVMBuildLoad2(gen->builder,
+        LLVMInt64TypeInContext(gen->context), length_ptr, "length");
+
+    return length;
+}
+
+// Array length - returns u32 (truncated from i64)
+static LLVMValueRef intrinsic_array_length(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    LLVMValueRef length = intrinsic_generic_length(gen, args, arg_count, context);
+    // Arrays use u32 for Output type, so truncate
+    return LLVMBuildTrunc(gen->builder, length, LLVMInt32TypeInContext(gen->context), "length_u32");
+}
+
+// Str length - returns usize (i64)
+static LLVMValueRef intrinsic_str_length(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    // Str uses usize (i64) for Output type, so return as-is
+    return intrinsic_generic_length(gen, args, arg_count, context);
+}
+
+// Str c_str property - returns c_str (i8* pointer to null-terminated data)
+static LLVMValueRef intrinsic_str_c_str(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)arg_count;
+    ASTNode* obj_node = (ASTNode*)context;
+    if (!obj_node || !obj_node->type_info) {
+        return NULL;
+    }
+
+    LLVMValueRef wrapper_ptr = args[0];
+    TypeInfo* obj_type = type_info_get_ref_target(obj_node->type_info);
+
+    // Get the LLVM struct type using get_llvm_type
+    LLVMTypeRef struct_type = get_llvm_type(gen, obj_type);
+    if (!struct_type) {
+        return NULL;
+    }
+
+    // Use StructGEP2 to access field 0 (data pointer)
+    LLVMValueRef data_ptr_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, wrapper_ptr, 0, "data_ptr_ptr");
+    LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), data_ptr_ptr, "c_str");
+
+    return data_ptr;
 }
 
 void trait_ensure_length_impl(TypeInfo* type) {
@@ -856,6 +1215,7 @@ void trait_ensure_length_impl(TypeInfo* type) {
             .method_name = "length",
             .signature = NULL,
             .kind = METHOD_INTRINSIC,
+            .is_property = true,  // This is a property getter
             .codegen = intrinsic_array_length,
             .function_ptr = NULL,
             .external_name = NULL
@@ -871,6 +1231,33 @@ void trait_ensure_length_impl(TypeInfo* type) {
                        &method_impl, 1);
     }
 
-    // TODO: For strings: implement Length with Output = u32
+    // For str type: implement Length with Output = usize
+    if (type == Type_Str) {
+        // Check if already implemented
+        TraitImpl* existing = trait_find_impl(Trait_Length, type, NULL, 0);
+        if (existing) {
+            return;
+        }
+
+        // Create method implementation (intrinsic - just access the length field)
+        MethodImpl method_impl = {
+            .method_name = "length",
+            .signature = NULL,
+            .kind = METHOD_INTRINSIC,
+            .is_property = true,  // This is a property getter
+            .codegen = intrinsic_str_length,  // Use dedicated str length intrinsic
+            .function_ptr = NULL,
+            .external_name = NULL
+        };
+
+        // Implement Length for str with Output = usize
+        TypeInfo* assoc_type_bindings[] = { Type_Usize };
+
+        trait_impl_full(Trait_Length, type,
+                       NULL, 0,  // No type parameters
+                       assoc_type_bindings, 1,
+                       &method_impl, 1);
+    }
+
     // TODO: For other builtin types with length
 }

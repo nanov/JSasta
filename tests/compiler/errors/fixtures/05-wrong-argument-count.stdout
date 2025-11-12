@@ -1,5 +1,0 @@
-[error:E_UNDEFINED_FUNC] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/errors/05-wrong-argument-count.jsa:8:17: Undefined function: add
-
-=== Diagnostic Summary ===
-  Errors: 1
-

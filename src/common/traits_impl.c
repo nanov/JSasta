@@ -878,10 +878,31 @@ void traits_register_builtin_impls(TraitRegistry* registry) {
     REGISTER_DISPLAY(Type_U8, "display_u8");
     REGISTER_DISPLAY(Type_U16, "display_u16");
     REGISTER_DISPLAY(Type_Bool, "display_bool");
-    REGISTER_DISPLAY(Type_String, "display_string");
+    REGISTER_DISPLAY(Type_Str, "display_str");
     REGISTER_DISPLAY(Type_Double, "display_f64");
     
     #undef REGISTER_DISPLAY
+    
+    // Register Eq trait for str type
+    trait_register_eq_for_str(registry);
+    
+    // Register Add trait for str type
+    trait_register_add_for_str(registry);
+    
+    // Register CStr trait for str type
+    trait_ensure_cstr_impl(Type_Str);
+    
+    // Register From<str> for c_str type
+    trait_ensure_implicit_from_impl(Type_CStr, Type_Str);
+    
+    // Register From<int types> for usize (for indexing operations)
+    TypeInfo* int_types[] = {
+        Type_I8, Type_I16, Type_I32, Type_I64,
+        Type_U8, Type_U16, Type_U32, Type_U64
+    };
+    for (int i = 0; i < 8; i++) {
+        trait_ensure_implicit_from_impl(Type_Usize, int_types[i]);
+    }
 }
 
 // === Enum Equality Intrinsics ===
@@ -1075,4 +1096,247 @@ void trait_register_display_for_enum(TypeInfo* enum_type, TraitRegistry* registr
     // Register the trait implementation
     // Display has no type parameters
     trait_impl_full(Trait_Display, enum_type, NULL, 0, NULL, 0, methods, 1);
+}
+
+// === String (str) Equality Intrinsics ===
+
+// Intrinsic for str == str comparison using memcmp
+static LLVMValueRef intrinsic_str_eq(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    (void)arg_count;
+    
+    // args[0] and args[1] are %str struct VALUES (str is a value type)
+    // Extract the data and length fields directly from the struct values
+    
+    LLVMValueRef left = args[0];
+    LLVMValueRef right = args[1];
+    
+    // Extract fields from struct values using ExtractValue
+    LLVMValueRef left_data = LLVMBuildExtractValue(gen->builder, left, 0, "left_data");
+    LLVMValueRef left_len = LLVMBuildExtractValue(gen->builder, left, 1, "left_len");
+    
+    LLVMValueRef right_data = LLVMBuildExtractValue(gen->builder, right, 0, "right_data");
+    LLVMValueRef right_len = LLVMBuildExtractValue(gen->builder, right, 1, "right_len");
+    
+    // First check if lengths are equal
+    LLVMValueRef len_eq = LLVMBuildICmp(gen->builder, LLVMIntEQ, left_len, right_len, "len_eq");
+    
+    // Create blocks for control flow
+    LLVMBasicBlockRef entry_block = LLVMGetInsertBlock(gen->builder);
+    LLVMValueRef function = LLVMGetBasicBlockParent(entry_block);
+    
+    LLVMBasicBlockRef memcmp_block = LLVMAppendBasicBlockInContext(gen->context, function, "memcmp");
+    LLVMBasicBlockRef result_block = LLVMAppendBasicBlockInContext(gen->context, function, "result");
+    
+    // If lengths differ, strings are not equal
+    LLVMBuildCondBr(gen->builder, len_eq, memcmp_block, result_block);
+    
+    // memcmp_block: lengths are equal, compare content
+    LLVMPositionBuilderAtEnd(gen->builder, memcmp_block);
+    
+    // Call memcmp(left_data, right_data, left_len)
+    LLVMTypeRef memcmp_type = LLVMFunctionType(
+        LLVMInt32TypeInContext(gen->context),
+        (LLVMTypeRef[]){
+            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
+            LLVMInt64TypeInContext(gen->context)
+        },
+        3,
+        false
+    );
+    
+    LLVMValueRef memcmp_fn = LLVMGetNamedFunction(gen->module, "memcmp");
+    if (!memcmp_fn) {
+        memcmp_fn = LLVMAddFunction(gen->module, "memcmp", memcmp_type);
+    }
+    
+    // Convert usize length to i64 for memcmp
+    LLVMValueRef len_i64 = left_len;  // On 64-bit, usize is already i64
+    #if !defined(__LP64__) && !defined(_WIN64) && !defined(__x86_64__) && !defined(__aarch64__)
+        // On 32-bit, extend u32 to i64
+        len_i64 = LLVMBuildZExt(gen->builder, left_len, LLVMInt64TypeInContext(gen->context), "len_ext");
+    #endif
+    
+    LLVMValueRef memcmp_args[] = { left_data, right_data, len_i64 };
+    LLVMValueRef memcmp_result = LLVMBuildCall2(gen->builder, memcmp_type, memcmp_fn, memcmp_args, 3, "memcmp");
+    
+    // memcmp returns 0 if equal
+    LLVMValueRef data_eq = LLVMBuildICmp(gen->builder, LLVMIntEQ, memcmp_result, 
+        LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, false), "data_eq");
+    
+    LLVMBuildBr(gen->builder, result_block);
+    LLVMBasicBlockRef memcmp_end_block = LLVMGetInsertBlock(gen->builder);
+    
+    // result_block: phi node to merge results
+    LLVMPositionBuilderAtEnd(gen->builder, result_block);
+    
+    LLVMValueRef phi = LLVMBuildPhi(gen->builder, LLVMInt1TypeInContext(gen->context), "str_eq");
+    LLVMValueRef false_val = LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, false);
+    LLVMAddIncoming(phi, &false_val, &entry_block, 1);  // Length mismatch -> false
+    LLVMAddIncoming(phi, &data_eq, &memcmp_end_block, 1);  // memcmp result
+    
+    return phi;
+}
+
+// Intrinsic for str != str comparison
+static LLVMValueRef intrinsic_str_ne(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    // Reuse eq intrinsic and negate
+    LLVMValueRef eq_result = intrinsic_str_eq(gen, args, arg_count, context);
+    return LLVMBuildNot(gen->builder, eq_result, "str_ne");
+}
+
+// Register Eq trait for str type
+void trait_register_eq_for_str(TraitRegistry* registry) {
+    (void)registry;  // Not used, Trait_Eq is already initialized
+    
+    // Check if already registered
+    TypeInfo* type_param_bindings[] = { Type_Str };  // str == str
+    TraitImpl* existing = trait_find_impl(Trait_Eq, Type_Str, type_param_bindings, 1);
+    if (existing) {
+        return;
+    }
+    
+    // Create method implementations
+    MethodImpl methods[2];
+    
+    // eq method
+    methods[0].method_name = "eq";
+    methods[0].signature = NULL;
+    methods[0].kind = METHOD_INTRINSIC;
+    methods[0].codegen = intrinsic_str_eq;
+    methods[0].function_ptr = NULL;
+    methods[0].external_name = NULL;
+    
+    // ne method
+    methods[1].method_name = "ne";
+    methods[1].signature = NULL;
+    methods[1].kind = METHOD_INTRINSIC;
+    methods[1].codegen = intrinsic_str_ne;
+    methods[1].function_ptr = NULL;
+    methods[1].external_name = NULL;
+    
+    // Register: Eq<str> for str with Output = bool
+    TypeInfo* assoc_type_bindings[] = { Type_Bool };
+    
+    trait_impl_full(Trait_Eq, Type_Str,
+                   type_param_bindings, 1,      // Rhs = str
+                   assoc_type_bindings, 1,      // Output = bool
+                   methods, 2);
+}
+
+// Intrinsic implementation for str + str concatenation
+// args[0] = left str (struct value)
+// args[1] = right str (struct value)
+// Returns: new str (struct value) with concatenated data
+static LLVMValueRef intrinsic_str_add(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    if (arg_count != 2) return NULL;
+    
+    LLVMValueRef left = args[0];
+    LLVMValueRef right = args[1];
+    
+    // Extract fields from left string
+    LLVMValueRef left_data = LLVMBuildExtractValue(gen->builder, left, 0, "left_data");
+    LLVMValueRef left_len = LLVMBuildExtractValue(gen->builder, left, 1, "left_len");
+    
+    // Extract fields from right string
+    LLVMValueRef right_data = LLVMBuildExtractValue(gen->builder, right, 0, "right_data");
+    LLVMValueRef right_len = LLVMBuildExtractValue(gen->builder, right, 1, "right_len");
+    
+    // Calculate total length: left_len + right_len
+    LLVMValueRef total_len = LLVMBuildAdd(gen->builder, left_len, right_len, "total_len");
+    
+    // Get or declare jsasta_alloc_string function
+    // StrWrapper jsasta_alloc_string(int64_t length)
+    LLVMTypeRef str_type = get_str_type(gen);
+    LLVMTypeRef alloc_fn_type = LLVMFunctionType(
+        str_type,
+        (LLVMTypeRef[]){LLVMInt64TypeInContext(gen->context)},
+        1, false
+    );
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(gen->module, "jsasta_alloc_string");
+    if (!alloc_fn) {
+        alloc_fn = LLVMAddFunction(gen->module, "jsasta_alloc_string", alloc_fn_type);
+    }
+    
+    // Call jsasta_alloc_string(total_len) to get new string
+    LLVMValueRef new_str = LLVMBuildCall2(gen->builder, alloc_fn_type, alloc_fn, 
+                                          (LLVMValueRef[]){total_len}, 1, "new_str");
+    
+    // Extract data pointer from new string
+    LLVMValueRef new_data = LLVMBuildExtractValue(gen->builder, new_str, 0, "new_data");
+    
+    // Get memcpy function
+    // void @llvm.memcpy.p0.p0.i64(i8* dest, i8* src, i64 len, i1 isvolatile)
+    LLVMTypeRef memcpy_params[] = {
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),  // dest
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),  // src
+        LLVMInt64TypeInContext(gen->context),                     // len
+        LLVMInt1TypeInContext(gen->context)                       // isvolatile
+    };
+    LLVMTypeRef memcpy_type = LLVMFunctionType(LLVMVoidType(), memcpy_params, 4, false);
+    LLVMValueRef memcpy_fn = LLVMGetNamedFunction(gen->module, "llvm.memcpy.p0.p0.i64");
+    if (!memcpy_fn) {
+        memcpy_fn = LLVMAddFunction(gen->module, "llvm.memcpy.p0.p0.i64", memcpy_type);
+    }
+    
+    // Copy left string: memcpy(new_data, left_data, left_len)
+    LLVMValueRef memcpy_args1[] = {
+        new_data,
+        left_data,
+        left_len,
+        LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0)  // not volatile
+    };
+    LLVMBuildCall2(gen->builder, memcpy_type, memcpy_fn, memcpy_args1, 4, "");
+    
+    // Calculate destination for right string: new_data + left_len
+    LLVMValueRef right_dest = LLVMBuildGEP2(gen->builder, 
+                                             LLVMInt8TypeInContext(gen->context),
+                                             new_data, 
+                                             (LLVMValueRef[]){left_len}, 
+                                             1, "right_dest");
+    
+    // Copy right string: memcpy(new_data + left_len, right_data, right_len)
+    LLVMValueRef memcpy_args2[] = {
+        right_dest,
+        right_data,
+        right_len,
+        LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0)  // not volatile
+    };
+    LLVMBuildCall2(gen->builder, memcpy_type, memcpy_fn, memcpy_args2, 4, "");
+    
+    // Return the new string
+    return new_str;
+}
+
+// Register Add trait for str type
+void trait_register_add_for_str(TraitRegistry* registry) {
+    (void)registry;
+    
+    // Check if already registered
+    TypeInfo* type_param_bindings[] = { Type_Str };  // str + str
+    TraitImpl* existing = trait_find_impl(Trait_Add, Type_Str, type_param_bindings, 1);
+    if (existing) {
+        return;
+    }
+    
+    // Create method implementation
+    MethodImpl methods[1];
+    
+    // add method
+    methods[0].method_name = "add";
+    methods[0].signature = NULL;
+    methods[0].kind = METHOD_INTRINSIC;
+    methods[0].codegen = intrinsic_str_add;
+    methods[0].function_ptr = NULL;
+    methods[0].external_name = NULL;
+    
+    // Register: Add<str> for str with Output = str
+    TypeInfo* assoc_type_bindings[] = { Type_Str };
+    
+    trait_impl_full(Trait_Add, Type_Str,
+                   type_param_bindings, 1,      // Rhs = str
+                   assoc_type_bindings, 1,      // Output = str
+                   methods, 1);
 }

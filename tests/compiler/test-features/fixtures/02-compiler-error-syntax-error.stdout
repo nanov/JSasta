@@ -1,4 +1,4 @@
-[error:T301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/test-features/02-compiler-error-syntax-error.jsa:5:1: Undefined variable: a
+[error:TE301] /Users/dimitarnanov/work/private/github/JSasta/tests/compiler/test-features/02-compiler-error-syntax-error.jsa:5:1: Undefined variable: a
 
 === Diagnostic Summary ===
   Errors: 1

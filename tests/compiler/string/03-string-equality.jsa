@@ -1,0 +1,16 @@
+// jastat-summary: String equality comparison with == and !=
+// jastat: mode=run, capture=assert
+
+import test from "@test";
+
+let s1: str = "Hello";
+let s2: str = "Hello";
+let s3: str = "World";
+
+// Test equality
+test.assert.that(s1 == s2, "Identical strings should be equal");
+test.assert.that(s1 != s3, "Different strings should not be equal");
+
+// Test with literals
+test.assert.that("test" == "test", "String literals should be equal");
+test.assert.that("test" != "other", "Different literals should not be equal");
