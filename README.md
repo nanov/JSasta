@@ -1,4 +1,4 @@
-# JSasta - JS like language that compiler to native code
+# JSasta - JS like language that compiles to native code
 
 ```
                                             t.
