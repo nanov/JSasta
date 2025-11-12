@@ -296,43 +296,6 @@ LLVMTypeRef get_llvm_type(CodeGen* gen, TypeInfo* type_info) {
     return LLVMInt32TypeInContext(gen->context);
 }
 
-static LLVMValueRef codegen_string_concat(CodeGen* gen, LLVMValueRef left, LLVMValueRef right) {
-    LLVMValueRef strlen_func = LLVMGetNamedFunction(gen->module, "strlen");
-    LLVMValueRef malloc_func = LLVMGetNamedFunction(gen->module, "malloc");
-    LLVMValueRef strcpy_func = LLVMGetNamedFunction(gen->module, "strcpy");
-    LLVMValueRef strcat_func = LLVMGetNamedFunction(gen->module, "strcat");
-
-    // Get lengths
-    LLVMValueRef len1_args[] = { left };
-    LLVMValueRef len1 = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(strlen_func),
-                                       strlen_func, len1_args, 1, "len1");
-
-    LLVMValueRef len2_args[] = { right };
-    LLVMValueRef len2 = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(strlen_func),
-                                       strlen_func, len2_args, 1, "len2");
-
-    // Calculate total size (len1 + len2 + 1 for null terminator)
-    LLVMValueRef total = LLVMBuildAdd(gen->builder, len1, len2, "total_len");
-    total = LLVMBuildAdd(gen->builder, total,
-                        LLVMConstInt(LLVMInt64TypeInContext(gen->context), 1, 0), "total_size");
-
-    // Allocate memory
-    LLVMValueRef malloc_args[] = { total };
-    LLVMValueRef result = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(malloc_func),
-                                         malloc_func, malloc_args, 1, "concat_buf");
-
-    // Copy strings
-    LLVMValueRef strcpy_args[] = { result, left };
-    LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(strcpy_func),
-                  strcpy_func, strcpy_args, 2, "");
-
-    LLVMValueRef strcat_args[] = { result, right };
-    LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(strcat_func),
-                  strcat_func, strcat_args, 2, "");
-
-    return result;
-}
-
 // Helper to convert a value to string using sprintf
 static LLVMValueRef codegen_value_to_string_sprintf(CodeGen* gen, LLVMValueRef value,
                                                      const char* format, int buffer_size,
@@ -1187,10 +1150,10 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
             // Special handling for logical operators with short-circuit evaluation
             if (strcmp(node->binary_op.op, "&&") == 0 || strcmp(node->binary_op.op, "||") == 0) {
                 bool is_and = (strcmp(node->binary_op.op, "&&") == 0);
-                
+
                 // Evaluate left operand
                 LLVMValueRef left = codegen_node(gen, node->binary_op.left);
-                
+
                 // Convert to bool if needed using ImplicitInto<bool>
                 TypeInfo* left_type = node->binary_op.left->type_info;
                 if (left_type != Type_Bool) {
@@ -1212,23 +1175,23 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         }
                     }
                 }
-                
+
                 // Create basic blocks for short-circuit evaluation
                 LLVMBasicBlockRef entry_block = LLVMGetInsertBlock(gen->builder);
                 LLVMValueRef func = LLVMGetBasicBlockParent(entry_block);
                 LLVMBasicBlockRef eval_right_block = LLVMAppendBasicBlock(func, is_and ? "and_rhs" : "or_rhs");
                 LLVMBasicBlockRef merge_block = LLVMAppendBasicBlock(func, is_and ? "and_merge" : "or_merge");
-                
+
                 // For &&: if left is false, skip right and return false
                 // For ||: if left is true, skip right and return true
-                LLVMBuildCondBr(gen->builder, left, 
+                LLVMBuildCondBr(gen->builder, left,
                                is_and ? eval_right_block : merge_block,  // true: eval right for &&, skip for ||
                                is_and ? merge_block : eval_right_block); // false: skip for &&, eval right for ||
-                
+
                 // eval_right_block: evaluate right operand
                 LLVMPositionBuilderAtEnd(gen->builder, eval_right_block);
                 LLVMValueRef right = codegen_node(gen, node->binary_op.right);
-                
+
                 // Convert right to bool if needed
                 TypeInfo* right_type = node->binary_op.right->type_info;
                 if (right_type != Type_Bool) {
@@ -1248,26 +1211,26 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                         }
                     }
                 }
-                
+
                 LLVMBasicBlockRef right_eval_block = LLVMGetInsertBlock(gen->builder);
                 LLVMBuildBr(gen->builder, merge_block);
-                
+
                 // merge_block: phi node to select result
                 LLVMPositionBuilderAtEnd(gen->builder, merge_block);
-                LLVMValueRef phi = LLVMBuildPhi(gen->builder, LLVMInt1TypeInContext(gen->context), 
+                LLVMValueRef phi = LLVMBuildPhi(gen->builder, LLVMInt1TypeInContext(gen->context),
                                                 is_and ? "and_result" : "or_result");
-                
+
                 // For &&: if we skipped right (left was false), result is false
                 // For ||: if we skipped right (left was true), result is true
                 LLVMValueRef short_circuit_value = LLVMConstInt(LLVMInt1TypeInContext(gen->context), is_and ? 0 : 1, 0);
-                
+
                 LLVMValueRef incoming_values[] = { short_circuit_value, right };
                 LLVMBasicBlockRef incoming_blocks[] = { entry_block, right_eval_block };
                 LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
-                
+
                 return phi;
             }
-            
+
             // For all other binary operators, evaluate both operands
             LLVMValueRef left = codegen_node(gen, node->binary_op.left);
             LLVMValueRef right = codegen_node(gen, node->binary_op.right);

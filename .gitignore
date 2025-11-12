@@ -10,5 +10,7 @@ compiled/
 # Mac shit
 .DS_Store
 
+# nodejs shit
 node_modules/
-package.json
+#package.json
+package-lock.json
