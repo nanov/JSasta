@@ -93,7 +93,7 @@ static void print_identifier_prefix(CodeGen* gen, ASTNode* node, LLVMValueRef st
 
 // Helper: call Display trait's fmt method to print a value to a stream
 // Returns true on success, false if Display trait not found
-static bool display_value_to_stream(CodeGen* gen, LLVMValueRef value, TypeInfo* type, LLVMValueRef stream_ptr) {
+static bool display_value_to_stream(CodeGen* gen, LLVMValueRef value, TypeInfo* type, LLVMValueRef stream_ptr, ASTNode* source_node) {
     // Find Display trait implementation
     TraitImpl* display_impl = trait_find_impl(Trait_Display, type, NULL, 0);
     if (!display_impl) {
@@ -199,8 +199,33 @@ static bool display_value_to_stream(CodeGen* gen, LLVMValueRef value, TypeInfo* 
             display_fn = LLVMAddFunction(gen->module, fmt_method->external_name, display_fn_type);
         }
         
+        // For value types, we need a pointer to pass to display function
+        // Display functions always expect pointers for efficiency
+        LLVMValueRef value_arg = value;
+        if (type_info_is_object(type) && type->is_value) {
+            // Check if source is an identifier - if so, get its pointer directly
+            if (source_node && source_node->type == AST_IDENTIFIER) {
+                SymbolEntry* entry = symbol_table_lookup(gen->symbols, source_node->identifier.name);
+                if (entry && entry->value) {
+                    // Use the existing alloca pointer instead of creating new one
+                    value_arg = entry->value;
+                } else {
+                    // Fallback: create temporary alloca and store value
+                    LLVMValueRef temp = LLVMBuildAlloca(gen->builder, get_llvm_type(gen, type), "value_tmp");
+                    LLVMBuildStore(gen->builder, value, temp);
+                    value_arg = temp;
+                }
+            } else {
+                // Not an identifier (e.g., string literal, expression result)
+                // Create temporary alloca and store value
+                LLVMValueRef temp = LLVMBuildAlloca(gen->builder, get_llvm_type(gen, type), "value_tmp");
+                LLVMBuildStore(gen->builder, value, temp);
+                value_arg = temp;
+            }
+        }
+        
         // Call display_<type>(value, &formatter)
-        LLVMValueRef display_args[] = {value, formatter};
+        LLVMValueRef display_args[] = {value_arg, formatter};
         LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(display_fn), display_fn, display_args, 2, "");
         
         return true;
@@ -262,7 +287,7 @@ static bool generate_format_output(CodeGen* gen, ASTNode* node, LLVMValueRef out
             }
 
             // Use helper to display value to output stream
-            if (!display_value_to_stream(gen, arg_val, arg_type, output_stream)) {
+            if (!display_value_to_stream(gen, arg_val, arg_type, output_stream, arg)) {
                 format_string_free(fs);
                 return false;
             }
@@ -619,7 +644,7 @@ LLVMValueRef test_assert_equals_codegen(void* context, ASTNode* node) {
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, label_args, 2, "");
 
     // Print expected value using Display trait helper
-    display_value_to_stream(gen, expected_val, arg_type, stderr_ptr);
+    display_value_to_stream(gen, expected_val, arg_type, stderr_ptr, expected_arg);
 
     // Print " Actual: "
     LLVMValueRef actual_label = LLVMBuildGlobalStringPtr(gen->builder, " Actual: ", "actual_label");
@@ -627,7 +652,7 @@ LLVMValueRef test_assert_equals_codegen(void* context, ASTNode* node) {
     LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, actual_label_args, 2, "");
 
     // Print actual value using Display trait helper
-    display_value_to_stream(gen, actual_val, arg_type, stderr_ptr);
+    display_value_to_stream(gen, actual_val, arg_type, stderr_ptr, actual_arg);
 
     // Print newline
     LLVMValueRef newline_str = LLVMBuildGlobalStringPtr(gen->builder, "\n", "newline");
@@ -703,7 +728,7 @@ LLVMValueRef test_assert_not_equals_codegen(void* context, ASTNode* node) {
     print_string_to_stream(gen, stderr_ptr, "Not expected: ", "not_expected_label");
 
     // Print the value using Display trait helper
-    display_value_to_stream(gen, actual_val, arg_type, stderr_ptr);
+    display_value_to_stream(gen, actual_val, arg_type, stderr_ptr, actual_arg);
 
     // Print newline
     print_string_to_stream(gen, stderr_ptr, "\n", "newline");

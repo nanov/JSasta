@@ -27,7 +27,8 @@ Trait* Trait_Index = NULL;
 Trait* Trait_RefIndex = NULL;
 Trait* Trait_Length = NULL;
 Trait* Trait_CStr = NULL;
-Trait* Trait_From = NULL;
+Trait* Trait_ImplicitFrom = NULL;
+Trait* Trait_ImplicitInto = NULL;
 Trait* Trait_Display = NULL;
 
 // === Core Trait Registry Functions ===
@@ -277,12 +278,71 @@ TraitImpl* trait_find_impl(
     return NULL;
 }
 
+// Helper: Find trait implementation with automatic type conversion via From trait
+// If direct match not found, tries to find implementation with convertible types
+// For example, if Index<i32> not found but Index<usize> exists and From<i32> for usize exists, use that
+TraitImpl* trait_find_impl_with_conversion(
+    Trait* trait,
+    TypeInfo* impl_type,
+    TypeInfo** type_param_bindings,
+    int type_param_count,
+    TypeInfo** converted_bindings_out  // Output: the converted type params (must be preallocated)
+) {
+    // First try direct match
+    TraitImpl* impl = trait_find_impl(trait, impl_type, type_param_bindings, type_param_count);
+    if (impl) {
+        // Copy original bindings
+        for (int i = 0; i < type_param_count; i++) {
+            converted_bindings_out[i] = type_param_bindings[i];
+        }
+        return impl;
+    }
+
+    // If not found and From trait exists, try conversion for each parameter
+    if (!Trait_ImplicitFrom) return NULL;
+
+    for (int param_idx = 0; param_idx < type_param_count; param_idx++) {
+        TypeInfo* original_type = type_param_bindings[param_idx];
+
+        // Try common target types (prioritize usize for indexing)
+        TypeInfo* candidate_types[] = { Type_Usize, Type_I64, Type_I32, Type_I16, Type_I8 };
+        for (int i = 0; i < 5; i++) {
+            TypeInfo* candidate = candidate_types[i];
+            if (candidate == original_type) continue;
+
+            // Check if From<original_type> exists for candidate
+            trait_ensure_implicit_from_impl(candidate, original_type);
+            TypeInfo* from_binding[] = { original_type };
+            TraitImpl* from_impl = trait_find_impl(Trait_ImplicitFrom, candidate, from_binding, 1);
+            if (!from_impl) continue;
+
+            // Create new bindings with this candidate
+            TypeInfo* candidate_bindings[type_param_count];
+            for (int j = 0; j < type_param_count; j++) {
+                candidate_bindings[j] = (j == param_idx) ? candidate : type_param_bindings[j];
+            }
+
+            // Check if implementation exists with this candidate
+            TraitImpl* candidate_impl = trait_find_impl(trait, impl_type, candidate_bindings, type_param_count);
+            if (candidate_impl) {
+                // Found a match! Return converted bindings
+                for (int j = 0; j < type_param_count; j++) {
+                    converted_bindings_out[j] = candidate_bindings[j];
+                }
+                return candidate_impl;
+            }
+        }
+    }
+
+    return NULL;
+}
+
 TraitImpl* trait_find_property_for_type(TypeInfo* type, const char* property_name) {
     if (!type || !property_name) return NULL;
-    
+
     // Resolve aliases to get the actual type
     type = type_info_resolve_alias(type);
-    
+
     // Search through all global traits
     Trait* global_traits[] = {
         Trait_Add, Trait_Sub, Trait_Mul, Trait_Div, Trait_Rem,
@@ -291,15 +351,15 @@ TraitImpl* trait_find_property_for_type(TypeInfo* type, const char* property_nam
         Trait_AddAssign, Trait_SubAssign, Trait_MulAssign, Trait_DivAssign,
         Trait_Index, Trait_RefIndex, Trait_Length, Trait_CStr, Trait_Display
     };
-    
+
     for (size_t i = 0; i < sizeof(global_traits) / sizeof(global_traits[0]); i++) {
         Trait* trait = global_traits[i];
         if (!trait) continue;
-        
+
         // Find implementation for this type
         TraitImpl* impl = trait_find_impl(trait, type, NULL, 0);
         if (!impl) continue;
-        
+
         // Check if this implementation has a property with the given name
         for (int m = 0; m < impl->method_count; m++) {
             if (impl->methods[m].is_property &&
@@ -308,7 +368,7 @@ TraitImpl* trait_find_property_for_type(TypeInfo* type, const char* property_nam
             }
         }
     }
-    
+
     return NULL;
 }
 
@@ -319,8 +379,12 @@ TypeInfo* trait_get_assoc_type(
     int type_param_count,
     const char* assoc_type_name
 ) {
-    TraitImpl* impl = trait_find_impl(trait, impl_type, type_param_bindings, type_param_count);
-    if (!impl) return NULL;
+    // Try to find implementation with automatic type conversion
+    TypeInfo* converted_bindings[type_param_count];
+    TraitImpl* impl = trait_find_impl_with_conversion(trait, impl_type, type_param_bindings, type_param_count, converted_bindings);
+    if (!impl) {
+        return NULL;
+    }
 
     // Find the associated type index
     for (int i = 0; i < trait->assoc_type_count; i++) {
@@ -720,16 +784,29 @@ void traits_init_builtins(TraitRegistry* registry) {
     const char* from_method_names[] = { "from" };
     TypeInfo* from_method_sigs[] = { NULL };
 
-    Trait_From = trait_define_full(registry, "From",
+    Trait_ImplicitFrom = trait_define_full(registry, "ImplicitFrom",
                                    from_type_params, 1,
                                    NULL, 0,  // No associated types
                                    from_method_names, from_method_sigs, 1);
+
+    // ImplicitInto<T> { fn into(self) -> T }
+    // For implicit conversions from self to T (dual of ImplicitFrom)
+    TraitTypeParam into_type_params[] = {
+        { .name = "T", .default_type = NULL, .constraint = NULL }
+    };
+    const char* into_method_names[] = { "into" };
+    TypeInfo* into_method_sigs[] = { NULL };
+
+    Trait_ImplicitInto = trait_define_full(registry, "ImplicitInto",
+                                   into_type_params, 1,
+                                   NULL, 0,  // No associated types
+                                   into_method_names, into_method_sigs, 1);
 
     // Display { fn fmt(self, formatter: ref Formatter) -> void }
     // Simple trait with no type parameters or associated types
     const char* display_method_names[] = { "fmt" };
     TypeInfo* display_method_sigs[] = { NULL };  // Placeholder
-    
+
     Trait_Display = trait_define_simple(registry, "Display",
                                        display_method_names,
                                        display_method_sigs, 1);
@@ -801,31 +878,31 @@ void trait_ensure_cstr_impl(TypeInfo* type) {
 static LLVMValueRef intrinsic_int_to_usize(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
     (void)context;
     (void)arg_count;
-    
+
     LLVMTypeRef target_type = LLVMInt64TypeInContext(gen->context); // usize is i64
     LLVMTypeRef source_type = LLVMTypeOf(args[0]);
-    
+
     // If already the right size, just return it
     if (LLVMGetIntTypeWidth(source_type) == 64) {
         return args[0];
     }
-    
+
     // Zero-extend for unsigned types, sign-extend for signed types
     // For now, use zero-extend (safe for array indexing)
     return LLVMBuildZExt(gen->builder, args[0], target_type, "to_usize");
 }
 
-void trait_ensure_from_impl(TypeInfo* target_type, TypeInfo* source_type) {
-    if (!target_type || !source_type || !Trait_From) {
+void trait_ensure_implicit_from_impl(TypeInfo* target_type, TypeInfo* source_type) {
+    if (!target_type || !source_type || !Trait_ImplicitFrom) {
         return;
     }
 
     // Implement From<str> for c_str
     if (target_type == Type_CStr && source_type == Type_Str) {
         TypeInfo* type_param_bindings[] = { source_type };
-        
+
         // Check if already implemented
-        TraitImpl* existing = trait_find_impl(Trait_From, target_type, type_param_bindings, 1);
+        TraitImpl* existing = trait_find_impl(Trait_ImplicitFrom, target_type, type_param_bindings, 1);
         if (existing) {
             return;
         }
@@ -843,18 +920,18 @@ void trait_ensure_from_impl(TypeInfo* target_type, TypeInfo* source_type) {
         };
 
         // Implement From<str> for c_str
-        trait_impl_full(Trait_From, target_type,
+        trait_impl_full(Trait_ImplicitFrom, target_type,
                        type_param_bindings, 1,
                        NULL, 0,  // No associated types
                        &method_impl, 1);
     }
-    
+
     // Implement From<int types> for usize
     if (target_type == Type_Usize && type_info_is_integer(source_type)) {
         TypeInfo* type_param_bindings[] = { source_type };
-        
+
         // Check if already implemented
-        TraitImpl* existing = trait_find_impl(Trait_From, target_type, type_param_bindings, 1);
+        TraitImpl* existing = trait_find_impl(Trait_ImplicitFrom, target_type, type_param_bindings, 1);
         if (existing) {
             return;
         }
@@ -871,7 +948,7 @@ void trait_ensure_from_impl(TypeInfo* target_type, TypeInfo* source_type) {
         };
 
         // Implement From<int> for usize
-        trait_impl_full(Trait_From, target_type,
+        trait_impl_full(Trait_ImplicitFrom, target_type,
                        type_param_bindings, 1,
                        NULL, 0,  // No associated types
                        &method_impl, 1);
@@ -1057,28 +1134,28 @@ void trait_ensure_ref_index_impl(TypeInfo* type) {
 // Works for both arrays and str since they share the same memory layout
 static LLVMValueRef intrinsic_generic_length(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
     (void)arg_count;
-    
+
     // args[0] is a pointer to a struct with layout: { T* data, i64 length }
     // context contains the AST node for the object (to get type info)
     ASTNode* obj_node = (ASTNode*)context;
     if (!obj_node || !obj_node->type_info) {
         return NULL;
     }
-    
+
     LLVMValueRef wrapper_ptr = args[0];
     TypeInfo* obj_type = type_info_get_ref_target(obj_node->type_info);
-    
+
     // Get the LLVM struct type using get_llvm_type
     LLVMTypeRef struct_type = get_llvm_type(gen, obj_type);
     if (!struct_type) {
         return NULL;
     }
-    
+
     // Use StructGEP2 to access field 1 (length)
     LLVMValueRef length_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, wrapper_ptr, 1, "length_ptr");
     LLVMValueRef length = LLVMBuildLoad2(gen->builder,
         LLVMInt64TypeInContext(gen->context), length_ptr, "length");
-    
+
     return length;
 }
 
@@ -1102,21 +1179,21 @@ static LLVMValueRef intrinsic_str_c_str(CodeGen* gen, LLVMValueRef* args, int ar
     if (!obj_node || !obj_node->type_info) {
         return NULL;
     }
-    
+
     LLVMValueRef wrapper_ptr = args[0];
     TypeInfo* obj_type = type_info_get_ref_target(obj_node->type_info);
-    
+
     // Get the LLVM struct type using get_llvm_type
     LLVMTypeRef struct_type = get_llvm_type(gen, obj_type);
     if (!struct_type) {
         return NULL;
     }
-    
+
     // Use StructGEP2 to access field 0 (data pointer)
     LLVMValueRef data_ptr_ptr = LLVMBuildStructGEP2(gen->builder, struct_type, wrapper_ptr, 0, "data_ptr_ptr");
     LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,
         LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), data_ptr_ptr, "c_str");
-    
+
     return data_ptr;
 }
 

@@ -107,6 +107,7 @@
     ERROR_DEF(TE_TRAIT_NOT_IMPLEMENTED,           "TE324", "Type '%s' does not implement trait '%s'") \
     ERROR_DEF(TE_METHOD_NOT_FOUND,                "TE325", "Method '%s' not found on type '%s'") \
     ERROR_DEF(TE_AMBIGUOUS_TYPE,                  "TE326", "Ambiguous type: could be %s or %s") \
+    ERROR_DEF(TE_LOGICAL_OP_REQUIRES_BOOL,        "TE327", "Logical operator '%s' requires boolean operands, but %s operand has type '%s' (missing ImplicitInto<bool>)") \
     \
     /* Code Generation Errors (CE400-CE499) */ \
     ERROR_DEF(CE_CODEGEN_FAILED,                  "CE400", "Code generation failed: %s") \

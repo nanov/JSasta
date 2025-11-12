@@ -121,7 +121,8 @@ extern Trait* Trait_Index;
 extern Trait* Trait_RefIndex;
 extern Trait* Trait_Length;
 extern Trait* Trait_CStr;
-extern Trait* Trait_From;
+extern Trait* Trait_ImplicitFrom;
+extern Trait* Trait_ImplicitInto;
 extern Trait* Trait_Display;
 
 // === Core Trait Registry Functions ===
@@ -287,7 +288,7 @@ void trait_ensure_length_impl(TypeInfo* type);
 void trait_ensure_cstr_impl(TypeInfo* type);
 
 // Ensure From<source_type> is implemented for target_type
-void trait_ensure_from_impl(TypeInfo* target_type, TypeInfo* source_type);
+void trait_ensure_implicit_from_impl(TypeInfo* target_type, TypeInfo* source_type);
 
 // === Auto-implement Eq trait for enum types ===
 
@@ -300,5 +301,8 @@ void trait_register_display_for_enum(TypeInfo* enum_type, TraitRegistry* registr
 
 // Register Eq trait implementation for str type
 void trait_register_eq_for_str(TraitRegistry* registry);
+
+// Register Add trait implementation for str type
+void trait_register_add_for_str(TraitRegistry* registry);
 
 #endif // JSASTA_TRAITS_H

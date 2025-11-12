@@ -886,11 +886,14 @@ void traits_register_builtin_impls(TraitRegistry* registry) {
     // Register Eq trait for str type
     trait_register_eq_for_str(registry);
     
+    // Register Add trait for str type
+    trait_register_add_for_str(registry);
+    
     // Register CStr trait for str type
     trait_ensure_cstr_impl(Type_Str);
     
     // Register From<str> for c_str type
-    trait_ensure_from_impl(Type_CStr, Type_Str);
+    trait_ensure_implicit_from_impl(Type_CStr, Type_Str);
     
     // Register From<int types> for usize (for indexing operations)
     TypeInfo* int_types[] = {
@@ -898,7 +901,7 @@ void traits_register_builtin_impls(TraitRegistry* registry) {
         Type_U8, Type_U16, Type_U32, Type_U64
     };
     for (int i = 0; i < 8; i++) {
-        trait_ensure_from_impl(Type_Usize, int_types[i]);
+        trait_ensure_implicit_from_impl(Type_Usize, int_types[i]);
     }
 }
 
@@ -1102,36 +1105,18 @@ static LLVMValueRef intrinsic_str_eq(CodeGen* gen, LLVMValueRef* args, int arg_c
     (void)context;
     (void)arg_count;
     
-    // args[0] and args[1] are POINTERS to %str structs (not values)
-    // This is because objects are passed by pointer in codegen_node
-    // We need to use GEP to access the fields
+    // args[0] and args[1] are %str struct VALUES (str is a value type)
+    // Extract the data and length fields directly from the struct values
     
-    // Get str type
-    LLVMTypeRef str_type = get_str_type(gen);
+    LLVMValueRef left = args[0];
+    LLVMValueRef right = args[1];
     
-    // Left string: GEP to get pointers to data and length fields
-    LLVMValueRef left_data_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[0], 0, "left_data_ptr");
-    LLVMValueRef left_len_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[0], 1, "left_len_ptr");
+    // Extract fields from struct values using ExtractValue
+    LLVMValueRef left_data = LLVMBuildExtractValue(gen->builder, left, 0, "left_data");
+    LLVMValueRef left_len = LLVMBuildExtractValue(gen->builder, left, 1, "left_len");
     
-    // Load the values
-    LLVMValueRef left_data = LLVMBuildLoad2(gen->builder, 
-        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 
-        left_data_ptr, "left_data");
-    LLVMValueRef left_len = LLVMBuildLoad2(gen->builder, 
-        LLVMInt64TypeInContext(gen->context), 
-        left_len_ptr, "left_len");
-    
-    // Right string: GEP to get pointers to data and length fields
-    LLVMValueRef right_data_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[1], 0, "right_data_ptr");
-    LLVMValueRef right_len_ptr = LLVMBuildStructGEP2(gen->builder, str_type, args[1], 1, "right_len_ptr");
-    
-    // Load the values
-    LLVMValueRef right_data = LLVMBuildLoad2(gen->builder, 
-        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), 
-        right_data_ptr, "right_data");
-    LLVMValueRef right_len = LLVMBuildLoad2(gen->builder, 
-        LLVMInt64TypeInContext(gen->context), 
-        right_len_ptr, "right_len");
+    LLVMValueRef right_data = LLVMBuildExtractValue(gen->builder, right, 0, "right_data");
+    LLVMValueRef right_len = LLVMBuildExtractValue(gen->builder, right, 1, "right_len");
     
     // First check if lengths are equal
     LLVMValueRef len_eq = LLVMBuildICmp(gen->builder, LLVMIntEQ, left_len, right_len, "len_eq");
@@ -1238,4 +1223,120 @@ void trait_register_eq_for_str(TraitRegistry* registry) {
                    type_param_bindings, 1,      // Rhs = str
                    assoc_type_bindings, 1,      // Output = bool
                    methods, 2);
+}
+
+// Intrinsic implementation for str + str concatenation
+// args[0] = left str (struct value)
+// args[1] = right str (struct value)
+// Returns: new str (struct value) with concatenated data
+static LLVMValueRef intrinsic_str_add(CodeGen* gen, LLVMValueRef* args, int arg_count, void* context) {
+    (void)context;
+    if (arg_count != 2) return NULL;
+    
+    LLVMValueRef left = args[0];
+    LLVMValueRef right = args[1];
+    
+    // Extract fields from left string
+    LLVMValueRef left_data = LLVMBuildExtractValue(gen->builder, left, 0, "left_data");
+    LLVMValueRef left_len = LLVMBuildExtractValue(gen->builder, left, 1, "left_len");
+    
+    // Extract fields from right string
+    LLVMValueRef right_data = LLVMBuildExtractValue(gen->builder, right, 0, "right_data");
+    LLVMValueRef right_len = LLVMBuildExtractValue(gen->builder, right, 1, "right_len");
+    
+    // Calculate total length: left_len + right_len
+    LLVMValueRef total_len = LLVMBuildAdd(gen->builder, left_len, right_len, "total_len");
+    
+    // Get or declare jsasta_alloc_string function
+    // StrWrapper jsasta_alloc_string(int64_t length)
+    LLVMTypeRef str_type = get_str_type(gen);
+    LLVMTypeRef alloc_fn_type = LLVMFunctionType(
+        str_type,
+        (LLVMTypeRef[]){LLVMInt64TypeInContext(gen->context)},
+        1, false
+    );
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(gen->module, "jsasta_alloc_string");
+    if (!alloc_fn) {
+        alloc_fn = LLVMAddFunction(gen->module, "jsasta_alloc_string", alloc_fn_type);
+    }
+    
+    // Call jsasta_alloc_string(total_len) to get new string
+    LLVMValueRef new_str = LLVMBuildCall2(gen->builder, alloc_fn_type, alloc_fn, 
+                                          (LLVMValueRef[]){total_len}, 1, "new_str");
+    
+    // Extract data pointer from new string
+    LLVMValueRef new_data = LLVMBuildExtractValue(gen->builder, new_str, 0, "new_data");
+    
+    // Get memcpy function
+    // void @llvm.memcpy.p0.p0.i64(i8* dest, i8* src, i64 len, i1 isvolatile)
+    LLVMTypeRef memcpy_params[] = {
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),  // dest
+        LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),  // src
+        LLVMInt64TypeInContext(gen->context),                     // len
+        LLVMInt1TypeInContext(gen->context)                       // isvolatile
+    };
+    LLVMTypeRef memcpy_type = LLVMFunctionType(LLVMVoidType(), memcpy_params, 4, false);
+    LLVMValueRef memcpy_fn = LLVMGetNamedFunction(gen->module, "llvm.memcpy.p0.p0.i64");
+    if (!memcpy_fn) {
+        memcpy_fn = LLVMAddFunction(gen->module, "llvm.memcpy.p0.p0.i64", memcpy_type);
+    }
+    
+    // Copy left string: memcpy(new_data, left_data, left_len)
+    LLVMValueRef memcpy_args1[] = {
+        new_data,
+        left_data,
+        left_len,
+        LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0)  // not volatile
+    };
+    LLVMBuildCall2(gen->builder, memcpy_type, memcpy_fn, memcpy_args1, 4, "");
+    
+    // Calculate destination for right string: new_data + left_len
+    LLVMValueRef right_dest = LLVMBuildGEP2(gen->builder, 
+                                             LLVMInt8TypeInContext(gen->context),
+                                             new_data, 
+                                             (LLVMValueRef[]){left_len}, 
+                                             1, "right_dest");
+    
+    // Copy right string: memcpy(new_data + left_len, right_data, right_len)
+    LLVMValueRef memcpy_args2[] = {
+        right_dest,
+        right_data,
+        right_len,
+        LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0)  // not volatile
+    };
+    LLVMBuildCall2(gen->builder, memcpy_type, memcpy_fn, memcpy_args2, 4, "");
+    
+    // Return the new string
+    return new_str;
+}
+
+// Register Add trait for str type
+void trait_register_add_for_str(TraitRegistry* registry) {
+    (void)registry;
+    
+    // Check if already registered
+    TypeInfo* type_param_bindings[] = { Type_Str };  // str + str
+    TraitImpl* existing = trait_find_impl(Trait_Add, Type_Str, type_param_bindings, 1);
+    if (existing) {
+        return;
+    }
+    
+    // Create method implementation
+    MethodImpl methods[1];
+    
+    // add method
+    methods[0].method_name = "add";
+    methods[0].signature = NULL;
+    methods[0].kind = METHOD_INTRINSIC;
+    methods[0].codegen = intrinsic_str_add;
+    methods[0].function_ptr = NULL;
+    methods[0].external_name = NULL;
+    
+    // Register: Add<str> for str with Output = str
+    TypeInfo* assoc_type_bindings[] = { Type_Str };
+    
+    trait_impl_full(Trait_Add, Type_Str,
+                   type_param_bindings, 1,      // Rhs = str
+                   assoc_type_bindings, 1,      // Output = str
+                   methods, 1);
 }

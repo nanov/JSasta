@@ -1155,11 +1155,19 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     return LLVMBuildLoad2(gen->builder, value_type, ptr, node->identifier.name);
                 }
 
-                // For objects and arrays, return the pointer directly (don't load)
-                // Objects are already stack-allocated structs, we pass by pointer
+                // For objects and arrays, behavior depends on value semantics
+                // Value-type objects (like str): load the struct value
+                // Reference-type objects: return the pointer
                 // Arrays are heap-allocated, the alloca holds the pointer
                 if (type_info_is_object(type_info)) {
-                    return entry->value;
+                    if (type_info->is_value) {
+                        // Value type: load the struct value
+                        LLVMTypeRef load_type = entry->llvm_type ? entry->llvm_type : get_llvm_type(gen, type_info);
+                        return LLVMBuildLoad2(gen->builder, load_type, entry->value, node->identifier.name);
+                    } else {
+                        // Reference type: return pointer
+                        return entry->value;
+                    }
                 }
                 if (type_info_is_array(type_info)) {
                     return LLVMBuildLoad2(gen->builder, LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0),
@@ -1176,59 +1184,95 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
         }
 
         case AST_BINARY_OP: {
+            // Special handling for logical operators with short-circuit evaluation
+            if (strcmp(node->binary_op.op, "&&") == 0 || strcmp(node->binary_op.op, "||") == 0) {
+                bool is_and = (strcmp(node->binary_op.op, "&&") == 0);
+                
+                // Evaluate left operand
+                LLVMValueRef left = codegen_node(gen, node->binary_op.left);
+                
+                // Convert to bool if needed using ImplicitInto<bool>
+                TypeInfo* left_type = node->binary_op.left->type_info;
+                if (left_type != Type_Bool) {
+                    // Try to find ImplicitInto<bool> for left_type
+                    TypeInfo* bool_binding[] = { Type_Bool };
+                    TraitImpl* into_impl = trait_find_impl(Trait_ImplicitInto, left_type, bool_binding, 1);
+                    if (into_impl) {
+                        // Find 'into' method
+                        MethodImpl* into_method = NULL;
+                        for (int i = 0; i < into_impl->method_count; i++) {
+                            if (strcmp(into_impl->methods[i].method_name, "into") == 0) {
+                                into_method = &into_impl->methods[i];
+                                break;
+                            }
+                        }
+                        if (into_method && into_method->codegen) {
+                            LLVMValueRef args[] = { left };
+                            left = into_method->codegen(gen, args, 1, into_method->function_ptr);
+                        }
+                    }
+                }
+                
+                // Create basic blocks for short-circuit evaluation
+                LLVMBasicBlockRef entry_block = LLVMGetInsertBlock(gen->builder);
+                LLVMValueRef func = LLVMGetBasicBlockParent(entry_block);
+                LLVMBasicBlockRef eval_right_block = LLVMAppendBasicBlock(func, is_and ? "and_rhs" : "or_rhs");
+                LLVMBasicBlockRef merge_block = LLVMAppendBasicBlock(func, is_and ? "and_merge" : "or_merge");
+                
+                // For &&: if left is false, skip right and return false
+                // For ||: if left is true, skip right and return true
+                LLVMBuildCondBr(gen->builder, left, 
+                               is_and ? eval_right_block : merge_block,  // true: eval right for &&, skip for ||
+                               is_and ? merge_block : eval_right_block); // false: skip for &&, eval right for ||
+                
+                // eval_right_block: evaluate right operand
+                LLVMPositionBuilderAtEnd(gen->builder, eval_right_block);
+                LLVMValueRef right = codegen_node(gen, node->binary_op.right);
+                
+                // Convert right to bool if needed
+                TypeInfo* right_type = node->binary_op.right->type_info;
+                if (right_type != Type_Bool) {
+                    TypeInfo* bool_binding[] = { Type_Bool };
+                    TraitImpl* into_impl = trait_find_impl(Trait_ImplicitInto, right_type, bool_binding, 1);
+                    if (into_impl) {
+                        MethodImpl* into_method = NULL;
+                        for (int i = 0; i < into_impl->method_count; i++) {
+                            if (strcmp(into_impl->methods[i].method_name, "into") == 0) {
+                                into_method = &into_impl->methods[i];
+                                break;
+                            }
+                        }
+                        if (into_method && into_method->codegen) {
+                            LLVMValueRef args[] = { right };
+                            right = into_method->codegen(gen, args, 1, into_method->function_ptr);
+                        }
+                    }
+                }
+                
+                LLVMBasicBlockRef right_eval_block = LLVMGetInsertBlock(gen->builder);
+                LLVMBuildBr(gen->builder, merge_block);
+                
+                // merge_block: phi node to select result
+                LLVMPositionBuilderAtEnd(gen->builder, merge_block);
+                LLVMValueRef phi = LLVMBuildPhi(gen->builder, LLVMInt1TypeInContext(gen->context), 
+                                                is_and ? "and_result" : "or_result");
+                
+                // For &&: if we skipped right (left was false), result is false
+                // For ||: if we skipped right (left was true), result is true
+                LLVMValueRef short_circuit_value = LLVMConstInt(LLVMInt1TypeInContext(gen->context), is_and ? 0 : 1, 0);
+                
+                LLVMValueRef incoming_values[] = { short_circuit_value, right };
+                LLVMBasicBlockRef incoming_blocks[] = { entry_block, right_eval_block };
+                LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
+                
+                return phi;
+            }
+            
+            // For all other binary operators, evaluate both operands
             LLVMValueRef left = codegen_node(gen, node->binary_op.left);
             LLVMValueRef right = codegen_node(gen, node->binary_op.right);
 
-            // Special handling for logical operators (not traits yet)
-            if (strcmp(node->binary_op.op, "&&") == 0) {
-                return LLVMBuildAnd(gen->builder, left, right, "andtmp");
-            } else if (strcmp(node->binary_op.op, "||") == 0) {
-                return LLVMBuildOr(gen->builder, left, right, "ortmp");
-            }
-
-            // Special handling for string concatenation (will use traits later)
-            if (strcmp(node->binary_op.op, "+") == 0 &&
-                (type_info_is_string(node->binary_op.left->type_info) ||
-                 type_info_is_string(node->binary_op.right->type_info))) {
-
-                // Convert non-strings to strings if needed
-                if (type_info_is_int(node->binary_op.left->type_info)) {
-                    left = codegen_int_to_string(gen, left);
-                } else if (type_info_is_double(node->binary_op.left->type_info)) {
-                    left = codegen_double_to_string(gen, left);
-                } else if (type_info_is_bool(node->binary_op.left->type_info)) {
-                    left = codegen_bool_to_string(gen, left);
-                }
-
-                if (type_info_is_int(node->binary_op.right->type_info)) {
-                    right = codegen_int_to_string(gen, right);
-                } else if (type_info_is_double(node->binary_op.right->type_info)) {
-                    right = codegen_double_to_string(gen, right);
-                } else if (type_info_is_bool(node->binary_op.right->type_info)) {
-                    right = codegen_bool_to_string(gen, right);
-                }
-
-                return codegen_string_concat(gen, left, right);
-            }
-
-            // Special handling for enum comparisons (== and !=)
-            if ((strcmp(node->binary_op.op, "==") == 0 || strcmp(node->binary_op.op, "!=") == 0)) {
-                TypeInfo* left_type = node->binary_op.left->type_info;
-                TypeInfo* right_type = node->binary_op.right->type_info;
-
-                // Check if both operands are the same enum type
-                if (left_type && right_type &&
-                    left_type->kind == TYPE_KIND_ENUM && right_type->kind == TYPE_KIND_ENUM &&
-                    left_type == right_type) {
-
-                    // For unit variants (which are u8/u16/u32 values), use integer comparison
-                    LLVMIntPredicate pred = (strcmp(node->binary_op.op, "==") == 0) ? LLVMIntEQ : LLVMIntNE;
-                    return LLVMBuildICmp(gen->builder, pred, left, right,
-                                       strcmp(node->binary_op.op, "==") == 0 ? "enum_eq" : "enum_ne");
-                }
-            }
-
-            // Use trait system for all other binary operations
+            // Use trait system for all binary operations
             Trait* trait;
             const char* method_name;
             operator_get_trait_and_method(node->binary_op.op, &trait, &method_name);
@@ -1245,26 +1289,9 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                     MethodImpl* method = trait_get_binary_method(trait, left_target, right_target, method_name);
 
                     if (method && method->kind == METHOD_INTRINSIC && method->codegen) {
-                        // Special handling for str type: intrinsic_str_eq expects POINTERS to str structs
-                        // String literals return constant struct values, so we need to materialize them
-                        if (left_target == Type_Str) {
-                            // Check if left is a constant (string literal)
-                            if (LLVMIsConstant(left)) {
-                                // Allocate stack space and store the constant
-                                LLVMValueRef left_alloca = LLVMBuildAlloca(gen->builder, get_str_type(gen), "str_literal_tmp");
-                                LLVMBuildStore(gen->builder, left, left_alloca);
-                                left = left_alloca;
-                            }
-                            // Check if right is a constant (string literal)
-                            if (LLVMIsConstant(right)) {
-                                LLVMValueRef right_alloca = LLVMBuildAlloca(gen->builder, get_str_type(gen), "str_literal_tmp");
-                                LLVMBuildStore(gen->builder, right, right_alloca);
-                                right = right_alloca;
-                            }
-                        }
-
                         // Call intrinsic codegen function
-                        // Note: left and right values are already auto-dereferenced by AST_IDENTIFIER codegen
+                        // For value types, left and right are struct values
+                        // For reference types, left and right are pointers
                         LLVMValueRef args[] = { left, right };
                         return method->codegen(gen, args, 2, method->function_ptr);
                     } else {
@@ -2734,8 +2761,8 @@ LLVMValueRef codegen_node(CodeGen* gen, ASTNode* node) {
                                 array_ptr, "deref");
                         }
 
-                        // Arrays are now wrapper structs { T* data, i64 length }
-                        // Extract the data pointer from field 0
+                        // Extract the data pointer from the wrapper struct { T* data, i64 length }
+                        // array_ptr points to the stored wrapper (from symbol entry)
                         LLVMValueRef data_ptr_field = LLVMBuildStructGEP2(gen->builder, wrapper_type,
                                                                           array_ptr, 0, "data_ptr_field");
                         LLVMValueRef data_ptr = LLVMBuildLoad2(gen->builder,

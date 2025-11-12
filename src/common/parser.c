@@ -814,6 +814,12 @@ static ASTNode* parse_call(Parser* parser) {
                 struct_lit->struct_literal.field_count = field_count;
 
                 node = struct_lit;
+            } else {
+                // Invalid use of '{' in postfix position
+                // This can happen with invalid syntax like: fn test() {}
+                PARSE_ERROR(parser, PE_UNEXPECTED_TOKEN_EXPR, "'{'");
+                parser_advance(parser); // consume '{' to avoid infinite loop
+                return node;
             }
         }
     }

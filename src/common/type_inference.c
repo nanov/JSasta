@@ -356,11 +356,12 @@ static EvalResult eval_const_expr_result(ASTNode* expr, SymbolTable* symbols) {
 }
 
 // Helper: Infer type from binary operation using trait system
-static TypeInfo* infer_binary_result_type(SourceLocation* node, const char* op, TypeInfo* left, TypeInfo* right) {
+static TypeInfo* infer_binary_result_type(SourceLocation* node, const char* op, TypeInfo* left, TypeInfo* right, DiagnosticContext* diag) {
     log_verbose_at(node, "      infer_binary_result_type: %s op=%s %s",
                 left ? left->type_name : "NULL", op, right ? right->type_name : "NULL");
 
-    // Special handling for logical operators (not implemented as traits yet)
+    // Special handling for logical operators
+    // Type checking is done in codegen where we have full type information
     if (strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
         return Type_Bool;
     }
@@ -418,7 +419,7 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
         case AST_BINARY_OP: {
             TypeInfo*  left = infer_expr_type_simple(node->binary_op.left, scope);
             TypeInfo*  right = infer_expr_type_simple(node->binary_op.right, scope);
-            return infer_binary_result_type(&node->loc, node->binary_op.op, left, right);
+            return infer_binary_result_type(&node->loc, node->binary_op.op, left, right, NULL);
         }
         case AST_UNARY_OP: {
             TypeInfo* operand_type = infer_expr_type_simple(node->unary_op.operand, scope);
@@ -473,8 +474,11 @@ static TypeInfo* infer_expr_type_simple(ASTNode* node, SymbolTable* scope) {
             // Unwrap ref types to get the actual target type
             TypeInfo* target_type = type_info_get_ref_target(obj_type);
 
-            // String and array indexing now handled by Index trait
+            // Simple type inference for index access
+            // Full trait-based inference happens later in infer_literal_types
             if (type_info_is_array(target_type)) return target_type->data.array.element_type;
+            if (target_type == Type_Str && Type_I8) return Type_I8;
+            
             return Type_Unknown;
         }
         case AST_OBJECT_LITERAL:
@@ -1356,7 +1360,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
             // Binary op type inferred from operands
             node->type_info = infer_binary_result_type(&node->loc, node->binary_op.op,
                                                        node->binary_op.left->type_info,
-                                                       node->binary_op.right->type_info);
+                                                       node->binary_op.right->type_info, diag);
             break;
 
         case AST_UNARY_OP:
@@ -1730,7 +1734,7 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                                                     type_param_bindings, 1);
 
             // If direct Index<IndexType> not found, try to find Index<T> where From<IndexType> exists for T
-            if (!trait_impl && Trait_From && type_info_is_integer(index_type)) {
+            if (!trait_impl && Trait_ImplicitFrom && type_info_is_integer(index_type)) {
                 // Common index types to try (in order of preference)
                 TypeInfo* candidate_types[] = { Type_Usize, Type_I64, Type_I32 };
                 for (int i = 0; i < 3 && !trait_impl; i++) {
@@ -1744,9 +1748,9 @@ static void infer_literal_types(ASTNode* node, SymbolTable* symbols, TypeContext
                     if (!candidate_index) continue;
 
                     // Check if From<index_type> exists for candidate
-                    trait_ensure_from_impl(candidate, index_type);
+                    trait_ensure_implicit_from_impl(candidate, index_type);
                     TypeInfo* from_binding[] = { index_type };
-                    TraitImpl* from_impl = trait_find_impl(Trait_From, candidate, from_binding, 1);
+                    TraitImpl* from_impl = trait_find_impl(Trait_ImplicitFrom, candidate, from_binding, 1);
 
                     if (from_impl) {
                         // Found a conversion! Update index node's type info so codegen knows to convert
@@ -2907,7 +2911,33 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             node->type_info = infer_binary_result_type(&node->loc,
             																				   node->binary_op.op,
                                                        node->binary_op.left->type_info,
-                                                       node->binary_op.right->type_info);
+                                                       node->binary_op.right->type_info, diag);
+            
+            // Validate logical operators require bool or ImplicitInto<bool>
+            if ((strcmp(node->binary_op.op, "&&") == 0 || strcmp(node->binary_op.op, "||") == 0) && diag) {
+                TypeInfo* left_type = node->binary_op.left->type_info;
+                TypeInfo* right_type = node->binary_op.right->type_info;
+                
+                // Check left operand
+                if (left_type && !type_info_is_unknown(left_type) && left_type != Type_Bool) {
+                    TypeInfo* bool_binding[] = { Type_Bool };
+                    TraitImpl* left_into = trait_find_impl(Trait_ImplicitInto, left_type, bool_binding, 1);
+                    if (!left_into) {
+                        TYPE_ERROR(diag, node->loc, TE_LOGICAL_OP_REQUIRES_BOOL, 
+                                  node->binary_op.op, "left", left_type->type_name);
+                    }
+                }
+                
+                // Check right operand
+                if (right_type && !type_info_is_unknown(right_type) && right_type != Type_Bool) {
+                    TypeInfo* bool_binding[] = { Type_Bool };
+                    TraitImpl* right_into = trait_find_impl(Trait_ImplicitInto, right_type, bool_binding, 1);
+                    if (!right_into) {
+                        TYPE_ERROR(diag, node->loc, TE_LOGICAL_OP_REQUIRES_BOOL, 
+                                  node->binary_op.op, "right", right_type->type_name);
+                    }
+                }
+            }
             break;
 
         case AST_UNARY_OP:
@@ -3031,6 +3061,34 @@ static void infer_with_specializations(ASTNode* node, SymbolTable* symbols, Type
             TypeInfo* type_param_bindings[] = { index_type };
             TraitImpl* trait_impl = trait_find_impl(Trait_Index, index_target_type,
                                                     type_param_bindings, 1);
+
+            // If direct Index<IndexType> not found, try to find Index<T> where From<IndexType> exists for T
+            if (!trait_impl && Trait_ImplicitFrom && type_info_is_integer(index_type)) {
+                // Common index types to try (in order of preference)
+                TypeInfo* candidate_types[] = { Type_Usize, Type_I64, Type_I32 };
+                for (int i = 0; i < 3 && !trait_impl; i++) {
+                    TypeInfo* candidate = candidate_types[i];
+                    if (candidate == index_type) continue; // Skip if same type
+
+                    // Check if Index<candidate> exists on target type
+                    TypeInfo* candidate_binding[] = { candidate };
+                    TraitImpl* candidate_index = trait_find_impl(Trait_Index, index_target_type,
+                                                                 candidate_binding, 1);
+                    if (!candidate_index) continue;
+
+                    // Check if From<index_type> exists for candidate
+                    trait_ensure_implicit_from_impl(candidate, index_type);
+                    TypeInfo* from_binding[] = { index_type };
+                    TraitImpl* from_impl = trait_find_impl(Trait_ImplicitFrom, candidate, from_binding, 1);
+
+                    if (from_impl) {
+                        // Found a conversion! Update index node's type info so codegen knows to convert
+                        node->index_access.index->type_info = candidate;
+                        trait_impl = candidate_index;
+                        break;
+                    }
+                }
+            }
 
             if (!trait_impl) {
                 TYPE_ERROR(diag, node->loc, TE_ARRAY_INDEX_NON_INTEGER, "Type '%s' does not implement Index<%s>",
